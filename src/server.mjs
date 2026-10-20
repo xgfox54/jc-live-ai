@@ -7,11 +7,17 @@ import { resolveCouncil, councilPage } from './council.mjs';
 import { BroadcastMonitor, supportsAutoStart } from './broadcast-monitor.mjs';
 import { createViewer, viewerStream } from './viewer.mjs';
 import { settingsView, saveSettings } from './settings.mjs';
+import { BroadcastRegistry } from './broadcast-registry.mjs';
+import { BroadcastDiscovery } from './broadcast-discovery.mjs';
+import { MinutesService } from './minutes.mjs';
+import { minutesRequest } from './minutes-http.mjs';
 import { HttpError, identifier, integer, text, sourcePage, videoId, body, jsonBody } from './validate.mjs';
 
 const staticFiles = new Map(['index.html', 'app.mjs', 'style.css', 'capture.mjs', 'pcm-worklet.mjs',
   'player.mjs', 'client-state.mjs', 'subscription.mjs', 'icon-192.png', 'admin.html', 'admin.mjs',
-  'viewer-stage.mjs', 'transcripts.mjs', 'selection.mjs', 'admin-tools.mjs'].map(name => ['/' + name, new URL('../public/' + name, import.meta.url)]));
+  'viewer-stage.mjs', 'transcripts.mjs', 'selection.mjs', 'admin-tools.mjs', 'automation.mjs',
+  'minutes.html', 'minutes.mjs'].map(name => ['/' + name, new URL('../public/' + name, import.meta.url)]));
+staticFiles.set('/minutes', new URL('../public/minutes.html', import.meta.url));
 staticFiles.set('/admin', new URL('../public/admin.html', import.meta.url));
 staticFiles.set('/admin/', new URL('../public/admin.html', import.meta.url));
 const json = (res, value, status = 200) => {
@@ -20,8 +26,11 @@ const json = (res, value, status = 200) => {
 export function createService(context) {
   const { store, scheduler, inputs, config } = context;
   const security = new Security(config); const feed = new EventFeed(store, config);
-  const viewer = createViewer(context);
-  const monitor = new BroadcastMonitor(context);
+  const registry = new BroadcastRegistry(store);
+  const minutes = new MinutesService({ registry, store, config });
+  const viewer = createViewer({ ...context, registry });
+  const monitor = new BroadcastMonitor({ ...context, registry, minutes });
+  const discovery = new BroadcastDiscovery({ ...context, registry, monitor });
   const states = () => [...new Map([...store.states(), ...scheduler.states()].map(item => [item.stream_id, item])).values()];
   const visibleStream = ({ approval_note, prompt, ...stream }) => stream;
   const server = createServer(async (req, res) => {
@@ -46,12 +55,14 @@ export function createService(context) {
         json(res, { ready }, ready ? 200 : 503); return;
       }
       security.authorize(req, url.pathname.startsWith('/api/admin/'));
+      if (minutesRequest(registry, req, res, url, '/api/admin/minutes')) return;
       const ids = (url.searchParams.get('streams') ?? store.streams().map(s => s.stream_id).join(',')).split(',').filter(Boolean).map(identifier);
       if (ids.length > 8) throw new HttpError(400, 'At most eight subscriptions');
       if (req.method === 'GET') {
         switch (url.pathname) {
           case '/api/admin/streams': json(res, { streams: store.streams(), states: states(), monitoring: monitor.states() }); return;
           case '/api/admin/settings': json(res, settingsView(config)); return;
+          case '/api/admin/discovery': json(res, { ...discovery.view(), minutes_error: minutes.error ?? null }); return;
           case '/api/streams': json(res, { streams: store.streams().map(visibleStream), states: states() }); return;
           case '/api/snapshot': {
             const snapshot = store.snapshot(ids); snapshot.streams = snapshot.streams.map(visibleStream);
@@ -72,6 +83,15 @@ export function createService(context) {
         }
       }
       if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed');
+      if (url.pathname === '/api/admin/discovery') {
+        const data = await jsonBody(req);
+        if (typeof data.enabled !== 'boolean') throw new HttpError(400, '신규 주소 탐색 설정값을 확인해 주세요.');
+        discovery.setEnabled(data.enabled); if (data.enabled) discovery.scan();
+        json(res, discovery.view()); return;
+      }
+      if (url.pathname === '/api/admin/discovery/scan') {
+        await discovery.scan(); json(res, discovery.view()); return;
+      }
       if (url.pathname === '/api/admin/settings') {
         json(res, saveSettings(context, await jsonBody(req))); return;
       }
@@ -100,6 +120,8 @@ export function createService(context) {
           if (stream.resolved_kind === 'youtube' && !config.ytdlp) throw new HttpError(400, 'YouTube collector is required for this council page');
         }
         if (['running', 'draining'].includes(scheduler.channels.get(id)?.state)) throw new HttpError(409, 'Stop the stream before editing');
+        const previous = store.streams().find(item => item.stream_id === id);
+        if (previous?.broadcast_id) registry.suspend(previous.broadcast_id, true);
         monitor.invalidate(id); store.saveStream(stream); store.event('stream', viewerStream(stream)); json(res, stream, 201); return;
       }
       const match = url.pathname.match(/^\/api\/admin\/streams\/(ch[1-8])\/(start|stop|epoch|pcm|auto)$/);
@@ -146,8 +168,8 @@ export function createService(context) {
     }
   });
   server.maxConnections = 400; server.requestTimeout = 15_000; server.headersTimeout = 10_000;
-  return { server, feed, monitor, async close() {
-    await monitor.close();
+  return { server, feed, monitor, discovery, registry, minutes, async close() {
+    await discovery.close(); await monitor.close(); minutes.close();
     feed.close(); viewer.feed.close(); server.closeAllConnections();
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   } };

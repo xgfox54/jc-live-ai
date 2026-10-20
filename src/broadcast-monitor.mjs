@@ -31,7 +31,11 @@ export class BroadcastMonitor {
     if (typeof enabled !== 'boolean') throw new HttpError(400, '자동 감지 설정값을 확인해 주세요.');
     if (enabled && !supportsAutoStart(stream)) throw new HttpError(400, '주소 방식의 방송만 자동 감지를 지원합니다.');
     this.invalidate(stream.stream_id);
-    const saved = { ...stream, auto_start: enabled, auto_completed_key: null };
+    const saved = { ...stream, auto_start: enabled, auto_completed_key: null, beginning_fallback: enabled ? false : stream.beginning_fallback ?? false };
+    if (stream.broadcast_id && this.registry) {
+      this.registry.suspend(stream.broadcast_id, !enabled);
+      if (enabled) { const record = this.registry.get(stream.broadcast_id); if (record) this.registry.save({ ...record, completed: false }); }
+    }
     this.store.saveStream(saved); this.store.event('stream', viewerStream(saved));
     return saved;
   }
@@ -57,7 +61,7 @@ export class BroadcastMonitor {
       const current = this.store.streams().find(item => item.stream_id === id);
       if (this.closed || signal.aborted || !current || JSON.stringify(current) !== JSON.stringify(stream) || !autoEnabled(current)) return;
       let phase = result.phase;
-      if (result.phase === 'ended' && this.owned.has(id)) {
+      if (result.phase === 'ended' && this.owned.has(id) && !stream.capture_from_start) {
         await this.inputs.stop(id); this.scheduler.stop(id);
       } else if (result.phase === 'live' && !this.active(id)) {
         if (stream.auto_completed_key === result.key) phase = 'completed';
@@ -69,6 +73,10 @@ export class BroadcastMonitor {
           this.begin(source, { automatic: true, key: result.key }); phase = 'collecting';
         }
       } else if (this.active(id)) phase = 'collecting';
+      if (current.broadcast_id && this.registry) {
+        const record = this.registry.get(current.broadcast_id);
+        if (record) this.registry.save({ ...record, phase: this.active(id) ? 'live' : result.phase });
+      }
       if (['offline', 'ended', 'waiting'].includes(result.phase) && stream.auto_completed_key?.startsWith('hls:'))
         this.store.saveStream({ ...current, auto_completed_key: null });
       const failures = phase === 'collecting' && !this.scheduler.channels.get(id)?.last_receive_ms ? previous?.failures ?? 0 : 0;
@@ -82,7 +90,11 @@ export class BroadcastMonitor {
   }
   begin(stream, options = {}) {
     if (this.active(stream.stream_id)) throw new HttpError(409, '이미 수집 중입니다.');
+    if (this.store.streams().some(other => other.stream_id !== stream.stream_id && this.active(other.stream_id)
+      && ((stream.video_id && other.video_id === stream.video_id) || (stream.broadcast_id && other.broadcast_id === stream.broadcast_id))))
+      throw new HttpError(409, '같은 방송을 다른 슬롯에서 수집하고 있습니다.');
     const state = this.scheduler.start(stream);
+    this.minutes?.attach(stream, state);
     const source = options.automatic ? { ...stream, auto_record: true } : stream;
     if (options.automatic) this.owned.set(stream.stream_id, state.session_id);
     let task;
@@ -108,9 +120,18 @@ export class BroadcastMonitor {
         this.setEnabled(current, false);
         this.status.set(stream.stream_id, { phase: 'blocked', error: '원음 저장에 실패했거나 저장 한도에 도달했습니다. 저장 공간과 한도를 확인한 뒤 자동 감지를 다시 켜 주세요.' });
       } else if (!channel.error) {
+        if (stream.broadcast_id && this.registry) {
+          const record = this.registry.get(stream.broadcast_id);
+          if (record) this.registry.save({ ...record, completed: true, phase: 'ended' });
+        }
         this.store.saveStream({ ...current, auto_completed_key: options.key });
         this.status.set(stream.stream_id, { phase: 'completed', checked_ms: this.now(), next_check_ms: this.now() + this.interval });
       } else {
+        if (stream.capture_from_start && !stream.beginning_fallback && channel.input_failed) {
+          this.store.saveStream({ ...current, beginning_fallback: true });
+          this.store.event('gap', { stream_id: stream.stream_id, session_id: state.session_id,
+            reason: 'beginning_collection_failed', extent: 'unknown' });
+        }
         const failures = (this.status.get(stream.stream_id)?.failures ?? 0) + 1;
         this.status.set(stream.stream_id, { phase: 'retry', error: '수집 연결이 끊겼습니다. 방송 상태 확인 후 다시 연결합니다.', failures,
           checked_ms: this.now(), next_check_ms: this.now() + Math.min(300000, this.interval * 2 ** Math.min(failures - 1, 4)) });

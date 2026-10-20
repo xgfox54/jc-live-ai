@@ -69,7 +69,15 @@ async function connect() {
     subscribe({ api, state, ids, signal: subscription.signal, refresh,
       changed: event => {
         if (event.kind === 'stream') {
-          streams = [...streams.filter(stream => stream.stream_id !== event.payload.stream_id), event.payload]; reconcile();
+          const previous = streams.find(stream => stream.stream_id === event.payload.stream_id);
+          if (event.payload.deleted || previous?.broadcast_id !== event.payload.broadcast_id) {
+            for (const item of [...state.segments.values()]) if (item.stream_id === event.payload.stream_id) state.segments.delete(item.segment_id);
+            state.gaps.delete(event.payload.stream_id); state.status.delete(event.payload.stream_id);
+            before[event.payload.stream_id] = Number.MAX_SAFE_INTEGER;
+            const stage = stages.get(event.payload.stream_id); if (stage) stage.before = Number.MAX_SAFE_INTEGER;
+          }
+          streams = streams.filter(stream => stream.stream_id !== event.payload.stream_id);
+          if (!event.payload.deleted) streams.push(event.payload); reconcile();
         } else if (event.kind === 'segment' || event.kind === 'gap') stages.get(event.payload.stream_id)?.render();
         renderChoices();
       },

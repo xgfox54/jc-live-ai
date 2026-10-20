@@ -11,6 +11,7 @@ export function councilPage(value) {
 }
 
 export function parseCouncilPlayer(html) {
+  html = html.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>/gi, '');
   const sources = [];
   // Only source/iframe attributes are considered; page scripts are never executed.
   for (const tag of html.match(/<(?:source|iframe)\b[^>]*>/gi) ?? []) {

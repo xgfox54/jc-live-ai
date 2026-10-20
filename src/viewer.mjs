@@ -1,9 +1,11 @@
 import { EventFeed } from './events.mjs';
 import { HttpError, identifier, integer } from './validate.mjs';
+import { minutesRequest } from './minutes-http.mjs';
 
 export function viewerStream(stream) {
-  const { stream_id, name, page_url, video_id } = stream;
-  return { stream_id, name, page_url, video_id };
+  if (stream.deleted) return { stream_id: stream.stream_id, deleted: true };
+  const { stream_id, name, page_url, video_id, broadcast_id } = stream;
+  return { stream_id, name, page_url, video_id, broadcast_id };
 }
 function viewerState(state) {
   const { stream_id, session_id, timeline_epoch, state: status, started_ms, last_receive_ms } = state;
@@ -35,6 +37,7 @@ export function createViewer(context) {
   return {
     feed,
     handle(req, res, url) {
+      if (context.registry && minutesRequest(context.registry, req, res, url, '/api/viewer/minutes')) return;
       if (!routes.has(url.pathname)) throw new HttpError(404, 'Route not found');
       if (req.method !== 'GET') throw new HttpError(405, 'Read-only endpoint');
       const ids = (url.searchParams.get('streams') ?? 'ch1,ch2,ch3,ch4,ch5,ch6,ch7,ch8')
@@ -45,17 +48,20 @@ export function createViewer(context) {
         return;
       }
       let result;
+      const broadcasts = Object.fromEntries(store.streams().filter(stream => stream.broadcast_id).map(stream => [stream.stream_id, stream.broadcast_id]));
+      const belongs = value => !broadcasts[value.stream_id] || context.registry?.forSession(value.session_id) === broadcasts[value.stream_id];
       if (url.pathname === '/api/viewer/segments') {
         const page = store.segments({ stream: identifier(url.searchParams.get('stream')),
+          broadcast: broadcasts[url.searchParams.get('stream')],
           before: integer(url.searchParams.get('before') ?? Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER),
           limit: integer(url.searchParams.get('limit') ?? 100, 1, 200) });
         result = { ...page, items: page.items.map(viewerSegment) };
       } else {
-        const snapshot = store.snapshot(ids);
+        const snapshot = store.snapshot(ids, broadcasts);
         const states = [...new Map([...store.states(), ...scheduler.states()].map(s => [s.stream_id, s])).values()];
         result = { ...snapshot, streams: snapshot.streams.map(viewerStream),
-          segments: snapshot.segments.map(viewerSegment), gaps: snapshot.gaps.map(viewerGap),
-          states: states.filter(s => ids.includes(s.stream_id)).map(viewerState) };
+          segments: snapshot.segments.map(viewerSegment), gaps: snapshot.gaps.filter(belongs).map(viewerGap),
+          states: states.filter(s => ids.includes(s.stream_id) && belongs(s)).map(viewerState) };
       }
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(result));

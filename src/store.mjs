@@ -92,13 +92,15 @@ export class Store extends EventEmitter {
       .map(r => ({ event_id: r.id, kind: r.kind, created_ms: r.created_ms, payload: JSON.parse(r.payload) }));
   }
   segments(query) {
+    const broadcastFilter = query.broadcast ? 'AND session_id IN (SELECT session_id FROM broadcast_sessions WHERE broadcast_id=?)' : '';
     const rows = this.db.prepare(`SELECT rowid,document FROM segments WHERE stream_id=?
-      AND rowid<? AND (?='' OR session_id=?) ORDER BY rowid DESC LIMIT ?`)
-      .all(query.stream, query.before ?? Number.MAX_SAFE_INTEGER, query.session ?? '', query.session ?? '', query.limit ?? 100);
+      AND rowid<? AND (?='' OR session_id=?) ${broadcastFilter} ORDER BY rowid DESC LIMIT ?`)
+      .all(query.stream, query.before ?? Number.MAX_SAFE_INTEGER, query.session ?? '', query.session ?? '',
+        ...(query.broadcast ? [query.broadcast] : []), query.limit ?? 100);
     return { items: rows.map(r => JSON.parse(r.document)).reverse(), before: rows.at(-1)?.rowid ?? null };
   }
-  snapshot(ids) {
-    const pages = ids.map(stream => ({ stream, ...this.segments({ stream }) }));
+  snapshot(ids, broadcasts = {}) {
+    const pages = ids.map(stream => ({ stream, ...this.segments({ stream, broadcast: broadcasts[stream] }) }));
     const gaps = ids.flatMap(stream => {
       const row = this.db.prepare("SELECT payload FROM events WHERE stream_id=? AND kind='gap' ORDER BY id DESC LIMIT 1").get(stream);
       return row ? [JSON.parse(row.payload)] : [];

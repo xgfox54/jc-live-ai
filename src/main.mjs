@@ -38,7 +38,8 @@ const service = createService({ store, scheduler, inputs, config, configPath, sh
 let stopping = false;
 async function stop() {
   if (stopping) return; stopping = true;
-  await service.monitor.close(); await inputs.close(); await scheduler.close(); if (service.server.listening) await service.close(); store.close();
+  await service.discovery.close(); await service.monitor.close(); await inputs.close(); await scheduler.close();
+  if (service.server.listening) await service.close(); else service.minutes.close(); store.close();
 }
 process.on('SIGINT', () => stop().catch(error => { process.stderr.write(error.message + '\n'); process.exitCode = 1; }));
 process.on('SIGTERM', () => stop().catch(error => { process.stderr.write(error.message + '\n'); process.exitCode = 1; }));
@@ -46,7 +47,7 @@ try {
   await engine.start();
   if (!stopping) {
     service.server.listen(config.port ?? 4320, '127.0.0.1'); await once(service.server, 'listening');
-    service.monitor.start();
+    service.monitor.start(); service.discovery.start();
     process.stdout.write(JSON.stringify({ event: 'service.ready', url: 'http://127.0.0.1:' + service.server.address().port,
       engine: engine.metadata }) + '\n');
   }

@@ -17,6 +17,7 @@
   "ytdlp": "bin/yt-dlp.exe",
   "recordAudio": true,
   "recordings": "data/recordings",
+  "minutesDirectory": "data/minutes",
   "maxRecordingBytes": 460800000,
   "files": {}
 }

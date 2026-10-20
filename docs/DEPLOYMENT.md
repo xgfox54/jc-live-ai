@@ -43,6 +43,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-live.ps1
 
 ## 운영 동작
 
+서버 시작 시 공식 YouTube 채널·의회 홈페이지의 신규 생방송 탐색 기본 활성화. 이전에 끈 설정은 SQLite에서 유지. 관리자 ‘신규 방송 자동 등록’ 메뉴에서 재개 가능. 회의록은 /minutes 에서 열람. 상세 동작은 [자동 등록·회의록 안내](AUTOMATION.md) 참조.
+
 - 승인한 방송만 등록. 주소 방식은 자동 감지 선택 후 저장.
 - 자동 감지는 30초 간격, 조회 실패 시 최대 5분 간격 재시도.
 - 녹음 저장 한도 도달 또는 저장 오류는 자동 감지 중단 사유. 관리자 화면의 안내 확인 후 조치.

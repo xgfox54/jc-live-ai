@@ -2,6 +2,7 @@ import { TranscriptState } from './client-state.mjs';
 import { subscribe } from './subscription.mjs';
 import { startCapture, stopCapture, captureCount } from './capture.mjs';
 import { AdminTools } from './admin-tools.mjs';
+import { AutomationTools } from './automation.mjs';
 
 const $ = selector => document.querySelector(selector);
 const ids = Array.from({ length: 8 }, (_, i) => 'ch' + (i + 1));
@@ -25,6 +26,7 @@ for (const selector of ['#register-channel', '#manage-channel', '#review-channel
   }
 }
 const tools = new AdminTools({ api, state, message, streams: () => streams, refresh: () => refresh() });
+const automation = new AutomationTools({ api, message });
 const cards = new Map();
 for (const [index, id] of ids.entries()) {
   const card = document.createElement('button'); card.className = 'admin-channel secondary';
@@ -86,7 +88,7 @@ $('#login').addEventListener('submit', async event => {
   event.preventDefault(); token = $('#token').value; $('#token').value = '';
   const submit = $('#login button'); submit.disabled = true;
   try {
-    await refresh(); tools.showSettings(await (await api('/api/admin/settings')).json());
+    await refresh(); tools.showSettings(await (await api('/api/admin/settings')).json()); await automation.refresh();
     subscription?.abort(); subscription = new AbortController();
     $('#auth').hidden = true; $('#workspace').hidden = false; $('#logout').hidden = false; message('관리자로 연결했습니다.');
     fillStream($('#register-channel').value);
@@ -97,7 +99,8 @@ $('#login').addEventListener('submit', async event => {
       try {
         const catalog = await (await api('/api/admin/streams')).json();
         if (token !== sessionToken) return;
-        streams = catalog.streams; monitoring = catalog.monitoring ?? []; renderMonitor();
+        streams = catalog.streams; monitoring = catalog.monitoring ?? []; render();
+        if (!$('#automation').hidden) await automation.refresh();
       } catch (error) { if (token === sessionToken) $('#auto-status').textContent = error.message; }
     }, 5000);
     subscribe({ api, state, ids, signal: subscription.signal, refresh,
@@ -111,6 +114,7 @@ $('#login').addEventListener('submit', async event => {
 $('#logout').addEventListener('click', () => {
   if (captureCount()) { message('탭 음성 수집을 중지한 뒤 로그아웃해 주세요.'); return; }
   subscription?.abort(); clearInterval(monitorTimer); token = ''; streams = []; monitoring = []; state.reset({ event_id: 0, segments: [] }); tools.stopPreview();
+  automation.clear();
   $('#workspace').hidden = true; $('#logout').hidden = true; $('#auth').hidden = false;
   $('#register').reset(); $('#correct').reset(); $('#settings-form').reset(); tools.renderReview();
   $('#connection').textContent = '관리자 인증 대기'; message('로그아웃했습니다. 서버에서 수집 중인 방송은 계속 처리합니다.'); $('#token').focus();
@@ -119,6 +123,7 @@ for (const button of document.querySelectorAll('[data-section]')) button.addEven
   for (const pane of document.querySelectorAll('.admin-section')) pane.hidden = pane.id !== button.dataset.section;
   for (const tab of document.querySelectorAll('[data-section]')) tab.setAttribute('aria-pressed', String(tab === button));
   if (button.dataset.section !== 'sync') tools.stopPreview();
+  if (button.dataset.section === 'automation') automation.refresh().catch(error => message(error.message));
 });
 $('#register-channel').addEventListener('change', event => fillStream(event.target.value));
 $('#manage-channel').addEventListener('change', render);
