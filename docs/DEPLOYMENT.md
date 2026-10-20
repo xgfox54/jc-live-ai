@@ -28,6 +28,7 @@ Copy-Item '.build/target/release/jc-live-worker.exe' 'bin/jc-live-worker.exe'
 ~~~
 
 각 경로는 설치한 개발 도구의 실제 경로로 지정.
+Windows 경로 길이 제한에 걸리면 짧은 TargetDirectory 지정. 제공 빌드 스크립트는 UTF-8 컴파일 옵션 적용.
 
 ## 최초 실행
 

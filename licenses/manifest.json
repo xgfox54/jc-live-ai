@@ -11,13 +11,13 @@
   },
   {
     "package": "anyhow",
-    "version": "1.0.100",
-    "file": "licenses/anyhow-1.0.100/LICENSE-APACHE"
+    "version": "1.0.103",
+    "file": "licenses/anyhow-1.0.103/LICENSE-APACHE"
   },
   {
     "package": "anyhow",
-    "version": "1.0.100",
-    "file": "licenses/anyhow-1.0.100/LICENSE-MIT"
+    "version": "1.0.103",
+    "file": "licenses/anyhow-1.0.103/LICENSE-MIT"
   },
   {
     "package": "base64",
