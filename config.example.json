@@ -1,0 +1,22 @@
+{
+  "port": 4320,
+  "database": "data/live.sqlite",
+  "tokenFile": "data/access.secret",
+  "engineLog": "data/engine.log",
+  "worker": "bin/jc-live-worker.exe",
+  "model": "models/ggml-small-q5_1.bin",
+  "device": "gpu",
+  "beam": 2,
+  "batch": 1,
+  "chunkSeconds": 10,
+  "queueChunks": 12,
+  "silenceRms": 0,
+  "maxClients": 350,
+  "maxBytes": 262144,
+  "ffmpeg": "bin/ffmpeg.exe",
+  "ytdlp": "bin/yt-dlp.exe",
+  "recordAudio": true,
+  "recordings": "data/recordings",
+  "maxRecordingBytes": 460800000,
+  "files": {}
+}

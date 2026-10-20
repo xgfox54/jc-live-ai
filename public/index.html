@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="방송별 전사문과 입력 상태를 확인하는 JC-LIVE 모니터입니다.">
+<title>JC-LIVE · 방송 전사 모니터</title><link rel="stylesheet" href="/style.css">
+<script type="module" src="/app.mjs"></script></head>
+<body>
+<header><a class="brand" href="/">JC-<strong>LIVE</strong></a><span id="connection" role="status">인증 대기</span></header>
+<main>
+<section class="intro"><div><p class="eyebrow">방송 전사 모니터</p><h1>8개 방송의 전사문을 확인합니다</h1>
+<p>AI 전사 초안입니다. 공식 확정 회의록이 아니며, 인명과 수치는 원음 확인이 필요합니다.</p></div>
+<form id="login"><label for="token">열람 또는 관리자 접근키</label><div class="row"><input id="token" type="password" autocomplete="off" required><button>연결</button></div></form></section>
+<p id="notice" role="status"></p>
+<div class="toolbar"><label for="search">전사문 검색</label><input id="search" type="search" placeholder="현재 불러온 문장에서 검색">
+<label><input id="autoscroll" type="checkbox" checked> 새 문장으로 이동</label>
+<label><input id="synced" type="checkbox"> 선택 영상 시점으로 표시</label></div>
+<section class="viewer" aria-label="선택 방송 영상"><div>
+<div class="row"><h2 id="selected-name">방송을 선택해 주세요</h2><a id="source-link" target="_blank" rel="noopener noreferrer" hidden>공식 영상 열기</a></div>
+<div id="player"></div><p id="sync-status">영상 시점 일치 여부 미확인 · 최신 전사문을 표시합니다.</p></div>
+<details><summary>영상 시간 연결 확인</summary><p>같은 발언의 음성 시간과 영상 시간을 입력합니다. 라이브 기준 시간은 공식 플레이어에서 직접 확인합니다. 탐색에 성공해도 발언과 영상의 시점이 일치하는지 추가 확인해야 합니다.</p>
+<form id="sync-form"><label>같은 발언의 음성 시간(초)<input name="audio" type="number" min="0" step="0.1" required></label>
+<label>같은 발언의 영상 시간(초)<input name="video" type="number" min="0" step="0.1" required></label>
+<label>직접 확인한 라이브 기준 시간(초)<input name="edge" type="number" min="30" step="0.1" required></label>
+<button>30초 전 탐색 확인</button></form></details></section>
+<section id="channels" class="channels" aria-label="8개 방송 전사문"></section>
+<details class="admin"><summary>방송 관리</summary>
+<p>관리자 접근키가 필요합니다. YouTube 영상 주소나 의회 방송 상세 주소를 등록하면 서버에서 음원을 수신합니다. 탭 공유 방식은 해당 영상을 재생한 뒤 방송마다 다른 탭과 탭 오디오 공유를 선택합니다.</p>
+<form id="register"><div class="fields">
+<label>방송 슬롯<select name="stream_id"><option>ch1</option><option>ch2</option><option>ch3</option><option>ch4</option><option>ch5</option><option>ch6</option><option>ch7</option><option>ch8</option></select></label>
+<label>방송 이름<input name="name" maxlength="100" required></label>
+<label>입력 방식<select name="kind"><option value="youtube">공개 YouTube URL</option><option value="council">제주특별자치도의회 방송 상세 주소</option><option value="capture">공식 영상 탭 공유</option></select></label>
+<label>공식 영상 링크<input name="page_url" type="url" required placeholder="https://www.youtube.com/watch?v=영상ID"></label>
+<label>수집 권한 확인 근거<input name="approval_note" maxlength="500" required></label>
+<label>인식 참고어<input name="prompt" maxlength="600"></label>
+</div><label><input name="approved" type="checkbox" required> 해당 방송의 수집·전사 권한을 확인했습니다.</label><button>방송 등록</button></form>
+<div class="row"><label for="manage-channel">관리할 방송</label><select id="manage-channel"><option>ch1</option><option>ch2</option><option>ch3</option><option>ch4</option><option>ch5</option><option>ch6</option><option>ch7</option><option>ch8</option></select>
+<button id="capture">수집 시작</button><button id="stop" class="secondary">수집 중지</button></div>
+<details><summary>전사문 검토·수정</summary><form id="correct"><label>문장 ID<input name="id" required></label>
+<label>현재 버전<input name="version" type="number" min="1" required></label><label>검토문<textarea name="text" maxlength="5000" required></textarea></label>
+<button>검토문 저장</button></form></details>
+</details>
+<footer>원문과 검토문은 별도로 보존합니다. 영상은 공식 플레이어에서 제공하며 이 서버는 영상을 재송출하지 않습니다.</footer>
+</main></body></html>

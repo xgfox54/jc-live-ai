@@ -1,0 +1,14 @@
+{
+  "name": "jc-live",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=24.18.0 <25" },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "test": "node --test test/*.test.mjs",
+    "bench:viewers": "node scripts/bench-viewers.mjs",
+    "bench:audio": "node scripts/bench-audio.mjs",
+    "test:live": "node scripts/test-live.mjs"
+  }
+}

@@ -1,0 +1,9 @@
+/.build/
+/bin/
+/models/
+/data/
+/reports/
+/config.local.json
+/worker/target/
+/node_modules/
+*.log

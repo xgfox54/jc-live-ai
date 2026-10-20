@@ -1,0 +1,25 @@
+{
+  "project": "JC-LIVE",
+  "files": [
+    {
+      "path": "models/ggml-small-q5_1.bin",
+      "bytes": 190085487,
+      "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"
+    },
+    {
+      "path": "bin/ffmpeg.exe",
+      "bytes": 99264000,
+      "sha256": "5af82a0d4fe2b9eae211b967332ea97edfc51c6b328ca35b827e73eac560dc0d"
+    },
+    {
+      "path": "bin/yt-dlp.exe",
+      "bytes": 17840399,
+      "sha256": "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a"
+    },
+    {
+      "path": "bin/jc-live-worker.exe",
+      "bytes": 4022784,
+      "sha256": "3eac342b5415441e1c1ee7f90e771f6d8844cacd742d6a13725b332c6d147965"
+    }
+  ]
+}

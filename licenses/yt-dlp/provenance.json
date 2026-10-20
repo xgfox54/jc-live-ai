@@ -1,0 +1,12 @@
+[
+  {
+    "name": "LICENSE",
+    "status": 200,
+    "url": "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.08.19/LICENSE"
+  },
+  {
+    "name": "THIRD_PARTY_LICENSES.txt",
+    "status": 200,
+    "url": "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.08.19/THIRD_PARTY_LICENSES.txt"
+  }
+]
