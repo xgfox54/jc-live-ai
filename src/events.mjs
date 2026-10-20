@@ -3,6 +3,7 @@ export class EventFeed {
     this.store = store; this.clients = new Set();
     this.maxClients = options.maxClients ?? 350;
     this.maxBytes = options.maxBytes ?? 262144;
+    this.project = options.project ?? (event => event);
     this.metrics = { sent: 0, bytes: 0, slow_disconnects: 0, high_water_bytes: 0, peak_clients: 0 };
     store.on('event', () => { for (const client of this.clients) this.schedule(client); });
     this.heartbeat = setInterval(() => {
@@ -17,7 +18,7 @@ export class EventFeed {
   }
   send(client, event) {
     if (client.res.destroyed) { this.clients.delete(client); return false; }
-    const wire = 'id: ' + event.event_id + '\ndata: ' + JSON.stringify(event) + '\n\n';
+    const wire = 'id: ' + event.event_id + '\ndata: ' + JSON.stringify(this.project(event)) + '\n\n';
     if (client.res.writableLength + Buffer.byteLength(wire) > this.maxBytes) {
       this.metrics.slow_disconnects++; client.res.destroy(); this.clients.delete(client); return false;
     }

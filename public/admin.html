@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="JC-LIVE 방송 등록과 전사 설정을 관리합니다.">
+<title>JC-LIVE · 관리자</title><link rel="stylesheet" href="/style.css">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png"><script type="module" src="/admin.mjs"></script>
+</head><body class="admin-page">
+<header><a class="brand" href="/"><img src="/icon-192.png" width="40" height="40" alt=""><span>JC-<strong>LIVE</strong></span></a>
+<div class="row"><a href="/" target="_blank" rel="noopener">이용자 화면 열기</a><span id="connection" role="status">관리자 인증 대기</span></div></header>
+<main><div class="intro"><div><p class="eyebrow">관리자</p><h1>방송과 전사 설정을 관리합니다</h1></div><button id="logout" class="secondary" hidden>로그아웃</button></div>
+<section id="auth" class="surface login-card"><h2>관리자 연결</h2><p>관리자 접근키를 입력합니다. 키는 이 페이지를 닫으면 삭제됩니다.</p>
+<form id="login"><label for="token">관리자 접근키</label><div class="row"><input id="token" type="password" autocomplete="off" required><button>연결</button></div></form></section>
+<p id="notice" role="status"></p>
+<div id="workspace" hidden>
+<nav class="admin-nav" aria-label="관리 메뉴">
+<button type="button" data-section="broadcasts" aria-pressed="true">영상 등록·수집</button>
+<button type="button" data-section="settings" aria-pressed="false">세부 설정</button>
+<button type="button" data-section="review" aria-pressed="false">전사문 검토</button>
+<button type="button" data-section="sync" aria-pressed="false">영상 동기화 점검</button></nav>
+<section id="broadcasts" class="admin-section">
+<div class="section-title"><h2>영상 등록·수집</h2><p>방송을 선택하면 등록 내용을 편집할 수 있습니다.</p></div>
+<div id="admin-list" class="admin-channels" aria-label="방송 등록 현황"></div>
+<div class="admin-columns">
+<section class="surface"><h3>방송 정보</h3><form id="register">
+<div class="fields">
+<label>방송 슬롯<select name="stream_id" id="register-channel"></select></label>
+<label>방송 이름<input name="name" maxlength="100" required></label>
+<label>입력 방식<select name="kind"><option value="youtube">YouTube 주소</option><option value="council">의회 방송 상세 주소</option><option value="capture">공식 영상 탭 공유</option></select></label>
+<label>공식 영상 주소<input name="page_url" type="url" required placeholder="https://www.youtube.com/watch?v=영상ID"></label>
+<label class="full-field">수집 권한 확인 근거<input name="approval_note" maxlength="500" required></label>
+<label class="full-field">인식 참고어<input name="prompt" maxlength="600" placeholder="인명, 기관명 등"></label>
+</div><label class="check"><input name="approved" type="checkbox" required> 해당 방송의 수집·전사 권한을 확인했습니다.</label>
+<label class="check"><input name="auto_start" id="auto-start" type="checkbox" checked> 방송 시작 시 자동 녹음·전사</label>
+<p class="help">YouTube 방송 주소와 의회 방송 상세 주소를 30초 간격으로 확인합니다. PC와 서버가 켜져 있어야 합니다. 탭 공유 방식은 수동으로 시작합니다.</p>
+<p class="help">수집 중인 방송은 중지 후 편집합니다. 저장하면 이용자 화면의 방송 목록에 반영됩니다.</p>
+<button>방송 저장</button></form></section>
+<section class="surface"><h3>음원 수집</h3><label for="manage-channel">관리할 방송</label><select id="manage-channel"></select>
+<p>주소 방식은 서버에서 수집합니다. 탭 공유 방식은 해당 영상을 재생한 뒤 탭 오디오를 공유합니다.</p>
+<div class="row"><button id="capture">수집 시작</button><button id="stop" class="secondary">수집 중지</button></div>
+<div class="row"><button id="auto-toggle" class="secondary" disabled>자동 감지 켜기</button></div>
+<p id="auto-status" role="status" class="help">방송을 등록하면 자동 감지 상태를 표시합니다.</p>
+<p class="help">자동 수집은 원음 저장을 포함합니다. 수집 중지를 누르면 자동 감지도 꺼집니다. 저장 한도에 도달하면 자동 감지를 끕니다.</p>
+<p id="metrics-note" class="help"></p><p class="help">음원 수집은 이용자의 영상 재생과 별도로 동작합니다.</p></section>
+</div></section>
+<section id="settings" class="admin-section" hidden><div class="section-title"><h2>세부 설정</h2>
+<p>모든 방송의 수집과 남은 음성 처리를 마친 뒤 저장합니다. 저장한 값은 다음 실행에도 유지됩니다.</p></div>
+<form id="settings-form" class="surface"><div class="fields">
+<label>전사 구간 길이<select name="chunkSeconds"><option value="5">5초</option><option value="10">10초</option></select></label>
+<label>방송별 대기 구간 수<input name="queueChunks" type="number" min="2" max="24" step="1" required><span class="help">2~24개. 가득 차면 가장 오래된 구간을 누락으로 기록합니다.</span></label>
+<label>무음 제외 기준<input name="silenceRms" type="number" min="0" max="0.02" step="0.0001" required><span class="help">0은 무음 제외를 끕니다. 값을 높이면 작은 음성을 건너뛸 수 있습니다.</span></label>
+<label>방송 세션별 원음 저장 한도(MB)<input name="maxRecordingMB" type="number" min="0.32" max="3200" step="0.01" required><span class="help">1MB는 1,000,000바이트입니다. 한도에 도달하면 수집을 중지합니다.</span></label>
+</div><label class="check"><input name="recordAudio" type="checkbox"> 수집한 원음 저장</label><button>설정 저장</button>
+<p class="help">기존에 저장한 원음은 이 설정으로 삭제되지 않습니다.</p></form>
+<section class="surface engine-info"><h3>현재 전사 엔진</h3><p id="engine-info"></p><p class="help">모델·처리 장치·탐색 수 변경은 서버 설정 파일 수정 후 재시작이 필요합니다.</p></section>
+</section>
+<section id="review" class="admin-section" hidden><div class="section-title"><h2>전사문 검토·수정</h2><p>문장을 선택해 수정합니다. 원문과 수정 이력은 별도로 보존합니다.</p></div>
+<div class="admin-columns"><section class="surface"><label for="review-channel">검토할 방송</label><select id="review-channel"></select><button id="review-refresh" class="secondary">전사문 새로고침</button>
+<div id="review-transcripts" class="transcript" tabindex="0" aria-label="검토할 전사문"></div></section>
+<form id="correct" class="surface"><label>문장 ID<input name="id" readonly required></label><label>현재 버전<input name="version" type="number" readonly required></label>
+<label>검토문<textarea name="text" rows="8" maxlength="5000" required></textarea></label><button>검토문 저장</button></form></div></section>
+<section id="sync" class="admin-section" hidden><div class="section-title"><h2>영상 동기화 점검</h2><p>이 페이지의 시험 플레이어에서 탐색 가능 여부를 확인합니다. 이 설정이 이용자 플레이어에 자동 적용되지는 않습니다.</p></div>
+<div class="admin-columns"><section class="surface"><label for="sync-channel">점검할 방송</label><select id="sync-channel"></select><button id="preview" class="secondary">점검 영상 열기</button>
+<div id="admin-player" class="video-frame"></div><p id="sync-status" role="status">점검할 영상을 선택해 주세요.</p></section>
+<form id="sync-form" class="surface"><h3>같은 발언의 시간 입력</h3>
+<label>음성 시간(초)<input name="audio" type="number" min="0" step="0.1" required></label>
+<label>영상 시간(초)<input name="video" type="number" min="0" step="0.1" required></label>
+<label>직접 확인한 라이브 기준 시간(초)<input name="edge" type="number" min="30" step="0.1" required></label><button>30초 전 탐색 확인</button>
+<p class="help">탐색 성공만으로 발언과 영상의 시점 일치를 확인할 수 없습니다. 원음과 영상을 함께 검토해야 합니다.</p></form></div></section>
+</div><footer>관리자 접근키는 공유하지 않습니다. 이용자 페이지에는 접근키 입력이 필요하지 않습니다.</footer>
+</main></body></html>

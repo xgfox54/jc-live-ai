@@ -3,11 +3,15 @@ import { HttpError } from './validate.mjs';
 
 export class Security {
   constructor(config) { this.config = config; this.requests = new Map(); }
-  authorize(req, admin) {
+  checkOrigin(req) {
     const host = req.headers.host ?? '';
     if (!/^127\.0\.0\.1:\d+$/.test(host) && !/^localhost:\d+$/.test(host)) throw new HttpError(403, 'Invalid host');
     const origin = req.headers.origin;
     if (origin && origin !== 'http://' + host) throw new HttpError(403, 'Cross-origin request denied');
+    if (req.headers['sec-fetch-site'] === 'cross-site') throw new HttpError(403, 'Cross-site request denied');
+  }
+  authorize(req, admin) {
+    this.checkOrigin(req);
     const incoming = req.headers.authorization?.replace(/^Bearer /, '') ?? '';
     const matches = expected => /^[a-f0-9]{64}$/.test(incoming) && expected && incoming.length === expected.length
       && timingSafeEqual(Buffer.from(incoming), Buffer.from(expected));

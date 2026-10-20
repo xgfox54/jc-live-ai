@@ -7,6 +7,7 @@ import { resolveCouncil } from './council.mjs';
 
 export class FileInputs {
   constructor(scheduler, config) { this.scheduler = scheduler; this.config = config; this.children = new Map(); this.resolving = new Map(); }
+  isActive(id) { return this.children.has(id) || this.resolving.has(id); }
   startYouTube(stream) {
     return this.startResolved(stream, signal => resolveYouTube(this.config, stream, signal));
   }
@@ -55,7 +56,7 @@ export class FileInputs {
     const task = (async () => {
       let buffer = Buffer.alloc(0); let seq = 0; let recording; let recordingError; let recordedBytes = 0;
       try {
-        if (this.config.recordAudio) {
+        if (this.config.recordAudio || stream.auto_record) {
           const channel = this.scheduler.channel(stream.stream_id);
           const directory = resolve(this.config.recordings ?? 'data/recordings', stream.stream_id, channel.session_id);
           mkdirSync(directory, { recursive: true });
@@ -69,7 +70,10 @@ export class FileInputs {
           if (recordingError) throw recordingError;
           if (recording) {
             recordedBytes += part.length;
-            if (recordedBytes > (this.config.maxRecordingBytes ?? 460800000)) throw new Error('Recording quota reached');
+            if (recordedBytes > (this.config.maxRecordingBytes ?? 460800000)) {
+              this.scheduler.channel(stream.stream_id).recording_failed = true;
+              throw new Error('Recording quota reached');
+            }
             if (!recording.write(part)) await once(recording, 'drain');
           }
           buffer = Buffer.concat([buffer, part]);
@@ -85,11 +89,14 @@ export class FileInputs {
           }
         }
         const result = await exited;
+        if (recordingError) throw recordingError;
         if (result.error || (result.code !== 0 && !child.killed)) throw new Error('Audio decoder failed');
         const state = this.scheduler.channel(stream.stream_id);
         if (buffer.length && state.state === 'running') this.scheduler.feed(stream.stream_id,
           { session_id: state.session_id, epoch: state.timeline_epoch, seq, pcm: buffer });
       } catch (error) {
+        if (recordingError || ['ENOSPC', 'EACCES', 'EPERM', 'EROFS', 'EIO', 'EEXIST'].includes(error.code))
+          this.scheduler.channel(stream.stream_id).recording_failed = true;
         if (!child.killed || recordingError) {
           this.scheduler.store.event('gap', { stream_id: stream.stream_id,
             session_id: this.scheduler.channel(stream.stream_id).session_id, reason: 'collector_failed', extent: 'unknown' });

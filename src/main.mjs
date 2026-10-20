@@ -8,7 +8,8 @@ import { Scheduler } from './scheduler.mjs';
 import { FileInputs } from './files.mjs';
 import { createService } from './server.mjs';
 
-const config = JSON.parse(readFileSync(resolve(process.argv[2] ?? 'config.local.json'), 'utf8'));
+const configPath = resolve(process.argv[2] ?? 'config.local.json');
+const config = JSON.parse(readFileSync(configPath, 'utf8'));
 if (![5, 10].includes(config.chunkSeconds) || !Number.isInteger(config.queueChunks)
   || config.queueChunks < 2 || config.queueChunks > 24) throw new Error('Invalid chunk or queue configuration');
 if (config.batch !== 1) throw new Error('This whisper-rs adapter supports batch 1 only');
@@ -31,13 +32,13 @@ const store = new Store(config.database); store.recover();
 const engine = new WhisperEngine(config);
 const scheduler = new Scheduler(store, engine, config);
 const inputs = new FileInputs(scheduler, config);
-const service = createService({ store, scheduler, inputs, config, shutdown: () => stop().catch(error => {
+const service = createService({ store, scheduler, inputs, config, configPath, shutdown: () => stop().catch(error => {
   process.stderr.write(error.message + '\n'); process.exitCode = 1;
 }) });
 let stopping = false;
 async function stop() {
   if (stopping) return; stopping = true;
-  await inputs.close(); await scheduler.close(); if (service.server.listening) await service.close(); store.close();
+  await service.monitor.close(); await inputs.close(); await scheduler.close(); if (service.server.listening) await service.close(); store.close();
 }
 process.on('SIGINT', () => stop().catch(error => { process.stderr.write(error.message + '\n'); process.exitCode = 1; }));
 process.on('SIGTERM', () => stop().catch(error => { process.stderr.write(error.message + '\n'); process.exitCode = 1; }));
@@ -45,6 +46,7 @@ try {
   await engine.start();
   if (!stopping) {
     service.server.listen(config.port ?? 4320, '127.0.0.1'); await once(service.server, 'listening');
+    service.monitor.start();
     process.stdout.write(JSON.stringify({ event: 'service.ready', url: 'http://127.0.0.1:' + service.server.address().port,
       engine: engine.metadata }) + '\n');
   }

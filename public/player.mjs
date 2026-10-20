@@ -19,22 +19,43 @@ export function evaluateSeek(observed, target) {
   return { supported: Number.isFinite(error) && error <= 2, error_s: error };
 }
 export class OfficialPlayer {
-  constructor(container, message) { this.container = container; this.message = message; this.anchor = null; this.player = null; }
+  constructor(container, message, options = {}) {
+    this.container = container; this.message = message; this.options = options;
+    this.anchor = null; this.player = null; this.muted = options.muted ?? false; this.ready = false;
+  }
+  dispose() {
+    this.selection = (this.selection ?? 0) + 1; this.ready = false; this.anchor = null;
+    if (this.player) this.player.destroy();
+    this.player = null; this.container.replaceChildren();
+  }
+  setMuted(value) {
+    this.muted = value;
+    if (this.ready) { if (value) this.player.mute(); else this.player.unMute(); }
+  }
   async select(stream) {
-    const selection = (this.selection ?? 0) + 1; this.selection = selection;
+    this.dispose(); const selection = this.selection;
     this.anchor = null; this.stream = stream;
     if (this.player) { this.player.destroy(); this.player = null; }
     this.container.replaceChildren();
-    if (!stream.video_id) { this.message('정밀 동기화 불가: 공식 방송 페이지에서 영상을 확인해 주세요.'); return; }
+    if (!stream.video_id) { this.message('이 방송은 공식 영상 링크에서 시청해 주세요.'); return; }
     await loadPlayerApi(); if (selection !== this.selection) return;
     const host = document.createElement('div'); this.container.append(host);
     this.player = new globalThis.YT.Player(host, { videoId: stream.video_id,
       width: '100%', height: '300', playerVars: { origin: location.origin, playsinline: 1 },
       events: {
-        onReady: () => this.message('동기화 확인 중: DVR와 음성·영상 시간 연결을 확인해야 합니다.'),
-        onError: event => { this.anchor = null; this.message('재생 불가: 공식 플레이어 오류 ' + event.data); },
+        onReady: () => {
+          if (selection !== this.selection) return;
+          this.ready = true; this.setMuted(this.muted);
+          this.message(this.options.viewer ? '재생 버튼을 눌러 시청합니다.' : '동기화 확인 중: DVR와 음성·영상 시간 연결을 확인해야 합니다.');
+        },
+        onError: event => { if (selection !== this.selection) return; this.anchor = null;
+          this.message(this.options.viewer ? '이 영상을 재생할 수 없습니다. 공식 영상 링크를 이용해 주세요.' : '재생 불가: 공식 플레이어 오류 ' + event.data); },
         onStateChange: event => {
-          if ([2, 3, -1, 0].includes(event.data)) { this.anchor = null; this.message('동기화 확인 중: 재생 상태가 변경됐습니다.'); }
+          if (selection !== this.selection) return;
+          if ([2, 3, -1, 0].includes(event.data)) {
+            this.anchor = null;
+            if (!this.options.viewer) this.message('동기화 확인 중: 재생 상태가 변경됐습니다.');
+          }
         }
       } });
   }

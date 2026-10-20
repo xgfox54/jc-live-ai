@@ -20,6 +20,7 @@ export class TranscriptState {
       case 'session': case 'status': this.status.set(event.payload.stream_id, event.payload); break;
       case 'gap': this.gaps.set(event.payload.stream_id, event.payload); break;
       case 'heartbeat': break;
+      case 'stream': break;
       case 'reset': return false;
       default: return false;
     }
