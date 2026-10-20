@@ -7,3 +7,5 @@
 /worker/target/
 /node_modules/
 *.log
+/junit.xml
+/jj-live-ai-*.zip

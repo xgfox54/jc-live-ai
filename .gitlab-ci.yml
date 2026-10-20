@@ -1,0 +1,32 @@
+stages:
+  - test
+  - package
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/Secret-Detection.gitlab-ci.yml
+
+default:
+  interruptible: true
+
+node_tests:
+  stage: test
+  image: node:24.18.0-bookworm
+  script:
+    - node --version
+    - node --test --test-reporter=spec --test-reporter=junit --test-reporter-destination=stdout --test-reporter-destination=junit.xml test/*.test.mjs
+  artifacts:
+    when: always
+    expire_in: 30 days
+    reports:
+      junit: junit.xml
+
+source_package:
+  stage: package
+  image: node:24.18.0-bookworm
+  script:
+    - git archive --format=zip --prefix="jj-live-ai-$CI_COMMIT_SHORT_SHA/" --output="jj-live-ai-$CI_COMMIT_SHORT_SHA.zip" "$CI_COMMIT_SHA"
+  artifacts:
+    expire_in: 30 days
+    paths:
+      - jj-live-ai-*.zip
