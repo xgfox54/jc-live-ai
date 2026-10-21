@@ -5,6 +5,25 @@ const element = (tag, text, className) => {
   return node;
 };
 const clock = ms => { const s = Math.floor(ms / 1000); return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(n => String(n).padStart(2, '0')).join(':'); };
+const providerNames = { anthropic: 'Claude · Anthropic 계정', 'anthropic-apikey': 'Claude · Anthropic API 키',
+  'google-antigravity': 'Antigravity · Claude·Gemini', ollama: 'Ollama' };
+const modelGroup = model => {
+  const slash = model.indexOf('/'); if (slash < 0) return /^gpt-\d/.test(model) ? 'GPT · 기본 계정' : 'Ollama · 이 PC';
+  const prefix = model.slice(0, slash);
+  return providerNames[prefix] ?? (/^gpt-\d/.test(model.slice(slash + 1)) ? 'GPT · ' + prefix : prefix);
+};
+const fillModels = (select, models, selected) => {
+  const groups = new Map();
+  for (const model of models) { const name = modelGroup(model); if (!groups.has(name)) groups.set(name, []); groups.get(name).push(model); }
+  const nodes = [new Option(models.length ? '모델을 선택해 주세요' : '연결 저장 후 모델 목록 확인', '')];
+  if (selected && !models.includes(selected)) nodes.push(new Option(selected + ' (저장된 모델 · 현재 목록에 없음)', selected));
+  for (const [name, items] of groups) {
+    const group = document.createElement('optgroup'); group.label = name + ' (' + items.length + ')';
+    for (const model of items) group.append(new Option(model, model));
+    nodes.push(group);
+  }
+  select.replaceChildren(...nodes); select.value = selected;
+};
 export class AITools {
   constructor({ api, message, refresh }) {
     Object.assign(this, { api, message, changed: refresh }); this.before = null; this.page = null; this.epoch = 0;
@@ -52,9 +71,8 @@ export class AITools {
     $('#ai-model-refresh').disabled = true;
     try {
       const value = await this.json('/models'); const selected = $('#ai-model').value || this.currentModel || '';
-      $('#ai-models').replaceChildren();
-      for (const model of value.models) $('#ai-models').append(new Option(model, model));
-      $('#ai-model').value = selected; $('#ai-model-status').textContent = value.error ?? '모델 ' + value.models.length + '개를 확인했습니다. 저장한 연결의 목록입니다.';
+      fillModels($('#ai-model'), value.models, selected);
+      $('#ai-model-status').textContent = value.error ?? '모델 ' + value.models.length + '개를 확인했습니다. 저장한 연결의 목록입니다.';
     } catch (error) { this.message(error.message); } finally { $('#ai-model-refresh').disabled = false; }
   }
   async refresh() {

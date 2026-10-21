@@ -86,7 +86,7 @@
 <p id="ai-key-status" class="help"></p>
 <p class="help">OpenAI 호환 API 기본 주소를 입력합니다. 프록시 인증키가 없는 로컬 연결은 비워 둡니다. 주소를 바꾸면 기존 키를 지웁니다.</p>
 </div>
-<label>후보정 모델<input name="model" id="ai-model" list="ai-models" maxlength="200" placeholder="연결 저장 후 모델 목록 확인"><datalist id="ai-models"></datalist></label>
+<label>후보정 모델<select name="model" id="ai-model"><option value="">연결 저장 후 모델 목록 확인</option></select></label>
 <button type="button" id="ai-model-refresh" class="secondary">연결 모델 확인</button>
 <p id="ai-model-status" class="help" role="status"></p>
 <label class="check"><input name="automatic" type="checkbox"> 자동 후보정: 새 문장의 후보를 만들고 경고 없는 후보를 이용자 화면에 반영</label>
