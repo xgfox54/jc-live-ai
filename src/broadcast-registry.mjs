@@ -77,10 +77,55 @@ export class BroadcastRegistry {
   saveMinutes(value) {
     this.db.prepare('INSERT INTO minutes VALUES(?,?) ON CONFLICT(broadcast_id) DO UPDATE SET document=excluded.document').run(value.id, JSON.stringify(value));
   }
-  minutes(id) { const row = this.db.prepare('SELECT document FROM minutes WHERE broadcast_id=?').get(id); return row ? JSON.parse(row.document) : null; }
+  revision(id) {
+    return this.db.prepare('SELECT count(*) AS total,coalesce(sum(s.version),0) AS version_sum FROM segments s JOIN broadcast_sessions b ON b.session_id=s.session_id WHERE b.broadcast_id=?').get(id);
+  }
+  // Revision of the AI-corrected rows only: public summaries are built from these rows and go stale only when they change.
+  publishedRevision(id) {
+    return this.db.prepare("SELECT count(*) AS total,coalesce(sum(s.version),0) AS version_sum FROM segments s JOIN broadcast_sessions b ON b.session_id=s.session_id "
+      + "WHERE b.broadcast_id=? AND json_extract(s.document,'$.ai_corrected')=1 AND trim(coalesce(json_extract(s.document,'$.corrected_text'),''))<>''").get(id);
+  }
+  publishedSegments(id) { return this.segments(id).filter(row => row.ai_corrected === true && typeof row.corrected_text === 'string' && row.corrected_text.trim()); }
+  reviewState(key) {
+    if (!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='review_state'").get()) return null;
+    const row = this.db.prepare('SELECT document FROM review_state WHERE id=?').get(key); return row ? JSON.parse(row.document) : null;
+  }
+  participants(id) { return this.reviewState('participants:' + id)?.names ?? {}; }
+  structuredCurrent(id, structured) {
+    if (!structured) return false;
+    if (structured.scope === 'published') return JSON.stringify(structured.revision) === JSON.stringify(this.publishedRevision(id));
+    return structured.revision ? JSON.stringify(structured.revision) === JSON.stringify(this.revision(id))
+      : structured.source_hash === createHash('sha256').update(JSON.stringify(this.segments(id).map(row => [row.segment_id, row.version]))).digest('hex');
+  }
+  summary(id) {
+    const structured = this.reviewState('structured:' + id);
+    if (!structured || structured.scope !== 'published' || !this.structuredCurrent(id, structured)) return null;
+    return { method: 'grounded_ai', model: structured.model, updated_ms: structured.updated_ms,
+      items: structured.notes.flatMap(note => note.summary).map(fact => ({ text: fact.text, quote: fact.quote, source_id: fact.source_id })) };
+  }
+  minutes(id) {
+    const row = this.db.prepare('SELECT document FROM minutes WHERE broadcast_id=?').get(id);
+    if (!row) return null;
+    const value = JSON.parse(row.document);
+    if (!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='review_state'").get()) return value;
+    const read = key => { const row = this.db.prepare('SELECT document FROM review_state WHERE id=?').get(key + ':' + id); return row ? JSON.parse(row.document) : null; };
+    const structured = read('structured'); const manual = read('manual');
+    const current = this.structuredCurrent(id, structured);
+    return { ...value, structured: structured ? { ...structured, stale: !current } : null, manual,
+      method: manual?.markdown ? 'manual_review' : current ? 'grounded_ai' : value.method,
+      updated_ms: Math.max(value.updated_ms, structured?.updated_ms ?? 0, manual?.updated_ms ?? 0),
+      markdown: manual?.markdown || (current ? structured.markdown : value.markdown) };
+  }
   minuteList() {
-    return this.db.prepare('SELECT document FROM minutes ORDER BY rowid DESC').all().map(row => {
-      const value = JSON.parse(row.document);
+    const reviewExists = Boolean(this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='review_state'").get());
+    return this.db.prepare("SELECT broadcast_id AS id,json_extract(document,'$.title') AS title,json_extract(document,'$.scheduled_at') AS scheduled_at,"
+      + "json_extract(document,'$.status') AS status,json_extract(document,'$.updated_ms') AS updated_ms,json_extract(document,'$.segment_count') AS segment_count,"
+      + "json_extract(document,'$.session_count') AS session_count FROM minutes ORDER BY rowid DESC").all().map(value => {
+      if (reviewExists) {
+        const updated = this.db.prepare("SELECT max(json_extract(document,'$.updated_ms')) AS time FROM review_state WHERE id IN (?,?)")
+          .get('structured:' + value.id, 'manual:' + value.id).time;
+        value.updated_ms = Math.max(value.updated_ms, updated ?? 0);
+      }
       return { id: value.id, title: value.title, scheduled_at: value.scheduled_at, status: value.status,
         updated_ms: value.updated_ms, segment_count: value.segment_count, session_count: value.session_count };
     });

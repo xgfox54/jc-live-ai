@@ -1,10 +1,10 @@
 export class TranscriptState {
-  constructor() { this.cursor = 0; this.segments = new Map(); this.status = new Map(); this.gaps = new Map(); }
+  constructor() { this.cursor = 0; this.segments = new Map(); this.status = new Map(); this.gaps = new Map(); this.partials = new Map(); }
   reset(snapshot) {
-    this.segments.clear(); this.status.clear(); this.gaps.clear();
+    this.segments.clear(); this.status.clear(); this.gaps.clear(); this.partials.clear();
     this.cursor = snapshot.event_id;
     for (const segment of snapshot.segments) this.put(segment);
-    for (const state of snapshot.states ?? []) this.status.set(state.stream_id, state);
+    for (const state of snapshot.states ?? []) { this.status.set(state.stream_id, state); if (state.partial) this.partials.set(state.stream_id, state.partial); }
     for (const gap of snapshot.gaps ?? []) this.gaps.set(gap.stream_id, gap);
   }
   put(segment) {
@@ -16,8 +16,9 @@ export class TranscriptState {
   apply(event) {
     if (event.event_id <= this.cursor) return false;
     switch (event.kind) {
-      case 'segment': this.put(event.payload); break;
-      case 'session': case 'status': this.status.set(event.payload.stream_id, event.payload); break;
+      case 'segment': this.put(event.payload); this.partials.delete(event.payload.stream_id); break;
+      case 'partial': this.partials.set(event.payload.stream_id, event.payload); break;
+      case 'session': case 'status': this.status.set(event.payload.stream_id, event.payload); if (!event.payload.partial) this.partials.delete(event.payload.stream_id); break;
       case 'gap': this.gaps.set(event.payload.stream_id, event.payload); break;
       case 'heartbeat': break;
       case 'stream': break;

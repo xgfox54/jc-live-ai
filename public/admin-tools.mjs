@@ -30,9 +30,11 @@ export class AdminTools {
     const form = $('#settings-form');
     for (const key of ['chunkSeconds', 'queueChunks', 'silenceRms']) form.elements[key].value = value.editable[key];
     form.elements.recordAudio.checked = value.editable.recordAudio;
+    form.elements.interim.checked = value.editable.interim === true;
     form.elements.maxRecordingMB.value = value.editable.maxRecordingBytes / 1000000;
     $('#engine-info').textContent = (value.engine.device === 'gpu' ? 'GPU' : 'CPU') + ' · ' + value.engine.model
-      + ' · 탐색 수 ' + value.engine.beam + ' · 배치 ' + value.engine.batch;
+      + ' · 탐색 수 ' + value.engine.beam + ' · 배치 ' + value.engine.batch
+      + (value.engine.manual ? ' · 수동 검토 실행: 자동 탐색·자동 AI·공개 전송 꺼짐' : '');
   }
   async saveSettings(event) {
     event.preventDefault(); const form = event.target; const button = form.querySelector('button'); button.disabled = true;
@@ -40,7 +42,7 @@ export class AdminTools {
     try {
       const response = await this.context.api('/api/admin/settings', { method: 'POST', body: JSON.stringify({
         chunkSeconds: Number(data.chunkSeconds), queueChunks: Number(data.queueChunks), silenceRms: Number(data.silenceRms),
-        recordAudio: data.recordAudio === 'on', maxRecordingBytes: Math.round(Number(data.maxRecordingMB) * 1000000)
+        recordAudio: data.recordAudio === 'on', maxRecordingBytes: Math.round(Number(data.maxRecordingMB) * 1000000), interim: data.interim === 'on'
       }) });
       this.showSettings(await response.json()); this.context.message('설정을 저장했습니다. 다음 수집부터 적용합니다.');
     } catch (error) { this.context.message(error.message); }
@@ -63,7 +65,7 @@ export class AdminTools {
         method: 'POST', body: JSON.stringify({ version: Number(data.version), text: data.text })
       })).json();
       event.target.elements.version.value = saved.version; await this.context.refresh();
-      this.context.message('검토문을 저장했습니다. 이용자 전사문에도 반영됩니다.');
+      this.context.message('검토문을 저장했습니다. 이용자 회의록 받아쓰기에도 반영됩니다.');
     } catch (error) { this.context.message(error.message); }
   }
   stopPreview() { this.player.dispose(); this.previewId = null; $('#sync-status').textContent = '점검할 영상을 선택해 주세요.'; }

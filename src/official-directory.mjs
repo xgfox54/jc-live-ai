@@ -11,7 +11,7 @@ export function plain(value) {
 }
 export async function councilHtml(url, signal) {
   const target = new URL(url);
-  if (target.origin !== 'https://www.council.jeju.kr' || !/^\/broadcast\/(?:index|schedule)\.do$/.test(target.pathname))
+  if (target.origin !== 'https://www.council.jeju.kr' || !/^\/broadcast\/(?:index|schedule|broad)\.do$/.test(target.pathname))
     throw new Error('공식 방송 목록·상세 주소만 조회합니다.');
   const response = await fetch(target, { redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]) });
   if (!response.ok || !response.headers.get('content-type')?.includes('text/html')) throw new Error('의회 방송 페이지 조회에 실패했습니다.');

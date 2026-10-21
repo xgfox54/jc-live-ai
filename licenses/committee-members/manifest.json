@@ -1,0 +1,343 @@
+{
+  "checked_at": "2026-10-20T14:50:13.077Z",
+  "pages": [
+    {
+      "id": "O01",
+      "source_url": "https://www.council.jeju.kr/council/committees/committee/committee01.do",
+      "sha256": "2af872fd139987ad985db742f77245e8e15e29a3c101502d95f7908843a8d0a2",
+      "members": 11
+    },
+    {
+      "id": "O02",
+      "source_url": "https://www.council.jeju.kr/council/committees/committee/committee02.do",
+      "sha256": "fa1c8cb2fef216ed0d72fb6c10a01770ec1865c1c52518f7dfa892f1e9b1f4c0",
+      "members": 7
+    },
+    {
+      "id": "O03",
+      "source_url": "https://www.council.jeju.kr/council/committees/committee/committee03.do",
+      "sha256": "409afeeac2b24e07b0b5e4be2d0caed2fab1c804229c2ca30f2b562f2e254f7c",
+      "members": 6
+    },
+    {
+      "id": "O22",
+      "source_url": "https://www.council.jeju.kr/council/committees/committee/committee08.do",
+      "sha256": "f419f16a9d381a012917c3f6dcb3fdd5d28ecbfdad43256b64f913c47dc1a455",
+      "members": 6
+    },
+    {
+      "id": "O04",
+      "source_url": "https://www.council.jeju.kr/council/committees/committee/committee04.do",
+      "sha256": "4144e8421217cc32cfbabd6b30f659b09416a63412b070696359602923e37099",
+      "members": 6
+    },
+    {
+      "id": "O05",
+      "source_url": "https://www.council.jeju.kr/council/committees/committee/committee05.do",
+      "sha256": "d9dc7aa62ec9094b725c80d101bec84da7f64ca952ebad498cd7616ad476deab",
+      "members": 6
+    },
+    {
+      "id": "O06",
+      "source_url": "https://www.council.jeju.kr/council/committees/committee/committee06.do",
+      "sha256": "bc58f2792f6381dee73de3537ff5d1c3669dcc3a8194b66a4633c37fb12c5fc9",
+      "members": 6
+    },
+    {
+      "id": "O07",
+      "source_url": "https://www.council.jeju.kr/council/committees/committee/committee07.do",
+      "sha256": "c8fd8b46aa4c0cef77d9c8a33a1435eafaf130e705a13f1ae2ac4769b08ea98a",
+      "members": 7
+    },
+    {
+      "id": "O08",
+      "source_url": "https://www.council.jeju.kr/council/committees/special/committee08/introduce.do",
+      "sha256": "f5c3b5a19fceba949b8e57e679716b8a6d0d7a983a1abc01a3c558772afbfc69",
+      "members": 15
+    },
+    {
+      "id": "O09",
+      "source_url": "https://www.council.jeju.kr/council/committees/special/committee09/introduce.do",
+      "sha256": "0eb0ae5da3a1b0aa072a6b9a619c6bc6568dcdd16b2af3466f3ec82f42e12e5c",
+      "members": 12
+    },
+    {
+      "id": "special43",
+      "source_url": "https://www.council.jeju.kr/council/committees/special/committee25/introduce.do",
+      "sha256": "8e8cadfc35063f2eddb9c0d3c07f7c1cf5f0196c1f29c4e3720b865f26f51cf4",
+      "members": 9
+    },
+    {
+      "id": "regulation",
+      "source_url": "https://www.council.jeju.kr/council/committees/special/committee26/introduce.do",
+      "sha256": "3b5a58cd0c77689ba2df965502998179cb91a5cd1f575c8a4722855df317887a",
+      "members": 9
+    }
+  ],
+  "images": [
+    {
+      "photo": "/member-ce323af8-0fb7-420f-baba-9764b90b6ca5.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/ce323af8-0fb7-420f-baba-9764b90b6ca5.jpg",
+      "bytes": 126675,
+      "sha256": "83a7e57d0664027b2ccae26566e8304f05524b24f731b5f233be3242fb308be2"
+    },
+    {
+      "photo": "/member-1075ece6-e0e8-4315-a247-2aee3e8b5be9.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/1075ece6-e0e8-4315-a247-2aee3e8b5be9.jpg",
+      "bytes": 126163,
+      "sha256": "f59cf8da59dfd9d19748c0c6470953980d8f497c677b83c99deb2015ed88ba00"
+    },
+    {
+      "photo": "/member-dfd7b18b-ffd2-4507-937b-31f97f52f350.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/dfd7b18b-ffd2-4507-937b-31f97f52f350.jpg",
+      "bytes": 149923,
+      "sha256": "9d78f7463f35a52ca5b600bf19fd6567c9f7c191da985c7205a50d44ae8af782"
+    },
+    {
+      "photo": "/member-39188983-0828-4e06-af55-b6ee9cf33e47.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/39188983-0828-4e06-af55-b6ee9cf33e47.jpg",
+      "bytes": 96609,
+      "sha256": "38d550a576baa2e4c67065f2953d8a24030667444cbd718db6d1bf133ee04557"
+    },
+    {
+      "photo": "/member-44b3558c-276e-428d-a739-3ecec338e1a1.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/44b3558c-276e-428d-a739-3ecec338e1a1.jpg",
+      "bytes": 75169,
+      "sha256": "88b5588f84a0e8d395d279f323a2d50b4fa42173c04c0940fba7638cab0c86fc"
+    },
+    {
+      "photo": "/member-9a1dab73-2c87-4dc4-a21a-745e1945a40e.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/9a1dab73-2c87-4dc4-a21a-745e1945a40e.jpg",
+      "bytes": 132192,
+      "sha256": "01b941f217dd49f8dcaef58e717de83a9157c8b070be99a20cdcd8b7f67dd2f1"
+    },
+    {
+      "photo": "/member-73a3cb7c-9590-4ff0-83f2-8c1171ef0463.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/73a3cb7c-9590-4ff0-83f2-8c1171ef0463.jpg",
+      "bytes": 109973,
+      "sha256": "690196c20cedef9d61ea30b275e4283138da289c73a2820f72998772e0368152"
+    },
+    {
+      "photo": "/member-fbecb3f8-a578-4416-ad7e-9487d7295526.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/fbecb3f8-a578-4416-ad7e-9487d7295526.jpg",
+      "bytes": 84309,
+      "sha256": "288d928399d4bf2738403e9b74b7af267ba4013d3eac6283485e8abc8df65f55"
+    },
+    {
+      "photo": "/member-475225cd-b6ee-4170-a633-b6177250fbb7.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/475225cd-b6ee-4170-a633-b6177250fbb7.jpg",
+      "bytes": 110363,
+      "sha256": "b832c68bed000511fc2b6667b5b067d07c76b96b8988b8e97f04ad62118ab822"
+    },
+    {
+      "photo": "/member-3e5d12f6-24c0-4a94-876e-1b367502ed82.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/3e5d12f6-24c0-4a94-876e-1b367502ed82.jpg",
+      "bytes": 113721,
+      "sha256": "a35b1f7cfb2e684bdb9d20ee93522c3759bdca5d51a1b3b30f683c303deb3953"
+    },
+    {
+      "photo": "/member-62f3faff-b59e-4d72-bd52-bd52e39d0d29.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/62f3faff-b59e-4d72-bd52-bd52e39d0d29.jpg",
+      "bytes": 97326,
+      "sha256": "eb3022e89f8e483c44a739e41314daeead0698d84abc2b105e9f939931a3d841"
+    },
+    {
+      "photo": "/member-1933b94c-b29f-404b-955a-c849d5a812ef.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/1933b94c-b29f-404b-955a-c849d5a812ef.jpg",
+      "bytes": 83605,
+      "sha256": "66666c94a215fc40ad16fccc808b8ebb68149c48c66a72693f5f3939f6114fff"
+    },
+    {
+      "photo": "/member-7df176d8-773c-4222-a5c7-8206a5b96836.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/7df176d8-773c-4222-a5c7-8206a5b96836.jpg",
+      "bytes": 120019,
+      "sha256": "0b6ff72c58cd41a6f47d93ee6dc429afa9f4bc05cfa1eba3cb2e479320b87cfc"
+    },
+    {
+      "photo": "/member-df042149-d605-4756-bb73-94938ad2f16e.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/df042149-d605-4756-bb73-94938ad2f16e.jpg",
+      "bytes": 98416,
+      "sha256": "b263cce607728c94696ad6cc04aad494990bce2ea1786b64b4f4c57983af8c0e"
+    },
+    {
+      "photo": "/member-c4a5bd25-a2eb-4c1c-9e6f-1aea0f678a05.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/c4a5bd25-a2eb-4c1c-9e6f-1aea0f678a05.jpg",
+      "bytes": 153567,
+      "sha256": "c103762da9004921356582355c5fdcbed9b5f84eea28a241ac676933ee5f906d"
+    },
+    {
+      "photo": "/member-cb0257ca-33e6-44ee-89cd-4ae1d3a07a51.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/cb0257ca-33e6-44ee-89cd-4ae1d3a07a51.jpg",
+      "bytes": 106300,
+      "sha256": "76348dd137b11ad783ac1a399d99de67e7fb31d526f45c595f4aa22ed5f6423e"
+    },
+    {
+      "photo": "/member-6582701d-ae17-4e88-84dc-fd6090241862.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/6582701d-ae17-4e88-84dc-fd6090241862.jpg",
+      "bytes": 98339,
+      "sha256": "c18624fc45ece0582bddc7408c0bda8f2ce1436ce69d706eaf3e1d339cb60d34"
+    },
+    {
+      "photo": "/member-0291239e-97b7-45af-8367-8812361a908f.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/0291239e-97b7-45af-8367-8812361a908f.jpg",
+      "bytes": 104009,
+      "sha256": "b451b6aced1a9e4c7b8aaa1259afeaf36075392af6e9f358c1c288e6c21bd3e1"
+    },
+    {
+      "photo": "/member-af14d207-ea0a-427b-b536-a13056b9bb51.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/af14d207-ea0a-427b-b536-a13056b9bb51.jpg",
+      "bytes": 119310,
+      "sha256": "623fb70c5c0d5da930461ac8714e2a5d232044093475fb3491a8209b606d1cc7"
+    },
+    {
+      "photo": "/member-4d436d5e-6f26-47b3-99ba-67ff87fcbc92.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/4d436d5e-6f26-47b3-99ba-67ff87fcbc92.jpg",
+      "bytes": 87203,
+      "sha256": "4544dc3b1c424a49664a711e46411ded4a19de6617f23309095f5b8f49961e24"
+    },
+    {
+      "photo": "/member-e0a34c27-525f-4b15-97cd-475d807bb2e5.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/e0a34c27-525f-4b15-97cd-475d807bb2e5.jpg",
+      "bytes": 105234,
+      "sha256": "2bc266c97746eaf5a0f9c0c8a495a7c0834d79a4a68325da31124e81fafbf681"
+    },
+    {
+      "photo": "/member-686f7af9-04de-43bd-b635-df2019560737.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/686f7af9-04de-43bd-b635-df2019560737.jpg",
+      "bytes": 96503,
+      "sha256": "91b6034b8df8ac6027a3d619a2cfb22ab62c98e12e7c608c942f96a9d50f4de0"
+    },
+    {
+      "photo": "/member-3f0129a2-14cf-4cfc-b969-89660d5b919f.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/3f0129a2-14cf-4cfc-b969-89660d5b919f.jpg",
+      "bytes": 107689,
+      "sha256": "2f914737c24b95a11edf6509cde0b65478859d2a2a75b8de303fadd8e36e82be"
+    },
+    {
+      "photo": "/member-eceaa3d3-0c10-4c11-8f94-1ecba5ccef59.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/eceaa3d3-0c10-4c11-8f94-1ecba5ccef59.jpg",
+      "bytes": 133583,
+      "sha256": "fb80b35477b4ba7ad15d42c87cc2c45fe945d3376d426c62bbeef2942ae1a498"
+    },
+    {
+      "photo": "/member-80d3aa84-bbc1-4254-991b-05570725f8b2.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/80d3aa84-bbc1-4254-991b-05570725f8b2.jpg",
+      "bytes": 118131,
+      "sha256": "da02719150b41a61fb0743cdcfacbe717f50652e47ae7fa65bd639b51aa75bb2"
+    },
+    {
+      "photo": "/member-d3d16aa3-ff97-4ee6-a9a0-2815c64364b8.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/d3d16aa3-ff97-4ee6-a9a0-2815c64364b8.jpg",
+      "bytes": 100414,
+      "sha256": "af638dc5e1eab64f6d54bfc9c89377d77710485564a3295249fb2fabe1008f93"
+    },
+    {
+      "photo": "/member-d431858b-bc85-4827-9f88-2e0a2a268a77.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/d431858b-bc85-4827-9f88-2e0a2a268a77.jpg",
+      "bytes": 99775,
+      "sha256": "81ffafea46ddf5306977e18616da9a5e56dc60efd7b4ad6ede2497a9621eee59"
+    },
+    {
+      "photo": "/member-25d7c5b6-1272-4f7a-a809-ee51673ae404.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/25d7c5b6-1272-4f7a-a809-ee51673ae404.jpg",
+      "bytes": 98964,
+      "sha256": "dfd7b843cc9881af0e55f892caea2bc3fa0db704cf5eb155bc745b48fb7eda5b"
+    },
+    {
+      "photo": "/member-d6d3a894-375a-4098-a202-4e90084c613a.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/d6d3a894-375a-4098-a202-4e90084c613a.jpg",
+      "bytes": 82795,
+      "sha256": "17848c6ff1a284c89cdf489569352e896fee0f55c71ee04d9247ab330a1ebeef"
+    },
+    {
+      "photo": "/member-3372f1b9-ce48-4288-b45e-d9c1d8dc8eeb.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/3372f1b9-ce48-4288-b45e-d9c1d8dc8eeb.jpg",
+      "bytes": 115285,
+      "sha256": "c6093a62651ae3bdc7f304f3a05d70f930b4aac2f36efd0fa14f1043797d1669"
+    },
+    {
+      "photo": "/member-4afd2964-4bc4-437d-81c3-29fa485fd5de.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/4afd2964-4bc4-437d-81c3-29fa485fd5de.jpg",
+      "bytes": 107189,
+      "sha256": "d71e34424925d4862ae0119a6df34066ee944701fac4835d1b46fc96c1b6d260"
+    },
+    {
+      "photo": "/member-d5a552f6-6f69-4018-86a7-7a8676c1e016.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/d5a552f6-6f69-4018-86a7-7a8676c1e016.jpg",
+      "bytes": 106182,
+      "sha256": "53f3d93d279d6e4495a40cb85dbb04e56aa14dadea59448012792dd3e88538ac"
+    },
+    {
+      "photo": "/member-c780f24a-8397-4448-84bf-cb5f69596ede.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/c780f24a-8397-4448-84bf-cb5f69596ede.jpg",
+      "bytes": 91111,
+      "sha256": "dfa5bc65d5c30930ce8cd9e4bc9c6d5f9e6b793ce16ba657b3f83f2576759af2"
+    },
+    {
+      "photo": "/member-245f90b0-e34e-4fd2-bedd-9407043d5039.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/245f90b0-e34e-4fd2-bedd-9407043d5039.jpg",
+      "bytes": 115374,
+      "sha256": "58cfe82cabc7f78e5b202ba6987c259bd658a152ab0eac1bd8758660160b30b8"
+    },
+    {
+      "photo": "/member-df284500-4bff-4719-b596-4300214fc511.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/df284500-4bff-4719-b596-4300214fc511.jpg",
+      "bytes": 120372,
+      "sha256": "d99d045d6b15584c0e0a8796c26405bd90f84a14a7d9ea0d641822cbabd3c717"
+    },
+    {
+      "photo": "/member-20a9c0c5-a94e-4434-8141-589b0e70fe25.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/20a9c0c5-a94e-4434-8141-589b0e70fe25.jpg",
+      "bytes": 97073,
+      "sha256": "19b6beff6759959979c0b4252a5ddbcbbac2cc1703e1e4718ce29759c3ae4ae9"
+    },
+    {
+      "photo": "/member-5a4f2515-605b-4515-b1c2-8aaa3bf4d19b.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/5a4f2515-605b-4515-b1c2-8aaa3bf4d19b.jpg",
+      "bytes": 122520,
+      "sha256": "dc085911b58d4ff828cb32fe11cf593a4647d4149ca8983104696dd1bc06ee85"
+    },
+    {
+      "photo": "/member-abbbeb92-c5ea-4b70-8c9f-6d54d525347c.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/abbbeb92-c5ea-4b70-8c9f-6d54d525347c.jpg",
+      "bytes": 102002,
+      "sha256": "ef5d84a4bae2519649e682f13c12f3ea696e82eaadf375d14ee0cf4cbbe45d0f"
+    },
+    {
+      "photo": "/member-49c74b52-6dae-4a7f-aa33-4636f1f19ea6.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/49c74b52-6dae-4a7f-aa33-4636f1f19ea6.jpg",
+      "bytes": 83121,
+      "sha256": "efc8d51e0641b8767fbdbaff55e6ad633ba02a86afdf9649c9e4634887eed7a3"
+    },
+    {
+      "photo": "/member-17509b45-f666-4ea6-9483-e880e76fa31c.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/17509b45-f666-4ea6-9483-e880e76fa31c.jpg",
+      "bytes": 83983,
+      "sha256": "852c7f76d2c8b8fe9fc41f75acbe87fab8e4cb79b67305d38b2fe321be0a732e"
+    },
+    {
+      "photo": "/member-06e1b07e-c8e5-4be3-a1c7-18652d3a5f67.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/06e1b07e-c8e5-4be3-a1c7-18652d3a5f67.jpg",
+      "bytes": 116161,
+      "sha256": "bacf94a5ed30447ba6a536f3cf19b0dd87a7d72a9703fa1687510005c83d114f"
+    },
+    {
+      "photo": "/member-a829aca8-75c1-4785-889b-6900ed529e9c.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/a829aca8-75c1-4785-889b-6900ed529e9c.jpg",
+      "bytes": 87390,
+      "sha256": "fa86a854087c174afa8cadaca1099a7f09a190eb98a9028bbc4d99fbfad38a68"
+    },
+    {
+      "photo": "/member-39d688bd-8c0a-4bae-913d-28fa4056c5b1.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/39d688bd-8c0a-4bae-913d-28fa4056c5b1.jpg",
+      "bytes": 99914,
+      "sha256": "241262f191a2e57d66efe2308b96cc17dc98ca2ea13b79d8b0f8633dabeb2267"
+    },
+    {
+      "photo": "/member-db293291-ea13-4aa1-9daa-a0f307ec40e0.jpg",
+      "source_url": "https://www.council.jeju.kr/upload/member/db293291-ea13-4aa1-9daa-a0f307ec40e0.jpg",
+      "bytes": 106129,
+      "sha256": "fcd0654f42b857c79f95d412897ccd9f7a601913d4c9efb4abc371190113d04b"
+    }
+  ]
+}

@@ -21,6 +21,10 @@ export class AutomationTools {
   clear() { this.version++; document.querySelector('#discovery-records').replaceChildren(); document.querySelector('#discovery-status').textContent = ''; }
   render(value) {
     this.enabled = value.enabled;
+    const cloud = value.cloud_sync;
+    document.querySelector('#cloud-status').textContent = cloud?.enabled
+      ? (cloud.error || '공개 웹사이트 동기화 ' + (cloud.published_ms ? '최근 확인 ' + new Date(cloud.published_ms).toLocaleTimeString('ko-KR') : '대기 중'))
+      : cloud?.error || '공개 웹사이트 동기화가 설정되지 않았습니다.';
     document.querySelector('#discovery-toggle').textContent = value.enabled ? '신규 주소 탐색 끄기' : '신규 주소 탐색 켜기';
     const names = { waiting: '첫 조회 대기', checking: '공식 목록 확인 중', watching: '신규 방송 확인 대기', retry: '조회 재시도 대기' };
     document.querySelector('#discovery-status').textContent = (value.enabled ? names[value.phase] ?? '조회 대기' : '신규 주소 탐색 꺼짐')
@@ -38,7 +42,7 @@ export class AutomationTools {
       const title = document.createElement('strong'); title.textContent = item.title;
       const note = document.createElement('p'); note.className = 'help';
       note.textContent = item.suspended ? '관리자가 자동 감지를 중지했습니다.' : item.completed ? '수집 완료 · 회의록 검토 가능'
-        : item.queued ? '등록 대기 · 사용 가능한 방송 슬롯이 필요합니다.' : item.phase === 'live' ? '생방송 감지 · ' + (item.stream_id ?? '등록 대기')
+        : item.queued ? '등록 대기 · ' + (item.queue_reason ?? '해당 위원회 채널의 수집 종료를 기다립니다.') : item.phase === 'live' ? '생방송 감지 · ' + (item.stream_id ?? '등록 대기')
         : item.phase === 'waiting' ? '방송 시작 대기 · ' + (item.stream_id ?? '등록 대기') : '생방송 종료 또는 상태 확인 대기';
       row.append(title, note); list.append(row);
     }

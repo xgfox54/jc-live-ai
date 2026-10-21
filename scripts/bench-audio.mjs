@@ -78,7 +78,7 @@ try {
       windowsHide: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc']
     });
     await viewerCommand({ action: 'connect', base: 'http://127.0.0.1:' + service.server.address().port,
-      token: config.viewerToken, count: 300 });
+      token: config.viewerToken, count: 300, publicFeed: config.publicFeed === true });
   }
   const begin = Date.now(); const cpuStart = process.cpuUsage();
   console.error('stage: feed-audio');
@@ -148,7 +148,8 @@ try {
     engine: engine.metadata, model_sha256: createHash('sha256').update(readFileSync(config.model)).digest('hex'),
     chunk_seconds: config.chunkSeconds, overlap_seconds: 0, batch: 1, beam: config.beam, silence_rms: config.silenceRms,
     metrics: scheduler.metrics, by_stream: byStream, states: scheduler.states(), viewers: viewerResults,
-    viewer_connections_end: service.feed.clients.size,
+    viewer_connections_end: service.feed.clients.size + service.viewerFeed.clients.size,
+    viewer_endpoint: config.publicFeed ? '/api/viewer/events' : '/api/events',
     expected_events: expectedEvents,
     missing_events: viewerProcess ? expectedEvents - viewerResults.received_events : null,
     missing_segment_versions: viewerResults.missing_segment_versions,

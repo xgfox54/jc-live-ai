@@ -1,19 +1,22 @@
 <!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="JC-LIVE에서 원하는 방송을 최대 2개까지 함께 시청하고 전사문을 확인합니다.">
+<meta name="description" content="JC-LIVE에서 원하는 방송을 최대 2개까지 함께 시청하고 회의록 받아쓰기를 확인합니다.">
 <title>JC-LIVE · 방송 시청</title><link rel="stylesheet" href="/style.css">
-<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png"><link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="icon" type="image/png" sizes="1254x1254" href="/icon-192.png?v=e16bba8a"><link rel="apple-touch-icon" href="/icon-192.png?v=e16bba8a">
 <script type="module" src="/app.mjs"></script></head>
 <body>
-<header><a class="brand" href="/"><img src="/icon-192.png" width="40" height="40" alt=""><span>JC-<strong>LIVE</strong></span></a><div class="row"><a href="/minutes">회의록</a><span id="connection" role="status">방송 목록을 불러옵니다</span></div></header>
+<header><a class="brand" href="/" aria-label="JC-LIVE"><img src="/logo-jc-live.png?v=2caf416b" width="182" height="44" alt="JC-LIVE"></a><div class="row"><a href="/minutes">회의록</a><span id="connection" role="status">방송 목록을 불러옵니다</span></div></header>
 <main>
-<section class="intro"><div><p class="eyebrow">방송 시청</p><h1>원하는 방송을 선택해 주세요</h1>
+<section class="intro"><div><p class="eyebrow">위원회별 방송 시청</p><h1>위원회 채널을 선택해 주세요</h1>
 <p>최대 2개 방송을 함께 볼 수 있습니다. 선택한 방송을 다시 누르면 시청을 종료합니다.</p></div>
 <p class="selection-count" id="selection-count">0 / 2 선택</p></section>
-<section id="channels" class="channel-picker" aria-label="방송 8개 중 선택"></section>
+<p class="service-disclaimer">※ JC-LIVE는 의회에서 공식 제공하는 서비스가 아닙니다. 비공식 서비스인 점 참고바랍니다.</p>
+<section id="channels" class="channel-picker" aria-label="위원회별 방송 채널 선택"></section>
 <div class="notice-row"><p id="notice" role="status"></p><button id="retry" class="secondary" hidden>다시 연결</button></div>
-<section id="empty-view" class="empty-view"><h2>시청할 방송을 선택해 주세요</h2><p>선택한 영상과 전사문이 이곳에 표시됩니다.</p></section>
+<section id="empty-view" class="empty-view"><h2>시청할 방송을 선택해 주세요</h2><p>선택한 영상과 회의록 받아쓰기가 이곳에 표시됩니다.</p></section>
 <section id="watch-grid" class="watch-grid" aria-label="선택한 방송"></section>
-<footer>전사문은 AI가 작성한 초안입니다. 영상과 표시 시점이 다를 수 있으며, 인명과 수치는 원음 확인이 필요합니다.</footer>
+<section id="schedule" class="schedule surface" aria-labelledby="schedule-title" hidden><div class="schedule-heading"><h2 id="schedule-title">방송 예정</h2><a href="https://www.council.jeju.kr/broadcast/schedule.do" target="_blank" rel="noopener noreferrer">의회 생방송 일정 보기</a></div>
+<p class="help">제주특별자치도의회 홈페이지의 생방송 일정을 30분마다 확인해 변경 내용을 반영합니다.</p><div id="schedule-list"></div></section>
+<footer>실시간 회의록은 AI가 작성한 초안입니다. AI 후보정이 완료된 문장만 표시합니다. 후보정 전 문장은 공개하지 않습니다. 영상과 표시 시점이 다를 수 있습니다. 이름, 장소 등 고유명사와 숫자는 틀릴 수 있으니 원본 영상 다시보기로 확인해주세요</footer>
 </main></body></html>

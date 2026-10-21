@@ -8,4 +8,14 @@
 /node_modules/
 *.log
 /junit.xml
-/jj-live-ai-*.zip
+/jc-live-ai-*.zip
+/.vercel/
+.env
+.env.*
+*.pem
+*.key
+*.secret
+/web/.vercel/
+/web/public/
+/web/node_modules/
+__pycache__/

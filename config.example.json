@@ -11,6 +11,10 @@
   "chunkSeconds": 10,
   "queueChunks": 12,
   "silenceRms": 0,
+  "liveDiarization": true,
+  "diarizationPython": "python",
+  "diarizationDirectory": "bin/diarization",
+  "diarizationChunkFrames": 64,
   "maxClients": 350,
   "maxBytes": 262144,
   "ffmpeg": "bin/ffmpeg.exe",
@@ -18,6 +22,6 @@
   "recordAudio": true,
   "recordings": "data/recordings",
   "minutesDirectory": "data/minutes",
-  "maxRecordingBytes": 460800000,
+  "maxRecordingBytes": 1382400000,
   "files": {}
 }

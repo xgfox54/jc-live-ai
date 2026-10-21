@@ -1,5 +1,6 @@
 import { councilHtml, parseCouncilDirectory, councilCandidate, youtubeDirectory, DIRECTORY_URLS, CHANNEL } from './official-directory.mjs';
 import { viewerStream } from './viewer.mjs';
+import { matchCommittee } from './committees.mjs';
 
 export class BroadcastDiscovery {
   constructor(context) {
@@ -48,6 +49,8 @@ export class BroadcastDiscovery {
         if (this.closed || this.controller.signal.aborted || !this.registry.settings().enabled) return;
         for (const item of items) this.registry.upsert(item);
         this.assign();
+        try { await this.archive?.run(this.controller.signal); }
+        catch (error) { if (!this.controller.signal.aborted) this.status.archive_error = error.message; }
         this.status = { ...this.status, phase: 'watching', checked_ms: Date.now(), error: null };
       } catch (error) {
         if (!this.closed && !this.controller.signal.aborted) this.status = { ...this.status, phase: 'retry', error: error.message, checked_ms: Date.now() };
@@ -69,30 +72,34 @@ export class BroadcastDiscovery {
     const records = this.registry.list().filter(item => !item.suspended && !item.completed && ['live', 'waiting'].includes(item.phase))
       .sort((a, b) => (a.phase === 'live' ? -1 : 1) - (b.phase === 'live' ? -1 : 1));
     for (const record of records) {
+      const committee = matchCommittee(record);
+      if (!committee) { this.registry.save({ ...record, queued: true, queue_reason: '위원회를 확인하지 못했습니다. 관리자가 소관 위원회를 확인해 주세요.' }); continue; }
       const streams = this.store.streams();
       const existing = streams.find(stream => stream.broadcast_id === record.id || (record.video_id && stream.video_id === record.video_id));
       if (existing) {
+        if (existing.stream_id !== committee.stream_id) { this.registry.save({ ...record, queued: true, queue_reason: '같은 방송이 다른 위원회 채널에 등록되어 있습니다. 기존 등록을 확인해 주세요.' }); continue; }
         if (!existing.broadcast_id) this.store.saveStream({ ...existing, broadcast_id: record.id });
         this.registry.save({ ...record, stream_id: existing.stream_id, queued: false,
           suspended: existing.auto_start === false || record.suspended });
         continue;
       }
-      const id = Array.from({ length: 8 }, (_, i) => 'ch' + (i + 1)).find(id => {
-        const stream = streams.find(item => item.stream_id === id);
-        if (!stream) return true;
-        const archived = stream.broadcast_id && this.registry.get(stream.broadcast_id);
-        return stream.auto_discovered && !this.monitor.active(id) && !this.monitor.pending.has(id)
-          && archived && (archived.completed || archived.suspended || ['ended', 'offline'].includes(archived.phase)
-            || (record.phase === 'live' && archived.phase === 'waiting'));
-      });
-      if (!id) { this.registry.save({ ...record, queued: true }); continue; }
+      const id = committee.stream_id;
+      const previous = streams.find(item => item.stream_id === id);
+      const archived = previous?.broadcast_id && this.registry.get(previous.broadcast_id);
+      const free = !previous || previous.kind === 'pending' || (previous.auto_discovered && archived
+        && (archived.completed || archived.suspended || ['ended', 'offline'].includes(archived.phase)
+          || (record.phase === 'live' && archived.phase === 'waiting')));
+      if (!free || this.monitor.active(id) || this.monitor.pending.has(id)) {
+        this.registry.save({ ...record, queued: true, queue_reason: '해당 위원회 채널을 사용 중입니다. 기존 수집 종료 후 다시 확인합니다.' }); continue;
+      }
+      if (archived && !archived.completed) this.registry.save({ ...archived, queued: true, stream_id: null });
       this.monitor.invalidate(id);
-      const stream = { stream_id: id, name: record.title.slice(0, 100), page_url: record.page_url, video_id: record.video_id ?? null,
+      const stream = { stream_id: id, name: committee.name, committee_id: committee.id, page_url: record.page_url, video_id: record.video_id ?? null,
         kind: record.kind, approved: true, approval_note: '사용자가 승인한 제주특별자치도의회 공식 방송 자동 수집',
         prompt: '', auto_start: true, auto_discovered: true, broadcast_id: record.id, capture_from_start: true,
         resolved_kind: record.resolved_kind, media_url: record.media_url };
       this.store.saveStream(stream); this.store.event('stream', viewerStream(stream));
-      this.registry.save({ ...record, stream_id: id, queued: false });
+      this.registry.save({ ...record, stream_id: id, queued: false, queue_reason: null });
     }
   }
   setEnabled(enabled) {

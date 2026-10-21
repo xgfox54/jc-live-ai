@@ -3,16 +3,17 @@ import { basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { HttpError } from './validate.mjs';
 
-const defaults = { chunkSeconds: 10, queueChunks: 12, silenceRms: 0, recordAudio: true, maxRecordingBytes: 460800000 };
+const defaults = { chunkSeconds: 10, queueChunks: 12, silenceRms: 0, recordAudio: true, maxRecordingBytes: 1382400000, interim: false };
 export function settingsView(config) {
   return { editable: Object.fromEntries(Object.keys(defaults).map(key => [key, config[key] ?? defaults[key]])),
-    engine: { device: config.device, beam: config.beam, batch: config.batch, model: basename(config.model ?? '') } };
+    engine: { device: config.device, beam: config.beam, batch: config.batch, model: basename(config.model ?? ''), manual: config.manualMode === true } };
 }
 export function saveSettings(context, changes) {
+  changes = { interim: context.config.interim ?? false, ...changes };
   if (Object.keys(changes).length !== Object.keys(defaults).length
     || Object.keys(changes).some(key => !Object.hasOwn(defaults, key))) throw new HttpError(400, '지원하지 않는 설정입니다.');
   if (![5, 10].includes(changes.chunkSeconds) || !Number.isInteger(changes.queueChunks)
-    || changes.queueChunks < 2 || changes.queueChunks > 24 || typeof changes.recordAudio !== 'boolean'
+    || changes.queueChunks < 2 || changes.queueChunks > 24 || typeof changes.recordAudio !== 'boolean' || typeof changes.interim !== 'boolean'
     || !Number.isFinite(changes.silenceRms) || changes.silenceRms < 0 || changes.silenceRms > 0.02
     || !Number.isSafeInteger(changes.maxRecordingBytes)
     || changes.maxRecordingBytes < 320000 || changes.maxRecordingBytes > 3200000000)

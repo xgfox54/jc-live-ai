@@ -3,9 +3,13 @@ import { subscribe } from './subscription.mjs';
 import { startCapture, stopCapture, captureCount } from './capture.mjs';
 import { AdminTools } from './admin-tools.mjs';
 import { AutomationTools } from './automation.mjs';
+import { AITools } from './ai-tools.mjs';
+import { Workspace } from './workspace.mjs';
+import './display.mjs';
+import { CHANNEL_IDS, committeeForChannel } from './committees.mjs';
 
 const $ = selector => document.querySelector(selector);
-const ids = Array.from({ length: 8 }, (_, i) => 'ch' + (i + 1));
+const ids = CHANNEL_IDS;
 const state = new TranscriptState(); let streams = []; let token = ''; let subscription;
 let monitoring = []; let monitorTimer;
 const autoSupported = stream => ['youtube', 'council'].includes(stream?.kind);
@@ -20,13 +24,15 @@ async function api(path, options = {}) {
   }
   return response;
 }
-for (const selector of ['#register-channel', '#manage-channel', '#review-channel', '#sync-channel']) {
+for (const selector of ['#register-channel', '#manage-channel', '#review-channel', '#sync-channel', '#import-channel']) {
   for (const [index, id] of ids.entries()) {
-    const option = document.createElement('option'); option.value = id; option.textContent = '방송 ' + (index + 1); $(selector).append(option);
+    const option = document.createElement('option'); option.value = id; option.textContent = (index + 1) + '. ' + committeeForChannel(id).name; $(selector).append(option);
   }
 }
 const tools = new AdminTools({ api, state, message, streams: () => streams, refresh: () => refresh() });
 const automation = new AutomationTools({ api, message });
+const ai = new AITools({ api, message, refresh });
+const workspace = new Workspace({ api, message });
 const cards = new Map();
 for (const [index, id] of ids.entries()) {
   const card = document.createElement('button'); card.className = 'admin-channel secondary';
@@ -38,6 +44,8 @@ function fillStream(id) {
   const form = $('#register'); form.reset(); form.elements.stream_id.value = id; $('#manage-channel').value = id;
   const stream = streams.find(item => item.stream_id === id);
   if (stream) for (const name of ['name', 'kind', 'page_url', 'approval_note', 'prompt']) form.elements[name].value = stream[name] ?? '';
+  form.elements.name.value = committeeForChannel(id).name; form.elements.name.readOnly = true;
+  if (stream?.kind === 'pending') form.elements.kind.value = 'youtube';
   form.elements.approved.checked = stream?.approved === true;
   form.elements.auto_start.checked = stream ? autoSupported(stream) && stream.auto_start !== false : true;
   updateAutoInput(); render();
@@ -63,12 +71,12 @@ function render() {
   const names = { running: '수집 중', draining: '처리 중', stopped: '중지', degraded: '처리 지연', interrupted: '중단' };
   for (const [id, item] of cards) {
     const stream = streams.find(value => value.stream_id === id); const status = state.status.get(id);
-    item.title.textContent = item.number + '. ' + (stream?.name ?? '미등록');
+    item.title.textContent = item.number + '. ' + committeeForChannel(id).name;
     item.card.setAttribute('aria-pressed', String($('#register-channel').value === id));
     item.status.textContent = status ? (names[status.state] ?? status.state) + ' · 대기 ' + status.queue_length + '개'
-      + (status.error ? ' · ' + status.error : '') : stream ? '등록됨' : '영상 주소를 등록해 주세요.';
+      + (status.error ? ' · ' + status.error : '') : stream?.page_url ? '등록됨' : '영상 주소를 등록해 주세요.';
     for (const selector of ['#manage-channel', '#review-channel', '#sync-channel']) {
-      $(selector).querySelector('option[value="' + id + '"]').textContent = item.number + '. ' + (stream?.name ?? '미등록');
+      $(selector).querySelector('option[value="' + id + '"]').textContent = item.number + '. ' + committeeForChannel(id).name;
     }
   }
   const active = state.status.get($('#manage-channel').value);
@@ -101,6 +109,8 @@ $('#login').addEventListener('submit', async event => {
         if (token !== sessionToken) return;
         streams = catalog.streams; monitoring = catalog.monitoring ?? []; render();
         if (!$('#automation').hidden) await automation.refresh();
+        if (!$('#ai').hidden) await ai.refresh();
+        if (!$('#records').hidden) await workspace.refresh();
       } catch (error) { if (token === sessionToken) $('#auto-status').textContent = error.message; }
     }, 5000);
     subscribe({ api, state, ids, signal: subscription.signal, refresh,
@@ -115,6 +125,8 @@ $('#logout').addEventListener('click', () => {
   if (captureCount()) { message('탭 음성 수집을 중지한 뒤 로그아웃해 주세요.'); return; }
   subscription?.abort(); clearInterval(monitorTimer); token = ''; streams = []; monitoring = []; state.reset({ event_id: 0, segments: [] }); tools.stopPreview();
   automation.clear();
+  ai.clear();
+  workspace.clear();
   $('#workspace').hidden = true; $('#logout').hidden = true; $('#auth').hidden = false;
   $('#register').reset(); $('#correct').reset(); $('#settings-form').reset(); tools.renderReview();
   $('#connection').textContent = '관리자 인증 대기'; message('로그아웃했습니다. 서버에서 수집 중인 방송은 계속 처리합니다.'); $('#token').focus();
@@ -124,6 +136,8 @@ for (const button of document.querySelectorAll('[data-section]')) button.addEven
   for (const tab of document.querySelectorAll('[data-section]')) tab.setAttribute('aria-pressed', String(tab === button));
   if (button.dataset.section !== 'sync') tools.stopPreview();
   if (button.dataset.section === 'automation') automation.refresh().catch(error => message(error.message));
+  if (button.dataset.section === 'ai') ai.refresh().catch(error => message(error.message));
+  if (button.dataset.section === 'records') workspace.refresh().catch(error => message(error.message));
 });
 $('#register-channel').addEventListener('change', event => fillStream(event.target.value));
 $('#manage-channel').addEventListener('change', render);
@@ -153,7 +167,7 @@ async function collect(start) {
   if (!stream) { message('먼저 방송을 등록해 주세요.'); return; }
   $('#capture').disabled = true; $('#stop').disabled = true;
   try {
-    if (stream.kind === 'capture') { if (start) await startCapture(id, api, message); else await stopCapture(id, api); }
+    if (stream.kind === 'capture') { if (start) await startCapture(id, api, message, { kind: $('#capture-kind').value, deviceId: $('#capture-device').value }); else await stopCapture(id, api); }
     else await api('/api/admin/streams/' + id + (start ? '/start' : '/stop'), { method: 'POST' });
     if (!start && $('#register-channel').value === id) $('#auto-start').checked = false;
     await refresh(); message(start ? '수집을 시작했습니다. 방송 상태를 확인해 주세요.' : '수집을 중지하고 남은 음성을 처리합니다. 자동 감지도 껐습니다.');
@@ -161,5 +175,21 @@ async function collect(start) {
   finally { $('#capture').disabled = false; $('#stop').disabled = false; }
 }
 $('#capture').addEventListener('click', () => collect(true)); $('#stop').addEventListener('click', () => collect(false));
+$('#capture-devices').addEventListener('click', async () => {
+  try {
+    const media = await navigator.mediaDevices.getUserMedia({ audio: true }); media.getTracks().forEach(track => track.stop());
+    const devices = await navigator.mediaDevices.enumerateDevices(); $('#capture-device').replaceChildren(new Option('기본 입력 장치', ''));
+    for (const device of devices.filter(device => device.kind === 'audioinput')) $('#capture-device').append(new Option(device.label || '음성 입력', device.deviceId));
+  } catch { message('브라우저의 마이크 권한과 Windows 입력 장치를 확인해 주세요.'); }
+});
+$('#file-import').addEventListener('submit', async event => {
+  event.preventDefault(); const file = $('#import-file').files[0]; if (!file || !$('#import-approved').checked) return;
+  if (file.size > 256 * 1024 * 1024) { message('파일 한도는 256MiB입니다.'); return; }
+  const button = event.target.querySelector('button'); button.disabled = true; $('#import-status').textContent = '파일 업로드 중입니다.';
+  try {
+    await api('/api/admin/import?stream=' + $('#import-channel').value + '&approved=1&name=' + encodeURIComponent(file.name), { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file });
+    $('#import-status').textContent = '업로드를 마쳤습니다. 방송 상태에서 수신·처리 시간을 확인합니다. 종료 후 기록·AI 회의록 메뉴에서 다시 엽니다.'; await refresh();
+  } catch (error) { $('#import-status').textContent = error.message; } finally { button.disabled = false; }
+});
 window.addEventListener('beforeunload', event => { if (captureCount()) { event.preventDefault(); event.returnValue = ''; } });
 render();

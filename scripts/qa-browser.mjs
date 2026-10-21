@@ -48,7 +48,7 @@ try {
     await omowright.emulate(page, preset);
     await page.evaluate(() => window.scrollTo(0, 0));
     const metrics = await page.evaluate(() => ({
-      title: document.title, brand: document.querySelector('.brand').textContent,
+      title: document.title, brand: document.querySelector('.brand img')?.alt,
       width: innerWidth, bodyWidth: document.documentElement.scrollWidth,
       panels: document.querySelectorAll('.channel').length, segments: document.querySelectorAll('.segment').length,
       xssExecuted: window.xssExecuted === true, scriptImages: document.querySelectorAll('.segment img').length,

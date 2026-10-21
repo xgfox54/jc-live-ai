@@ -1,0 +1,107 @@
+﻿{
+    "backend":  "cpu",
+    "cpuRequirement":  "x86_64 AVX2",
+    "modelId":  "nvidia/Nemotron-3-Diarization",
+    "files":  [
+                  {
+                      "path":  "concrt140.dll",
+                      "sha256":  "2405355f0a58067b258f8df33c327e3a3d716eaac5a3a5aebb757842d85bd376",
+                      "bytes":  324208
+                  },
+                  {
+                      "path":  "ggml-base.dll",
+                      "sha256":  "608515a6a8f831182c5c237a56f721c578e504587abf2c6ac5b217713963b28c",
+                      "bytes":  623616
+                  },
+                  {
+                      "path":  "ggml-cpu.dll",
+                      "sha256":  "0be23a9bbe749a2dd36eaa50b7284309a95302b32d2db60127744b8900092ec8",
+                      "bytes":  884224
+                  },
+                  {
+                      "path":  "ggml.dll",
+                      "sha256":  "b9e331e8f7438517558061c00c81f9648c1fcbec4b8d276e6c917293e404acde",
+                      "bytes":  67072
+                  },
+                  {
+                      "path":  "msvcp140.dll",
+                      "sha256":  "0f885b509a685d2bbfa652fed26b5fb31d88fbdab0a978c641d1c7b8aa460aa9",
+                      "bytes":  557728
+                  },
+                  {
+                      "path":  "nemo-speech.exe",
+                      "sha256":  "34f6bbaaa6a4266986e172dce297a670124f0c272787ead8631ab219127c0762",
+                      "bytes":  422912
+                  },
+                  {
+                      "path":  "Nemotron-3-Diarization.q8_0.gguf",
+                      "sha256":  "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1",
+                      "bytes":  107012128
+                  },
+                  {
+                      "path":  "nemo_speech_asr.dll",
+                      "sha256":  "83a04938c467e7ff34a4a8497448c9e0dc7b9cc16bd61cfff6b537aad56b1ec1",
+                      "bytes":  3966976
+                  },
+                  {
+                      "path":  "nemo_speech_asr_c.dll",
+                      "sha256":  "c4a7b9e37a661a8acaaa261e8df671786d5c49a19ac08e72f17286964f8da661",
+                      "bytes":  56320
+                  },
+                  {
+                      "path":  "vcomp140.dll",
+                      "sha256":  "55aba23cdcd6484fbb06f4155b8ca75adfce7a881f10afd0c49457165e677164",
+                      "bytes":  193152
+                  },
+                  {
+                      "path":  "vcruntime140.dll",
+                      "sha256":  "d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066",
+                      "bytes":  124544
+                  },
+                  {
+                      "path":  "vcruntime140_1.dll",
+                      "sha256":  "1f2d41c4aa5db0bc33ebf7b66d72943a817d7ce6cbe880502a9403823633093f",
+                      "bytes":  49792
+                  },
+                  {
+                      "path":  "licenses/ggml-MIT.txt",
+                      "sha256":  "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+                      "bytes":  1078
+                  },
+                  {
+                      "path":  "licenses/MODEL-CARD.md",
+                      "sha256":  "5fe88ca4020d2ee134f806a0a02c52c19855b73047bc2e6f25b9171e1abeebfd",
+                      "bytes":  43239
+                  },
+                  {
+                      "path":  "licenses/NeMo-Speech.cpp-APACHE-2.0.txt",
+                      "sha256":  "eaaca34b26b27c7be5a5099a0b9ddf9913f2db0aa96f6d5854435f2916d6fdc3",
+                      "bytes":  12238
+                  },
+                  {
+                      "path":  "licenses/NeMo-Speech.cpp-NOTICE.txt",
+                      "sha256":  "d5ea773d67035e676503579ecf7d5836a124649d7fe99d59ec3c50cd101e1a80",
+                      "bytes":  233
+                  },
+                  {
+                      "path":  "licenses/OpenMDW-1.1.txt",
+                      "sha256":  "2ab44b68365473c112f5092211a38f231cb23e50de68b75a13369adbd76a74df",
+                      "bytes":  2619
+                  },
+                  {
+                      "path":  "licenses/sentencepiece-APACHE-2.0.txt",
+                      "sha256":  "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+                      "bytes":  11358
+                  },
+                  {
+                      "path":  "licenses/UPSTREAM-THIRD-PARTY-NOTICES.md",
+                      "sha256":  "865dbd5bb2fb4e08811d2d6c90ebf260645b101ba8b0a9e6ba739b1d0222acf0",
+                      "bytes":  9171
+                  }
+              ],
+    "engineRevision":  "4c101bc7113f49101a3e11d2c994c519f41939f6",
+    "modelRevision":  "f667ed73aee57d40cc39428eb768b4fd87a0a29e",
+    "ggmlRevision":  "c03b4e2bcece5134827881af90242086daf75be5",
+    "sourceChanges":  "none; stock ggml, UTF8 compiler flags",
+    "schemaVersion":  1
+}

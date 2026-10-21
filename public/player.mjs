@@ -37,11 +37,16 @@ export class OfficialPlayer {
     this.anchor = null; this.stream = stream;
     if (this.player) { this.player.destroy(); this.player = null; }
     this.container.replaceChildren();
-    if (!stream.video_id) { this.message('이 방송은 공식 영상 링크에서 시청해 주세요.'); return; }
+    if (!stream.video_id) {
+      const note = stream.page_url ? '이 방송은 공식 영상 링크에서 시청해 주세요.' : '방송 주소 등록을 기다립니다. 위원 명단을 확인할 수 있습니다.';
+      this.message(note);
+      const empty = document.createElement('div'); empty.className = 'video-placeholder';
+      empty.textContent = stream.page_url ? '공식 영상 링크에서 시청합니다.' : '방송 주소 등록 대기'; this.container.append(empty); return;
+    }
     await loadPlayerApi(); if (selection !== this.selection) return;
     const host = document.createElement('div'); this.container.append(host);
     this.player = new globalThis.YT.Player(host, { videoId: stream.video_id,
-      width: '100%', height: '300', playerVars: { origin: location.origin, playsinline: 1 },
+      width: '100%', height: '300', host: 'https://www.youtube-nocookie.com', playerVars: { origin: location.origin, playsinline: 1 },
       events: {
         onReady: () => {
           if (selection !== this.selection) return;

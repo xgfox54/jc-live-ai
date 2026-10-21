@@ -3,11 +3,12 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="JC-LIVE 방송 등록과 전사 설정을 관리합니다.">
 <title>JC-LIVE · 관리자</title><link rel="stylesheet" href="/style.css">
-<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png"><script type="module" src="/admin.mjs"></script>
+<link rel="icon" type="image/png" sizes="1254x1254" href="/icon-192.png?v=e16bba8a"><script type="module" src="/admin.mjs"></script>
 </head><body class="admin-page">
-<header><a class="brand" href="/"><img src="/icon-192.png" width="40" height="40" alt=""><span>JC-<strong>LIVE</strong></span></a>
+<header><a class="brand" href="/" aria-label="JC-LIVE"><img src="/logo-jc-live.png?v=2caf416b" width="182" height="44" alt="JC-LIVE"></a>
 <div class="row"><a href="/" target="_blank" rel="noopener">이용자 화면 열기</a><span id="connection" role="status">관리자 인증 대기</span></div></header>
 <main><div class="intro"><div><p class="eyebrow">관리자</p><h1>방송과 전사 설정을 관리합니다</h1></div><button id="logout" class="secondary" hidden>로그아웃</button></div>
+<p class="service-disclaimer">※ JC-LIVE는 의회에서 공식 제공하는 서비스가 아닙니다. 비공식 서비스인 점 참고바랍니다.</p>
 <section id="auth" class="surface login-card"><h2>관리자 연결</h2><p>관리자 접근키를 입력합니다. 키는 이 페이지를 닫으면 삭제됩니다.</p>
 <form id="login"><label for="token">관리자 접근키</label><div class="row"><input id="token" type="password" autocomplete="off" required><button>연결</button></div></form></section>
 <p id="notice" role="status"></p>
@@ -16,7 +17,9 @@
 <button type="button" data-section="broadcasts" aria-pressed="true">영상 등록·수집</button>
 <button type="button" data-section="automation" aria-pressed="false">신규 방송 자동 등록</button>
 <button type="button" data-section="settings" aria-pressed="false">세부 설정</button>
-<button type="button" data-section="review" aria-pressed="false">전사문 검토</button>
+<button type="button" data-section="review" aria-pressed="false">회의록 받아쓰기 검토</button>
+<button type="button" data-section="ai" aria-pressed="false">AI 후보정·단어장</button>
+<button type="button" data-section="records" aria-pressed="false">기록·AI 회의록</button>
 <button type="button" data-section="sync" aria-pressed="false">영상 동기화 점검</button></nav>
 <section id="broadcasts" class="admin-section">
 <div class="section-title"><h2>영상 등록·수집</h2><p>방송을 선택하면 등록 내용을 편집할 수 있습니다.</p></div>
@@ -37,18 +40,21 @@
 <button>방송 저장</button></form></section>
 <section class="surface"><h3>음원 수집</h3><label for="manage-channel">관리할 방송</label><select id="manage-channel"></select>
 <p>주소 방식은 서버에서 수집합니다. 탭 공유 방식은 해당 영상을 재생한 뒤 탭 오디오를 공유합니다.</p>
+<label>탭 공유 등록 방송의 입력 장치<select id="capture-kind"><option value="tab">브라우저 탭 음성</option><option value="microphone">마이크·스테레오 믹스 입력</option></select></label>
+<label>음성 입력 장치<select id="capture-device"><option value="">기본 입력 장치</option></select></label><button id="capture-devices" class="secondary">입력 장치 목록 확인</button>
+<p class="help">입력 장치는 브라우저 권한을 허용한 뒤 표시합니다. 스테레오 믹스가 Windows 입력 장치로 제공될 때 선택할 수 있습니다. 장치 이름은 서버에 저장하지 않습니다.</p>
 <div class="row"><button id="capture">수집 시작</button><button id="stop" class="secondary">수집 중지</button></div>
 <div class="row"><button id="auto-toggle" class="secondary" disabled>자동 감지 켜기</button></div>
 <p id="auto-status" role="status" class="help">방송을 등록하면 자동 감지 상태를 표시합니다.</p>
 <p class="help">자동 수집은 원음 저장을 포함합니다. 수집 중지를 누르면 자동 감지도 꺼집니다. 저장 한도에 도달하면 자동 감지를 끕니다.</p>
 <p id="metrics-note" class="help"></p><p class="help">음원 수집은 이용자의 영상 재생과 별도로 동작합니다.</p></section>
-</div></section>
+</div><form id="file-import" class="surface engine-info"><h3>녹음 파일 첨부·전사</h3><div class="fields"><label>사용할 방송 슬롯<select id="import-channel"></select></label><label>음성·영상 파일<input id="import-file" type="file" accept=".wav,.mp3,.m4a,.mp4,.webm,.ogg,.flac,.aac" required></label></div><label class="check"><input id="import-approved" type="checkbox" required> 이 파일의 수집·전사 권한을 확인했습니다.</label><button>업로드 후 전사</button><p id="import-status" role="status" class="help">최대 256MiB. 해당 슬롯이 수집 중이면 파일 전사를 시작하지 않습니다.</p></form></section>
 <section id="automation" class="admin-section" hidden><div class="section-title"><h2>공식 채널의 새 생방송을 등록합니다</h2><p>공식 YouTube 채널과 의회 홈페이지를 30초 간격으로 확인합니다. 같은 방송은 한 번만 등록합니다.</p></div>
 <section class="surface"><div class="row"><button id="discovery-toggle">신규 주소 탐색 끄기</button><button id="discovery-scan" class="secondary">지금 확인</button><a href="/minutes" target="_blank" rel="noopener">회의록 열기</a></div>
-<p id="discovery-status" role="status"></p><div id="discovery-sources"></div>
+<p id="discovery-status" role="status"></p><div id="discovery-sources"></div><p id="cloud-status" class="help" role="status"></p>
 <p class="help">탐색을 꺼도 등록된 방송의 자동 감지·수집은 계속됩니다. 방송별 중지는 영상 등록·수집 메뉴에서 수행합니다.</p>
 <p class="help">PC와 서버가 켜져 있어야 합니다. 방송 시작 부분부터 수집을 요청하지만 제공자의 보관 범위에 따라 일부가 누락될 수 있습니다. 회의록에서 수집 범위와 누락 기록을 확인합니다.</p>
-<p class="help">동시에 등록하는 방송은 최대 8개입니다. 슬롯이 부족하면 등록을 대기하고, 자동 등록 방송의 수집이 끝나면 슬롯을 다시 사용합니다. 회의록은 방송별로 보존합니다.</p></section>
+<p class="help">위원회별 12개 채널을 고정 운영합니다. 동시 전사는 최대 8개이며, 같은 위원회의 다음 방송은 기존 수집 종료 후 배정합니다. 위원회를 확인하지 못한 방송은 등록 대기 상태로 남깁니다. 회의록은 방송별로 보존합니다.</p></section>
 <section class="surface"><h3>발견한 방송</h3><div id="discovery-records"></div></section></section>
 <section id="settings" class="admin-section" hidden><div class="section-title"><h2>세부 설정</h2>
 <p>모든 방송의 수집과 남은 음성 처리를 마친 뒤 저장합니다. 저장한 값은 다음 실행에도 유지됩니다.</p></div>
@@ -56,16 +62,84 @@
 <label>전사 구간 길이<select name="chunkSeconds"><option value="5">5초</option><option value="10">10초</option></select></label>
 <label>방송별 대기 구간 수<input name="queueChunks" type="number" min="2" max="24" step="1" required><span class="help">2~24개. 가득 차면 가장 오래된 구간을 누락으로 기록합니다.</span></label>
 <label>무음 제외 기준<input name="silenceRms" type="number" min="0" max="0.02" step="0.0001" required><span class="help">0은 무음 제외를 끕니다. 값을 높이면 작은 음성을 건너뛸 수 있습니다.</span></label>
-<label>방송 세션별 원음 저장 한도(MB)<input name="maxRecordingMB" type="number" min="0.32" max="3200" step="0.01" required><span class="help">1MB는 1,000,000바이트입니다. 한도에 도달하면 수집을 중지합니다.</span></label>
-</div><label class="check"><input name="recordAudio" type="checkbox"> 수집한 원음 저장</label><button>설정 저장</button>
+<label>방송 세션별 원음 저장 한도(MB)<input name="maxRecordingMB" type="number" min="0.32" max="3200" step="0.01" required><span class="help">기본 1,382.4MB는 원음 12시간 분량입니다. 1MB는 1,000,000바이트입니다. 한도에 도달하면 수집을 중지합니다.</span></label>
+</div><label class="check"><input name="recordAudio" type="checkbox"> 수집한 원음 저장</label>
+<label class="check"><input name="interim" type="checkbox"> 10초 청크에서 5초 미확정 전사 미리보기</label><p class="help">추가 추론이 발생합니다. 입력 수와 GPU 처리량을 측정한 뒤 사용합니다. 미확정 문장은 회의록·최종 전사에 넣지 않습니다.</p><button>설정 저장</button>
 <p class="help">기존에 저장한 원음은 이 설정으로 삭제되지 않습니다.</p></form>
 <section class="surface engine-info"><h3>현재 전사 엔진</h3><p id="engine-info"></p><p class="help">모델·처리 장치·탐색 수 변경은 서버 설정 파일 수정 후 재시작이 필요합니다.</p></section>
 </section>
-<section id="review" class="admin-section" hidden><div class="section-title"><h2>전사문 검토·수정</h2><p>문장을 선택해 수정합니다. 원문과 수정 이력은 별도로 보존합니다.</p></div>
-<div class="admin-columns"><section class="surface"><label for="review-channel">검토할 방송</label><select id="review-channel"></select><button id="review-refresh" class="secondary">전사문 새로고침</button>
-<div id="review-transcripts" class="transcript" tabindex="0" aria-label="검토할 전사문"></div></section>
+<section id="review" class="admin-section" hidden><div class="section-title"><h2>회의록 받아쓰기 검토·수정</h2><p>문장을 선택해 수정합니다. 원문과 수정 이력은 별도로 보존합니다.</p></div>
+<div class="admin-columns"><section class="surface"><label for="review-channel">검토할 방송</label><select id="review-channel"></select><button id="review-refresh" class="secondary">회의록 받아쓰기 새로고침</button>
+<div id="review-transcripts" class="transcript" tabindex="0" aria-label="검토할 회의록 받아쓰기"></div></section>
 <form id="correct" class="surface"><label>문장 ID<input name="id" readonly required></label><label>현재 버전<input name="version" type="number" readonly required></label>
 <label>검토문<textarea name="text" rows="8" maxlength="5000" required></textarea></label><button>검토문 저장</button></form></div></section>
+<section id="ai" class="admin-section" hidden>
+<div class="section-title"><h2>AI 후보정·분야별 단어장</h2><p>원문을 보존하고 후보를 생성합니다. 적용한 문장은 회의록 받아쓰기와 회의록에 반영됩니다.</p></div>
+<div class="admin-columns">
+<div>
+<form id="ai-settings" class="surface"><h3>후보정 AI 연결</h3>
+<label>연결 방식<select name="provider" id="ai-provider"><option value="ollama">이 PC의 Ollama</option><option value="proxy">OpenCodex·호환 프록시 API</option></select></label>
+<div id="ai-proxy-fields" hidden>
+<label>API 기본 주소<input name="base" type="url" value="http://127.0.0.1:10100/v1" maxlength="1000"></label>
+<label>프록시 인증키<input name="api_key" type="password" autocomplete="off" maxlength="4000" placeholder="빈칸은 저장된 키 유지"></label>
+<label class="check"><input name="clear_key" type="checkbox"> 저장된 프록시 인증키 삭제</label>
+<p id="ai-key-status" class="help"></p>
+<p class="help">OpenAI 호환 API 기본 주소를 입력합니다. 프록시 인증키가 없는 로컬 연결은 비워 둡니다. 주소를 바꾸면 기존 키를 지웁니다.</p>
+</div>
+<label>후보정 모델<input name="model" id="ai-model" list="ai-models" maxlength="200" placeholder="연결 저장 후 모델 목록 확인"><datalist id="ai-models"></datalist></label>
+<button type="button" id="ai-model-refresh" class="secondary">연결 모델 확인</button>
+<p id="ai-model-status" class="help" role="status"></p>
+<label class="check"><input name="automatic" type="checkbox"> 자동 후보정: 새 문장의 후보를 만들고 경고 없는 후보를 이용자 화면에 반영</label>
+<label class="check"><input name="auto_apply_safe" type="checkbox"> 직접 시작한 후보 생성에도 경고 없는 후보 자동 적용</label>
+<p class="help">로컬 AI는 녹음·전사 종료 후, 프록시는 수집 중에도 순차 생성합니다. 회의록 받아쓰기와 참고어를 선택한 서버에 전송합니다. 숫자·길이 경고가 있는 후보는 공개하지 않고 이 화면의 검토 목록에 남깁니다. 실패한 작업은 1분부터 최대 30분 간격으로 다시 시도합니다. 직접 중단한 작업은 다시 시작할 때까지 멈춥니다.</p>
+<button>AI 설정 저장</button></form>
+<form id="ai-field" class="surface engine-info"><h3>방송별 단어장</h3>
+<label>방송 기록<select id="ai-broadcast" required></select></label>
+<fieldset><legend>회의 분야</legend><div id="ai-packs"></div></fieldset>
+<label class="check"><input name="auto_select" type="checkbox"> 제목과 최근 발언으로 분야 자동 선택</label>
+<label>추가 참고어<textarea name="custom" rows="4" maxlength="3000" placeholder="기관명, 인명, 사업명"></textarea></label>
+<p class="help">쉼표나 줄바꿈으로 구분합니다. 직접 입력한 말과 선택 분야의 대표어부터 최대 3,000자를 사용합니다. 음성 인식 참고어와 별도로 후보정에만 사용합니다.</p>
+<details><summary>후보정에 전달할 참고어</summary><p id="ai-glossary" class="preserve-lines"></p></details>
+<p id="ai-glossary-count" class="help"></p><button>단어장 저장</button>
+</form></div>
+<section class="surface"><h3>후보 생성·검토</h3>
+<div class="row"><button id="ai-start">후보 생성</button><button id="ai-cancel" class="secondary" disabled>생성 중단</button><button id="ai-refresh" class="secondary">새로고침</button></div>
+<p id="ai-job" role="status">방송 기록을 선택해 주세요.</p>
+<p class="help">숫자나 문장 길이가 크게 바뀌면 경고합니다. 경고가 없어도 인명·부정 표현·발언 취지를 원음과 대조해야 합니다.</p>
+<button id="ai-apply-safe" class="secondary">경고 없는 후보 일괄 적용</button>
+<p class="help">일괄 적용은 선택한 방송 전체의 경고 없는 미검토 후보에 적용합니다. 직접 수정한 문장은 덮어쓰지 않습니다.</p>
+<div id="ai-candidates" aria-live="polite"></div>
+<div class="row"><button id="ai-latest" class="secondary">최신 후보</button><button id="ai-older" class="secondary">이전 후보</button></div>
+</section></div></section>
+<section id="records" class="admin-section" hidden>
+<div class="section-title"><h2>방송 기록과 AI 회의록</h2><p>원문을 보존하고 저장된 기록 전체를 검토합니다. AI 작성 내용은 근거 인용과 함께 확인합니다.</p></div>
+<section class="surface"><div class="fields"><label>방송 기록<select id="record-select"></select></label><label>문장 표시<select id="record-mode"><option value="reviewed">검토문 우선</option><option value="raw">최초 원문</option><option value="both">검토문과 원문 함께</option></select></label></div>
+<div class="row"><button id="record-refresh" class="secondary">기록 다시 열기</button><button id="export-raw" class="secondary">원문 TXT 저장</button><button id="export-reviewed" class="secondary">검토본 TXT 저장</button><button id="export-json" class="secondary">작업 JSON 저장</button></div>
+<form id="record-search"><label>전체 기록 검색<input id="record-query" type="search" maxlength="200" placeholder="원문과 검토본에서 검색"></label><button>검색</button></form>
+<label class="check"><input id="record-repeats" type="checkbox"> 반복 의심 문장만 보기</label>
+<audio id="workspace-audio" controls aria-label="선택한 문장의 저장 원음"></audio>
+<div id="record-results" class="transcript" tabindex="0" aria-label="전체 기록 검색 결과"></div><button id="record-older" class="secondary" disabled>이전 검색 결과</button>
+<p class="help">원음 듣기는 저장 파일과 시간축을 확인할 수 있는 구간만 제공합니다. 참여자 번호는 실제 이름을 의미하지 않습니다.</p></section>
+<div class="admin-columns engine-info"><section class="surface"><h3>AI 구조화 회의록</h3>
+<p class="help">AI 후보정에 저장한 연결·모델을 사용합니다. 요약·결정·제안·조치·수치·미결 사항을 근거 인용과 대조합니다. 완료한 묶음은 중단 후 재사용합니다.</p>
+<div class="row"><button id="minutes-generate">생성·이어서 생성</button><button id="minutes-pause" class="secondary" disabled>현재 묶음 후 중단</button></div>
+<p id="minutes-job" role="status">생성 대기</p><label class="check"><input id="live-summary" type="checkbox"> 새 발언의 누적 요약 자동 갱신</label>
+<p class="help">1분마다 새 발언을 확인합니다. 로컬 AI는 수집 종료 후 처리합니다. 프록시를 선택하면 해당 서버로 회의록 받아쓰기를 전송합니다.</p>
+<div id="structured-notes"></div><details><summary>시각별 누적 요약</summary><div id="summary-timeline"></div></details></section>
+<section class="surface"><h3>참여자 이름 지정</h3>
+<p class="help">자동 분석한 참여자 번호에 실제 발언자 이름을 지정합니다. 지정한 이름은 회의록의 발언 내용 정리와 받아쓰기 표시에 사용합니다. 원음으로 확인한 뒤 지정해 주세요.</p>
+<form id="participant-form"><div id="participant-rows"></div><datalist id="participant-members"></datalist><button>참여자 이름 저장</button></form>
+<p id="participant-status" role="status" class="help"></p></section>
+<section class="surface"><h3>회의록 본문 직접 수정</h3><button id="minutes-edit" class="secondary">저장한 본문 불러오기</button><label>Markdown 본문<textarea id="minutes-editor" rows="16" maxlength="500000"></textarea></label><button id="minutes-save">본문 저장</button>
+<p class="help">직접 수정한 본문은 자동 생성으로 덮어쓰지 않습니다. 비우고 저장하면 최신 자동 생성 본문을 사용합니다. 이전 버전은 서버에 보존합니다.</p>
+<h3>저장 원음 재전사·복구</h3><button id="audio-pause" class="secondary">현재 음성 구간 후 중단</button><div id="record-audio-jobs"></div>
+<p class="help">모든 수집 종료 후 공유 전사 워커로 처리합니다. 기존 전사는 보존하며 결과는 별도 재전사 기록으로 엽니다. 중간 누락이 있으면 전체 원음 재전사를 이용합니다.</p></section></div>
+<section class="surface engine-info"><h3>AI 연결 보관</h3><p class="help">AI 후보정 메뉴에서 저장한 현재 연결을 이름별로 보관합니다. 인증키는 암호화하며 목록에 표시하지 않습니다. 연결을 전환하면 자동 생성·적용은 꺼집니다.</p>
+<div class="fields"><label>연결 이름<input id="profile-name" maxlength="100"></label><label>저장된 연결<select id="profile-select"></select></label></div><div class="row"><button id="profile-save" class="secondary">현재 연결 보관</button><button id="profile-use" class="secondary">선택한 연결 사용</button><button id="profile-delete" class="secondary">선택한 연결 삭제</button></div>
+<h3>진단 정보</h3><button id="diagnostics" class="secondary">진단 정보 복사</button><pre id="diagnostics-text" class="preserve-lines"></pre></section>
+<section class="surface engine-info"><h3>Ollama 로컬 모델 관리</h3><p class="help">이 PC의 Ollama 서버를 이용합니다. 다운로드 버튼을 누르면 지정 모델을 받습니다. 사용 중인 모델은 다른 모델로 변경한 뒤 삭제합니다. 다른 프로그램에서도 사용하는 모델인지 확인합니다.</p>
+<label>모델 이름<input id="managed-model" maxlength="200" placeholder="예: qwen3:4b"></label><div class="row"><button id="model-pull" class="secondary">모델 다운로드</button><button id="model-cancel" class="secondary">다운로드 취소</button><button id="model-delete" class="secondary">모델 삭제</button></div><label class="check"><input id="model-delete-confirm" type="checkbox"> 선택한 모델을 이 PC의 Ollama 저장소에서 삭제합니다.</label><p id="model-job" role="status"></p></section>
+</section>
 <section id="sync" class="admin-section" hidden><div class="section-title"><h2>영상 동기화 점검</h2><p>이 페이지의 시험 플레이어에서 탐색 가능 여부를 확인합니다. 이 설정이 이용자 플레이어에 자동 적용되지는 않습니다.</p></div>
 <div class="admin-columns"><section class="surface"><label for="sync-channel">점검할 방송</label><select id="sync-channel"></select><button id="preview" class="secondary">점검 영상 열기</button>
 <div id="admin-player" class="video-frame"></div><p id="sync-status" role="status">점검할 영상을 선택해 주세요.</p></section>

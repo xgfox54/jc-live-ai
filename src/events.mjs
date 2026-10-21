@@ -18,7 +18,8 @@ export class EventFeed {
   }
   send(client, event) {
     if (client.res.destroyed) { this.clients.delete(client); return false; }
-    const wire = 'id: ' + event.event_id + '\ndata: ' + JSON.stringify(this.project(event)) + '\n\n';
+    const projected = this.project(event); if (!projected) return true;
+    const wire = 'id: ' + event.event_id + '\ndata: ' + JSON.stringify(projected) + '\n\n';
     if (client.res.writableLength + Buffer.byteLength(wire) > this.maxBytes) {
       this.metrics.slow_disconnects++; client.res.destroy(); this.clients.delete(client); return false;
     }

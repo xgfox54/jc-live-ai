@@ -2,9 +2,14 @@ import { Store } from '../src/store.mjs';
 import { Scheduler } from '../src/scheduler.mjs';
 import { createService } from '../src/server.mjs';
 
-let store; let service; let events = 0;
+let store; let service; let events = 0; let publicFeed = false;
+const feedStats = () => {
+  const feed = service.viewerFeed.metrics.sent || service.viewerFeed.clients.size ? service.viewerFeed : service.feed;
+  return { ...feed.metrics, active: feed.clients.size };
+};
 process.on('message', message => {
   if (message.action === 'start') {
+    publicFeed = message.publicFeed === true;
     store = new Store(message.database);
     const engine = { ready: false, metadata: { synthetic_events_only: true }, stop: async () => {} };
     const scheduler = new Scheduler(store, engine, message.config);
@@ -16,12 +21,12 @@ process.on('message', message => {
       const stream_id = 'ch' + i;
       const segment = store.segment({ stream_id, session_id: 'synthetic', timeline_epoch: 0,
         start_ms: events * 1000, end_ms: events * 1000 + 5000, raw_text: '합성 부하 시험 문장 ' + events + ' '.repeat(message.padding ?? 0) });
-      store.correct(segment.segment_id, { version: 1, text: '합성 검토문 ' + events });
-      store.event('status', { stream_id, state: 'synthetic' }); events += 3;
+      store.correct(segment.segment_id, { version: 1, origin: 'ai', text: '합성 후보정문 ' + events + ' '.repeat(message.padding ?? 0) });
+      store.event('status', { stream_id, state: 'synthetic' }); events += publicFeed ? 2 : 3;
     }
-    process.send({ action: 'burst', events, cursor: store.cursor(), memory: process.memoryUsage(), feed: service.feed.metrics });
+    process.send({ action: 'burst', events, cursor: store.cursor(), memory: process.memoryUsage(), feed: feedStats() });
   }
   if (message.action === 'metrics') process.send({ action: 'metrics', events, cursor: store.cursor(),
-    memory: process.memoryUsage(), feed: { ...service.feed.metrics, active: service.feed.clients.size } });
+    memory: process.memoryUsage(), feed: feedStats() });
   if (message.action === 'stop') service.close().then(() => { store.close(); process.disconnect(); });
 });

@@ -11,6 +11,9 @@ test('council resolution accepts only official detail pages and strips unrelated
 test('council parser separates public HLS and YouTube and ignores inactive page scripts', () => {
   const hls = '<source src="https://vod.council.jeju.kr/live/XHC011/playlist.m3u8"/><script>myPlayer.src("http://vod.council.jeju.kr:1935/live/XHC012/playlist.m3u8");</script>';
   assert.equal(parseCouncilPlayer(hls).resolved_kind, 'hls');
+  const replay = '<source src="https://vod.council.jeju.kr/vod/_definst_//2026/455/20261021_2_gyo/playlist.m3u8" type="application/x-mpegURL" />';
+  assert.equal(parseCouncilPlayer(replay).media_url, 'https://vod.council.jeju.kr/vod/_definst_//2026/455/20261021_2_gyo/playlist.m3u8');
+  assert.throws(() => parseCouncilPlayer('<source src="https://vod.council.jeju.kr/vod/_definst_/../secret/playlist.m3u8">'));
   const youtube = '<iframe src="https://www.youtube.com/embed/k349Q6iyR_0?si=test"></iframe>';
   assert.equal(parseCouncilPlayer(youtube).video_id, 'k349Q6iyR_0');
   assert.throws(() => parseCouncilPlayer(hls + youtube), /one supported/);

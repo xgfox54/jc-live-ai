@@ -1,0 +1,26 @@
+[
+  {
+    "file": "JejuGothic-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/jejugothic/JejuGothic-Regular.ttf",
+    "bytes": 2479244,
+    "sha256": "88993f158a110b9053c14b09b6f7c8440c603f6fe92ff382fb3db83af11dce87"
+  },
+  {
+    "file": "Pretendard-SemiBold.woff2",
+    "url": "https://raw.githubusercontent.com/orioncactus/pretendard/5c41199ea0024a9e0b2cb31735265056e5472d76/packages/pretendard/dist/web/static/woff2/Pretendard-SemiBold.woff2",
+    "bytes": 785856,
+    "sha256": "c863f76a7de5c1ddc1ed8b2fa794964530774592c4f31407a84e2a2ae93f17f0"
+  },
+  {
+    "file": "JejuGothic-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/47d54ca1ebb14fd864695f1d39dc734f39017c33/ofl/jejugothic/OFL.txt",
+    "bytes": 4539,
+    "sha256": "6939af7114f0a33c7e6142d4c1320d1bbde11aebe6d8f3c48fc5fb3e0f676a7b"
+  },
+  {
+    "file": "Pretendard-OFL.txt",
+    "url": "https://raw.githubusercontent.com/orioncactus/pretendard/5c41199ea0024a9e0b2cb31735265056e5472d76/LICENSE",
+    "bytes": 4418,
+    "sha256": "d31ddd9f2bed32fd7e302a205cf2380ba0de6529152d239ef99cfb6f261bfc04"
+  }
+]

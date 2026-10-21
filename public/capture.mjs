@@ -1,14 +1,17 @@
 const active = new Map();
-export async function startCapture(id, api, message) {
+export async function startCapture(id, api, message, options = {}) {
   if (active.has(id)) throw new Error('이미 수집 중입니다.');
-  const media = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true,
-    systemAudio: 'exclude', selfBrowserSurface: 'exclude' });
+  const microphone = options.kind === 'microphone';
+  const media = microphone ? await navigator.mediaDevices.getUserMedia({ audio: { deviceId: options.deviceId ? { exact: options.deviceId } : undefined,
+    echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false })
+    : await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true,
+      systemAudio: 'exclude', selfBrowserSurface: 'exclude' });
   if (!media.getAudioTracks().length) {
     media.getTracks().forEach(track => track.stop());
     throw new Error('방송 탭과 탭 오디오 공유를 선택해 주세요.');
   }
   // Require a browser tab; whole-screen/system capture can mix unrelated broadcasts.
-  if (media.getVideoTracks()[0].getSettings().displaySurface !== 'browser') {
+  if (!microphone && media.getVideoTracks()[0].getSettings().displaySurface !== 'browser') {
     media.getTracks().forEach(track => track.stop()); throw new Error('전체 화면 대신 방송 탭을 선택해 주세요.');
   }
   let audio; let state;
@@ -47,8 +50,8 @@ export async function startCapture(id, api, message) {
         queueMicrotask(() => stopCapture(id, api).catch(failure => message(failure.message)));
       }).finally(() => capture.queued--);
     };
-    media.getVideoTracks()[0].addEventListener('ended', () => stopCapture(id, api).catch(error => message(error.message)));
-    await audio.resume(); message('탭 음성을 수집합니다. 선택한 탭이 등록한 방송인지 확인해 주세요.');
+    media.getTracks().forEach(track => track.addEventListener('ended', () => stopCapture(id, api).catch(error => message(error.message))));
+    await audio.resume(); message(microphone ? '선택한 음성 입력 장치를 수집합니다.' : '탭 음성을 수집합니다. 선택한 탭이 등록한 방송인지 확인해 주세요.');
   } catch (error) {
     active.delete(id);
     media.getTracks().forEach(track => track.stop()); if (audio) await audio.close();

@@ -33,7 +33,7 @@ test('HTTP enforces admin authorization, same origin and safe source registratio
 test('SSE replays events committed between snapshot and subscription', async t => {
   // Given
   const { base, store, config } = await fixture(t);
-  const headers = { Authorization: 'Bearer ' + config.viewerToken };
+  const headers = { Authorization: 'Bearer ' + config.adminToken };
   const snapshot = await (await fetch(base + '/api/snapshot?streams=ch1', { headers })).json();
   store.segment({ stream_id: 'ch1', session_id: 's1', start_ms: 0, raw_text: 'after snapshot' });
   // When
@@ -49,7 +49,7 @@ test('old cursors receive bounded reset instead of unbounded replay', async t =>
   const { base, store, config } = await fixture(t);
   for (let i = 0; i < 2002; i++) store.event('status', { stream_id: 'ch1', sequence: i });
   // When
-  const response = await fetch(base + '/api/events?streams=ch1&after=0', { headers: { Authorization: 'Bearer ' + config.viewerToken } });
+  const response = await fetch(base + '/api/events?streams=ch1&after=0', { headers: { Authorization: 'Bearer ' + config.adminToken } });
   const result = await response.text();
   // Then
   assert.match(result, /"kind":"reset"/); assert.ok(result.length < 1000);
@@ -59,8 +59,8 @@ test('viewer delivery counts exclude internal metrics while cursors still advanc
   store.event('metric', { stream_id: 'ch1', readiness_ms: 12000 });
   store.event('status', { stream_id: 'ch1', state: 'running' });
   const abort = new AbortController();
-  const response = await fetch(base + '/api/events?streams=ch1&after=0', {
-    headers: { Authorization: 'Bearer ' + config.viewerToken }, signal: abort.signal
+  const response = await fetch(base + '/api/viewer/events?streams=ch1&after=0', {
+    signal: abort.signal
   });
   const reader = response.body.getReader();
   const chunk = new TextDecoder().decode((await reader.read()).value);

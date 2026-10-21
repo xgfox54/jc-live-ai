@@ -4,7 +4,7 @@ process.on('message', async message => {
   try {
     switch (message.action) {
       case 'connect': {
-        const result = await connectViewers(message.base, message.token, message.count);
+        const result = await connectViewers(message.base, message.token, message.count, message.publicFeed === true);
         viewers = result.viewers; process.send({ action: 'connect', connect_ms: result.connect_ms }); break;
       }
       case 'reconnect': {

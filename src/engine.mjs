@@ -1,14 +1,14 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
+import { boundedLog } from './bounded-log.mjs';
 import { once } from 'node:events';
 
 export class WhisperEngine {
   constructor(config) { this.config = config; this.ready = false; this.pending = null; this.metadata = null; }
   async start() {
     const started = Date.now();
-    this.log = createWriteStream(this.config.engineLog, { flags: 'a' });
+    this.log = boundedLog(this.config.engineLog);
     this.child = spawn(this.config.worker, [this.config.model, String(this.config.beam), this.config.device],
       { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
     this.child.stderr.pipe(this.log);

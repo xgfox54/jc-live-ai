@@ -1,0 +1,16 @@
+[tool.basedpyright]
+typeCheckingMode = "all"
+pythonVersion = "3.14"
+pythonPlatform = "Windows"
+include = ["diarization_native.py", "diarization_stream.py"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["COM812", "ISC001", "D203", "D213"]
+
+[tool.ruff.lint.per-file-ignores]
+"diarization_*.py" = ["INP001", "D100", "D101", "D102", "D103", "D107", "EM101", "EM102", "TRY003", "CPY001"]

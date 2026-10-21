@@ -2,15 +2,16 @@ import http from 'node:http';
 import { performance } from 'node:perf_hooks';
 
 export class Viewer {
-  constructor(base, token) {
+  constructor(base, token, publicFeed = false) {
     this.base = base; this.token = token; this.cursor = 0; this.count = 0; this.bytes = 0;
     this.duplicates = 0; this.latencies = []; this.versions = new Map(); this.reset = false;
     this.readiness = new Map();
+    this.publicFeed = publicFeed;
   }
   connect() {
     return new Promise((resolve, reject) => {
-      this.request = http.get(this.base + '/api/events?streams=ch1,ch2,ch3,ch4,ch5,ch6,ch7,ch8&after=' + this.cursor,
-        { agent: false, headers: { Authorization: 'Bearer ' + this.token } }, response => {
+      this.request = http.get(this.base + (this.publicFeed ? '/api/viewer/events' : '/api/events') + '?streams=ch1,ch2,ch3,ch4,ch5,ch6,ch7,ch8&after=' + this.cursor,
+        { agent: false, headers: this.publicFeed ? {} : { Authorization: 'Bearer ' + this.token } }, response => {
           this.response = response;
           if (response.statusCode !== 200) { response.resume(); reject(new Error('SSE HTTP ' + response.statusCode)); return; }
           let buffer = ''; response.setEncoding('utf8');
@@ -46,9 +47,9 @@ export function percentile(values, p) {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] : null;
 }
-export async function connectViewers(base, token, count) {
+export async function connectViewers(base, token, count, publicFeed = false) {
   const start = performance.now();
-  const viewers = Array.from({ length: count }, () => new Viewer(base, token));
+  const viewers = Array.from({ length: count }, () => new Viewer(base, token, publicFeed));
   try { await Promise.all(viewers.map(viewer => viewer.connect())); }
   catch (error) { viewers.forEach(viewer => viewer.close()); throw error; }
   return { viewers, connect_ms: performance.now() - start };

@@ -25,7 +25,7 @@ export function parseCouncilPlayer(html) {
       sources.push({ resolved_kind: 'youtube', video_id: videoId(url.href), media_url: null });
     }
     if (tag.toLowerCase().startsWith('<source') && url.hostname === 'vod.council.jeju.kr'
-      && /^\/live\/[A-Za-z0-9_-]+\/playlist\.m3u8$/.test(url.pathname) && !url.search && !url.hash) {
+      && /^\/(?:live\/[A-Za-z0-9_-]+|vod\/_definst_\/\/?\d{4}\/\d{1,4}\/[A-Za-z0-9_-]+)\/playlist\.m3u8$/.test(url.pathname) && !url.search && !url.hash) {
       sources.push({ resolved_kind: 'hls', video_id: null, media_url: url.href });
     }
   }

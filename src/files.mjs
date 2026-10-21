@@ -71,6 +71,7 @@ export class FileInputs {
     if (options.loop) args.push('-stream_loop', '-1');
     if (options.remote) args.push('-protocol_whitelist', 'https,tls,tcp', '-rw_timeout', '15000000');
     if (options.upstream) args.push('-protocol_whitelist', 'pipe');
+    if (options.local) args.push('-protocol_whitelist', 'file,pipe');
     if (options.fromStart) args.push('-live_start_index', '0');
     if (options.raw) args.push('-f', 's16le', '-ar', '16000', '-ac', '1');
     args.push('-i', path);
@@ -107,7 +108,7 @@ export class FileInputs {
           if (recordingError) throw recordingError;
           if (recording) {
             recordedBytes += part.length;
-            if (recordedBytes > (this.config.maxRecordingBytes ?? 460800000)) {
+            if (recordedBytes > (this.config.maxRecordingBytes ?? 1382400000)) {
               this.scheduler.channel(stream.stream_id).recording_failed = true;
               throw new Error('Recording quota reached');
             }

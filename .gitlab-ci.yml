@@ -25,8 +25,8 @@ source_package:
   stage: package
   image: node:24.18.0-bookworm
   script:
-    - git archive --format=zip --prefix="jj-live-ai-$CI_COMMIT_SHORT_SHA/" --output="jj-live-ai-$CI_COMMIT_SHORT_SHA.zip" "$CI_COMMIT_SHA"
+    - git archive --format=zip --prefix="jc-live-ai-$CI_COMMIT_SHORT_SHA/" --output="jc-live-ai-$CI_COMMIT_SHORT_SHA.zip" "$CI_COMMIT_SHA"
   artifacts:
     expire_in: 30 days
     paths:
-      - jj-live-ai-*.zip
+      - jc-live-ai-*.zip

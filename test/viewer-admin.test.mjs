@@ -63,7 +63,7 @@ test('public event feed removes private errors and registration updates reach vi
   const stream = await fetch(base + '/api/viewer/events?streams=ch1&after=0', { signal: abort.signal });
   const reader = stream.body.getReader();
   const text = new TextDecoder().decode((await reader.read()).value);
-  assert.match(text, /Registered/); assert.match(text, /degraded/); assert.doesNotMatch(text, /private-/);
+  assert.match(text, /의회운영위원회/); assert.match(text, /degraded/); assert.doesNotMatch(text, /private-/);
   await reader.cancel(); abort.abort();
 });
 test('admin settings persist across repeated saves and reject invalid or busy changes', async t => {

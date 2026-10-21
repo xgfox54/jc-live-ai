@@ -14,9 +14,10 @@ import { MinutesService } from '../src/minutes.mjs';
 import { CHANNEL, parseCouncilDirectory, councilMetadata, parseYouTubeDirectory } from '../src/official-directory.mjs';
 import { parseCouncilPlayer } from '../src/council.mjs';
 import { createService } from '../src/server.mjs';
+import { committees } from '../public/committees.mjs';
 
 const candidate = (n, phase = 'live') => { const video_id = String(n).padStart(11, '0'); const page_url = 'https://www.youtube.com/watch?v=' + video_id;
-  return { video_id, page_url, title: 'Fixture meeting ' + n, kind: 'youtube', phase, sources: [page_url], discovered_from: 'youtube' }; };
+  return { video_id, page_url, title: 'Fixture meeting ' + n, committee: committees[(n - 1) % 8].name, kind: 'youtube', phase, sources: [page_url], discovered_from: 'youtube' }; };
 const fakeEngine = () => ({ ready: true, metadata: { test_only: true }, stop: async () => {},
   transcribe: async () => ({ spans: [{ text: '사업 계획을 검토했습니다. 해당 안건은 가결되었음을 선포합니다. 자료 제출을 요청합니다.' }], inference_ms: 0 }) });
 function fixture(t) {
@@ -101,12 +102,12 @@ test('discovered broadcast records once, drains to minutes, applies corrections 
   for (let seq = 0; seq < 6; seq++) f.scheduler.feed(stream.stream_id, { session_id: state.session_id, epoch: 0, seq, pcm: Buffer.alloc(32000, 1) });
   await f.inputs.stop(stream.stream_id); while (f.scheduler.busy) await immediate(); await immediate(); f.minutes.flush();
   const first = f.registry.minutes(stream.broadcast_id);
-  assert.equal(first.status, 'draft'); assert.equal(first.segment_count, 2); assert.equal(first.decision_quotes.length, 1); assert.equal(first.action_quotes.length, 1);
+  assert.equal(first.status, 'draft'); assert.equal(first.segment_count, 2); assert.ok(first.paragraphs.length >= 1); assert.equal(first.decision_quotes, undefined);
   assert.equal(f.registry.get(stream.broadcast_id).completed, true);
-  assert.match(readFileSync(join(f.dir, 'minutes', stream.broadcast_id + '.md'), 'utf8'), /全|전체 전사문/);
+  assert.match(readFileSync(join(f.dir, 'minutes', stream.broadcast_id + '.md'), 'utf8'), /全|전체 회의록 받아쓰기/);
   const segment = f.registry.segments(stream.broadcast_id)[0]; f.store.correct(segment.segment_id, { version: 1, text: '검토자가 수정한 발언입니다.' });
   f.minutes.flush(); assert.equal(f.registry.minutes(stream.broadcast_id).transcript[0].text, '검토자가 수정한 발언입니다.');
-  f.items([candidate(2)]); await f.discovery.scan(); await f.monitor.tick();
+  f.items([candidate(9)]); await f.discovery.scan(); await f.monitor.tick();
   assert.equal(f.store.streams()[0].stream_id, stream.stream_id); assert.notEqual(f.store.streams()[0].broadcast_id, stream.broadcast_id);
   assert.equal(f.registry.minutes(stream.broadcast_id).segment_count, 2); assert.equal(f.registry.minuteList()[0].transcript, undefined);
 });
@@ -156,12 +157,13 @@ test('discovery controls require admin while published minutes exports remain re
   const replacement = { ...candidate(2), stream_id: 'ch1', name: 'Replacement broadcast', broadcast_id: replacementRecord.id };
   store.saveStream(replacement); const replacementState = scheduler.start(replacement);
   service.minutes.attach(replacement, replacementState);
-  store.segment({ stream_id: 'ch1', session_id: replacementState.session_id, start_ms: 0, end_ms: 5000, raw_text: 'current broadcast only' });
+  const currentRow = store.segment({ stream_id: 'ch1', session_id: replacementState.session_id, start_ms: 0, end_ms: 5000, raw_text: 'current private raw' });
+  store.correct(currentRow.segment_id, { version: 1, origin: 'ai', text: 'current broadcast only' });
   const snapshot = await (await fetch(base + '/api/viewer/snapshot')).json();
-  assert.equal(snapshot.segments.length, 1); assert.equal(snapshot.segments[0].raw_text, 'current broadcast only');
+  assert.equal(snapshot.segments.length, 1); assert.equal(snapshot.segments[0].text, 'current broadcast only');
   assert.equal(snapshot.gaps.length, 0);
   const history = await (await fetch(base + '/api/viewer/segments?stream=ch1')).json();
-  assert.equal(history.items.length, 1); assert.equal(history.items[0].raw_text, 'current broadcast only');
+  assert.equal(history.items.length, 1); assert.equal(history.items[0].text, 'current broadcast only');
 });
 test('late council player identity merges earlier page and channel records with their sessions', async t => {
   const f = fixture(t);
