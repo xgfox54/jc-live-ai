@@ -10,7 +10,7 @@
 
 | 항목 | 위치·조건 |
 |---|---|
-| Node.js | 24.18 이상 25 미만 |
+| Node.js | 24.22.1 이상 25 미만 |
 | 전사 모델 | models/ggml-small-q5_1.bin |
 | 전사 워커 | bin/jc-live-worker.exe |
 | FFmpeg | bin/ffmpeg.exe |

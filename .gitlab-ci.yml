@@ -11,7 +11,7 @@ default:
 
 node_tests:
   stage: test
-  image: node:24.18.0-bookworm
+  image: node:24.22.1-bookworm
   script:
     - node --version
     - node --test --test-reporter=spec --test-reporter=junit --test-reporter-destination=stdout --test-reporter-destination=junit.xml test/*.test.mjs
@@ -23,7 +23,7 @@ node_tests:
 
 source_package:
   stage: package
-  image: node:24.18.0-bookworm
+  image: node:24.22.1-bookworm
   script:
     - git archive --format=zip --prefix="jc-live-ai-$CI_COMMIT_SHORT_SHA/" --output="jc-live-ai-$CI_COMMIT_SHORT_SHA.zip" "$CI_COMMIT_SHA"
   artifacts:

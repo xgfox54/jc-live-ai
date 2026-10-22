@@ -36,7 +36,7 @@ Vercel 공개 화면과 PC의 수집·전사 서버 연결 방법은 [Vercel 운
 
 ## 설치·실행
 
-현재 실행 기준은 Windows, Node.js 24.18 이상 25 미만, Vulkan 지원 GPU 환경. JavaScript 의존 패키지 설치 없이 자동 테스트 실행 가능. 실제 전사에는 모델·워커·FFmpeg·yt-dlp 별도 준비 필요.
+현재 실행 기준은 Windows, Node.js 24.22.1 이상 25 미만, Vulkan 지원 GPU 환경. JavaScript 의존 패키지 설치 없이 자동 테스트 실행 가능. 실제 전사에는 모델·워커·FFmpeg·yt-dlp 별도 준비 필요.
 
 ~~~powershell
 git clone https://gitlab.aigov.go.kr/memory365/jc-live-ai.git
