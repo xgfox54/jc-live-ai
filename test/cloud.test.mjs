@@ -78,9 +78,9 @@ test('local transcripts publish to read-only cloud views with complete paginatio
   const f = fixture(t); const first = f.attach(1); f.segments(1, 0, 130);
   await f.publisher.flush(); assert.equal(f.publisher.view().phase, 'published');
   let response = await f.read('snapshot'); let snapshot = await response.json();
-  assert.equal(snapshot.delivery.mode, 'poll'); assert.equal(snapshot.before.ch1, 30);
+  assert.equal(snapshot.delivery.mode, 'poll'); assert.equal(snapshot.before.ch1, 31);
   assert.equal(snapshot.segments.length, 100);
-  const history = await (await f.read('segments?stream=ch1&before=30')).json();
+  const history = await (await f.read('segments?stream=ch1&before=' + snapshot.before.ch1)).json();
   assert.equal(history.items.length, 30); assert.equal(history.items[0].text, '시험 발언 0');
   assert.doesNotMatch(JSON.stringify(history), /비공개 원문|raw_text/);
   const document = await (await f.read('minutes/' + first.id + '.json')).text();
@@ -90,13 +90,27 @@ test('local transcripts publish to read-only cloud views with complete paginatio
   const writes = f.storage.writes; await f.publisher.flush(); assert.equal(f.storage.writes, writes);
   const restarted = new CloudPublisher(f); await restarted.flush(); assert.equal(f.storage.writes, writes); await restarted.close();
   f.tick(); f.segments(1, 130, 50); await f.publisher.flush();
-  snapshot = await (await f.read('snapshot')).json(); assert.equal(snapshot.before.ch1, 80);
-  assert.equal((await (await f.read('segments?stream=ch1&before=80')).json()).items.length, 80);
+  snapshot = await (await f.read('snapshot')).json(); assert.equal(snapshot.before.ch1, 81);
+  assert.equal((await (await f.read('segments?stream=ch1&before=' + snapshot.before.ch1)).json()).items.length, 80);
   f.tick(); f.segments(1, 180, 101); await f.publisher.flush();
   assert.equal((await (await f.read('minutes/' + first.id)).json()).segment_count, 281);
   f.tick(); const replacement = f.attach(2); f.segments(2, 0, 1); await f.publisher.flush();
   snapshot = await (await f.read('snapshot')).json(); assert.equal(snapshot.streams[0].broadcast_id, replacement.id);
   assert.equal(snapshot.segments.length, 1); assert.equal((await (await f.read('minutes/' + first.id)).json()).segment_count, 281);
+  assert.equal((await f.read('segments?stream=ch1&broadcast=' + first.id)).status, 409);
+});
+test('cloud history uses persistent cursors when an older correction is published later', async t => {
+  const f = fixture(t); f.attach(1); f.segments(1, 0, 1);
+  const delayed = f.store.segment({ session_id: 'session1', stream_id: 'ch1', start_ms: 5000, end_ms: 10000, raw_text: '비공개 원문' });
+  f.segments(1, 2, 20); await f.publisher.flush();
+  const first = await (await f.read('segments?stream=ch1&limit=10')).json();
+  assert.equal(first.before, 13);
+  f.store.correct(delayed.segment_id, { version: 1, origin: 'ai', text: '늦게 보정된 발언' });
+  for (let i = 0; i < 5; i++) f.tick(); await f.publisher.flush();
+  const second = await (await f.read('segments?stream=ch1&limit=200&before=' + first.before)).json();
+  assert.equal(new Set([...first.items, ...second.items].map(item => item.segment_id)).size, 22);
+  assert.equal(second.items.find(item => item.segment_id === delayed.segment_id).sequence, 2);
+  assert.equal(second.before, 0);
 });
 test('failed cloud delivery keeps local writing available and retries without exposing diagnostics', async t => {
   const f = fixture(t); const record = f.attach(1); f.broken(true); f.segments(1, 0, 2);
@@ -105,6 +119,121 @@ test('failed cloud delivery keeps local writing available and retries without ex
   f.segments(1, 2, 1); f.minutes.flush(); assert.equal(f.registry.minutes(record.id).segment_count, 3);
   f.broken(false); f.tick(); await f.publisher.flush(); assert.equal(f.publisher.view().phase, 'published');
   assert.equal((await (await f.read('minutes/' + record.id)).json()).segment_count, 3);
+});
+
+test('archive errors leave live drafts available and retry the unacknowledged archive', async t => {
+  for (const failure of ['minutes-flush', 'minutes-http']) await t.test(failure, async t => {
+    const f = fixture(t); const record = f.attach(1); f.segments(1, 0, 1);
+    const draft = f.store.segment({ session_id: 'session1', stream_id: 'ch1', start_ms: 5000, end_ms: 10000,
+      raw_text: '실시간 초안입니다.', live_preview: true });
+    const flush = f.minutes.flush.bind(f.minutes); let broken = true;
+    f.minutes.flush = () => { if (broken && failure === 'minutes-flush') throw new Error('private-archive-path'); return flush(); };
+    f.publisher.fetcher = async (url, options) => {
+      const body = JSON.parse(options.headers['Content-Encoding'] ? gunzipSync(options.body) : options.body);
+      if (broken && failure === 'minutes-http' && body.kind === 'minutes') return new Response(null, { status: 500 });
+      return f.fetcher(url, options);
+    };
+    await f.publisher.flush();
+    const snapshot = await (await f.read('snapshot')).json();
+    assert.equal(snapshot.live_segments?.[0]?.segment_id, draft.segment_id);
+    assert.equal(f.publisher.view().phase, 'retry');
+    assert.equal(f.publisher.view().live_phase, 'published');
+    assert.equal(f.publisher.view().archive_phase, 'retry');
+    assert.equal(f.publisher.known.has(record.id), false);
+    assert.doesNotMatch(JSON.stringify(f.publisher.view()), /private-|cccccccc/);
+    broken = false; f.tick(); await f.publisher.flush();
+    assert.equal(f.publisher.view().phase, 'published');
+    assert.equal((await (await f.read('minutes/' + record.id)).json()).segment_count, 1);
+    assert.equal(f.publisher.known.get(record.id).summary.id, record.id);
+    assert.equal((await (await f.read('segments?stream=ch1')).json()).items[0].sequence, 1);
+  });
+});
+
+test('a pending archive does not hold later live snapshots or start duplicate archive requests', async t => {
+  const f = fixture(t); const record = f.attach(1); f.segments(1, 0, 1);
+  let release; let archiveCalls = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  f.publisher.fetcher = async (url, options) => {
+    const body = JSON.parse(options.headers['Content-Encoding'] ? gunzipSync(options.body) : options.body);
+    if (body.kind === 'minutes') { archiveCalls++; await gate; }
+    return f.fetcher(url, options);
+  };
+  const first = f.publisher.flush(); f.publisher.start();
+  try {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal((await f.read('snapshot')).status, 200);
+    assert.equal(f.publisher.view().archive_phase, 'publishing');
+    assert.equal(f.publisher.known.has(record.id), false);
+    f.tick();
+    const draft = f.store.segment({ session_id: 'session1', stream_id: 'ch1', start_ms: 5000, end_ms: 10000,
+      raw_text: '대기 중에도 전송할 초안입니다.', live_preview: true });
+    await new Promise(resolve => setTimeout(resolve, 1300));
+    if (f.publisher.pending) await f.publisher.pending;
+    assert.equal((await (await f.read('snapshot')).json()).live_segments[0].segment_id, draft.segment_id);
+    assert.equal(archiveCalls, 1);
+  } finally { release(); await first; }
+  assert.equal(f.publisher.view().phase, 'published');
+  assert.equal((await (await f.read('minutes/' + record.id)).json()).segment_count, 1);
+  assert.equal((await (await f.read('minutes')).json()).items[0].id, record.id);
+});
+
+test('snapshot retries preserve acknowledged archives and close aborts both publication requests', async t => {
+  const f = fixture(t); const record = f.attach(1); f.segments(1, 0, 1);
+  let broken = true; let archives = 0;
+  f.publisher.fetcher = async (url, options) => {
+    const body = JSON.parse(options.headers['Content-Encoding'] ? gunzipSync(options.body) : options.body);
+    if (body.kind === 'minutes') archives++;
+    if (broken && body.kind === 'snapshot') return new Response(null, { status: 500 });
+    return f.fetcher(url, options);
+  };
+  await f.publisher.flush();
+  assert.equal(f.publisher.view().phase, 'retry');
+  assert.equal(f.publisher.view().live_phase, 'retry');
+  assert.equal(f.publisher.view().archive_phase, 'published');
+  assert.equal(f.publisher.known.has('site'), false);
+  assert.equal(f.publisher.known.has(record.id), true);
+  broken = false; f.tick(); await f.publisher.flush();
+  assert.equal(f.publisher.view().phase, 'published'); assert.equal(archives, 1);
+
+  const signals = [];
+  f.tick(); f.segments(1, 1, 101);
+  f.publisher.fetcher = (url, { signal }) => new Promise((resolve, reject) => {
+    signals.push(signal); signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  });
+  const pending = f.publisher.flush();
+  assert.equal(signals.length, 2); assert.notEqual(signals[0], signals[1]);
+  await f.publisher.close(); await pending;
+  assert.equal(signals.every(signal => signal.aborted), true);
+  assert.equal(f.publisher.pending, null); assert.equal(f.publisher.archivePending, null);
+});
+
+test('unchanged snapshots refresh the publication timestamp at the normal interval', async t => {
+  const f = fixture(t); await f.publisher.flush();
+  const writes = f.storage.writes;
+  await f.publisher.flush(); assert.equal(f.storage.writes, writes);
+  f.tick(); await f.publisher.flush();
+  assert.equal(f.storage.writes, writes + 1);
+  assert.equal((await (await f.read('snapshot')).json()).delivery.published_ms, f.now());
+  assert.equal(f.publisher.view().published_ms, f.now());
+});
+test('new Whisper drafts reach cloud snapshots promptly and are replaced without publishing raw archive history', async t => {
+  const f = fixture(t); f.attach(1); f.publisher.start(); await f.publisher.flush(); f.tick();
+  f.store.saveSession({ stream_id: 'ch1', session_id: 'session1', state: 'running', started_ms: Date.now(),
+    last_receive_ms: Date.now(), audio_received_until: 10000, audio_processed_until: 0 });
+  await new Promise(resolve => setTimeout(resolve, 1300)); if (f.publisher.pending) await f.publisher.pending;
+  assert.equal((await (await f.read('snapshot')).json()).health[0].stages.transcription, 'processing'); f.tick();
+  const row = f.store.segment({ stream_id: 'ch1', session_id: 'session1', start_ms: 0, end_ms: 5000,
+    raw_text: '일차 음성 인식 초안입니다.', live_preview: true, preview_updated_ms: Date.now() });
+  await new Promise(resolve => setTimeout(resolve, 1300)); if (f.publisher.pending) await f.publisher.pending;
+  let snapshot = await (await f.read('snapshot')).json();
+  assert.equal(snapshot.live_segments[0].text, row.raw_text); assert.equal(snapshot.live_segments[0].display_state, 'draft');
+  assert.equal((await (await f.read('segments?stream=ch1')).json()).items.length, 0);
+  f.tick(); f.store.correct(row.segment_id, { version: 1, origin: 'ai', text: 'AI 후보정이 끝난 발언입니다.' });
+  await new Promise(resolve => setTimeout(resolve, 1300)); if (f.publisher.pending) await f.publisher.pending;
+  snapshot = await (await f.read('snapshot')).json();
+  assert.equal(snapshot.live_segments[0].segment_id, row.segment_id); assert.equal(snapshot.live_segments[0].display_state, 'corrected');
+  assert.doesNotMatch(JSON.stringify(snapshot), /일차 음성 인식 초안|raw_text/);
+  assert.equal((await (await f.read('snapshot?streams=ch2')).json()).live_segments.length, 0);
 });
 test('cloud configuration remains optional and rejects unsafe destinations, shared keys and invalid intervals', t => {
   const f = fixture(t); assert.equal(cloudSettings(f.config), null);

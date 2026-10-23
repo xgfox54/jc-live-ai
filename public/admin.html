@@ -87,6 +87,8 @@
 <p class="help">OpenAI 호환 API 기본 주소를 입력합니다. 프록시 인증키가 없는 로컬 연결은 비워 둡니다. 주소를 바꾸면 기존 키를 지웁니다.</p>
 </div>
 <label>후보정 모델<select name="model" id="ai-model"><option value="">연결 저장 후 모델 목록 확인</option></select></label>
+<label>정밀 후보정 모델(선택)<select name="refine_model" id="ai-refine-model"><option value="">사용 안 함</option></select></label>
+<p class="help">후보정 모델 결과를 먼저 공개하고, 정밀 후보정 모델 결과가 검사를 통과하면 같은 문장을 교체합니다.</p>
 <button type="button" id="ai-model-refresh" class="secondary">연결 모델 확인</button>
 <p id="ai-model-status" class="help" role="status"></p>
 <label class="check"><input name="automatic" type="checkbox"> 자동 후보정: 새 문장의 후보를 만들고 경고 없는 후보를 이용자 화면에 반영</label>
@@ -127,7 +129,10 @@
 <p class="help">1분마다 새 발언을 확인합니다. 로컬 AI는 수집 종료 후 처리합니다. 프록시를 선택하면 해당 서버로 회의록 받아쓰기를 전송합니다.</p>
 <div id="structured-notes"></div><details><summary>시각별 누적 요약</summary><div id="summary-timeline"></div></details></section>
 <section class="surface"><h3>참여자 이름 지정</h3>
-<p class="help">자동 분석한 참여자 번호에 실제 발언자 이름을 지정합니다. 지정한 이름은 회의록의 발언 내용 정리와 받아쓰기 표시에 사용합니다. 원음으로 확인한 뒤 지정해 주세요.</p>
+<h4>영상 종료 후 발언자 재검토</h4>
+<p class="help">자동 후보정을 켜면 회의 수집이 끝난 뒤 자동으로 실행합니다. 영상 끝 도달·방송 종료 확인 또는 마지막 입력 후 10분이 지나면 종료로 봅니다. AI 후보정이 끝난 공개 문장을 구간별로 검토해 확인된 이름으로 묶습니다. 미확인 구간은 임의로 이름을 지정하지 않습니다.</p>
+<div class="row"><button id="final-speakers" class="secondary">전체 발언자 재검토</button><button id="pause-final-speakers" class="secondary" disabled>발언자 검토 중지</button></div><p id="final-speakers-status" role="status" class="help"></p>
+<p class="help">실시간 분석 번호에 이름을 지정합니다. 종료 후 재검토 결과는 별도로 보존하며 발언 구간별 근거를 우선합니다. 원음으로 확인한 뒤 지정해 주세요.</p>
 <form id="participant-form"><div id="participant-rows"></div><datalist id="participant-members"></datalist><button>참여자 이름 저장</button></form>
 <p id="participant-status" role="status" class="help"></p></section>
 <section class="surface"><h3>회의록 본문 직접 수정</h3><button id="minutes-edit" class="secondary">저장한 본문 불러오기</button><label>Markdown 본문<textarea id="minutes-editor" rows="16" maxlength="500000"></textarea></label><button id="minutes-save">본문 저장</button>

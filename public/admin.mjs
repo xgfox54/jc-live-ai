@@ -25,8 +25,8 @@ async function api(path, options = {}) {
   return response;
 }
 for (const selector of ['#register-channel', '#manage-channel', '#review-channel', '#sync-channel', '#import-channel']) {
-  for (const [index, id] of ids.entries()) {
-    const option = document.createElement('option'); option.value = id; option.textContent = (index + 1) + '. ' + committeeForChannel(id).name; $(selector).append(option);
+  for (const id of ids) {
+    const option = document.createElement('option'); option.value = id; option.textContent = id.slice(2) + '. ' + committeeForChannel(id).name; $(selector).append(option);
   }
 }
 const tools = new AdminTools({ api, state, message, streams: () => streams, refresh: () => refresh() });
@@ -34,11 +34,11 @@ const automation = new AutomationTools({ api, message });
 const ai = new AITools({ api, message, refresh });
 const workspace = new Workspace({ api, message });
 const cards = new Map();
-for (const [index, id] of ids.entries()) {
+for (const id of ids) {
   const card = document.createElement('button'); card.className = 'admin-channel secondary';
   const title = document.createElement('strong'); const status = document.createElement('span'); card.append(title, status);
   card.addEventListener('click', () => { fillStream(id); $('#register-channel').focus(); });
-  $('#admin-list').append(card); cards.set(id, { card, title, status, number: index + 1 });
+  $('#admin-list').append(card); cards.set(id, { card, title, status, number: Number(id.slice(2)) });
 }
 function fillStream(id) {
   const form = $('#register'); form.reset(); form.elements.stream_id.value = id; $('#manage-channel').value = id;

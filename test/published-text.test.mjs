@@ -52,6 +52,26 @@ test('public SSE suppresses raw and partial events but delivers AI application a
   assert.match(wire, /공개 후보정/); assert.match(wire, /공개 후속 검토/); assert.match(wire, new RegExp('id: ' + last.event_id));
   assert.doesNotMatch(wire, /RAW_SECRET|raw_text|corrected_text|"kind":"partial"/);
 });
+test('live SSE replaces an opted-in draft while archive endpoints stay corrected-only', async t => {
+  const f = await fixture(t);
+  const row = f.store.segment({ stream_id: 'ch1', session_id: f.state.session_id, start_ms: 0, end_ms: 5000,
+    raw_text: '신규 일차 받아쓰기입니다.', live_preview: true, preview_updated_ms: Date.now() });
+  const snapshot = await (await fetch(f.base + '/api/viewer/snapshot?streams=ch1')).json();
+  assert.equal(snapshot.live_segments[0].display_state, 'draft'); assert.equal(snapshot.segments.length, 0);
+  assert.equal((await (await fetch(f.base + '/api/viewer/segments?stream=ch1')).json()).items.length, 0);
+  f.store.correct(row.segment_id, { version: 1, origin: 'ai', text: '후보정을 마친 문장입니다.' });
+  f.store.event('stream', { stream_id: 'ch1', name: 'END_LIVE_PREVIEW' });
+  const abort = new AbortController(); const timer = setTimeout(() => abort.abort(), 3000);
+  const response = await fetch(f.base + '/api/viewer/events?streams=ch1&after=0', { signal: abort.signal });
+  const reader = response.body.getReader(); let wire = '';
+  try { while (!wire.includes('END_LIVE_PREVIEW')) wire += new TextDecoder().decode((await reader.read()).value); }
+  finally { clearTimeout(timer); await reader.cancel(); abort.abort(); }
+  assert.match(wire, /"kind":"live-segment"/); assert.match(wire, /"display_state":"draft"/);
+  assert.match(wire, /"display_state":"corrected"/); assert.doesNotMatch(wire, /raw_text|live_preview|preview_updated_ms/);
+  const updated = await (await fetch(f.base + '/api/viewer/snapshot?streams=ch1')).json();
+  assert.equal(updated.live_segments[0].segment_id, row.segment_id);
+  assert.equal(updated.live_segments[0].text, '후보정을 마친 문장입니다.'); assert.doesNotMatch(JSON.stringify(updated), /신규 일차/);
+});
 test('public minutes and exports rebuild from AI-corrected rows and exclude manual or stale raw-based bodies', async t => {
   const f = await fixture(t); f.add('RAW_SECRET_MINUTES'); const row = f.add('RAW_SECRET_AI_SOURCE');
   f.store.correct(row.segment_id, { version: 1, origin: 'ai', text: 'AI 후보정 완료 발언과 예산 검토를 보고합니다.' });

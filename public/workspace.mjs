@@ -12,7 +12,7 @@ export class Workspace {
     $('#record-older').addEventListener('click', () => this.search(this.before).catch(error => message(error.message)));
     $('#record-mode').addEventListener('change', () => this.renderRows(this.items ?? []));
     $('#record-repeats').addEventListener('change', () => this.search().catch(error => message(error.message)));
-    for (const [selector, route] of [['#minutes-generate', '/generate'], ['#minutes-pause', '/pause'], ['#audio-pause', '/pause-audio']])
+    for (const [selector, route] of [['#minutes-generate', '/generate'], ['#minutes-pause', '/pause'], ['#audio-pause', '/pause-audio'], ['#final-speakers', '/final-speakers'], ['#pause-final-speakers', '/pause-final-speakers']])
       $(selector).addEventListener('click', () => this.action(route, { broadcast_id: this.id() }));
     $('#live-summary').addEventListener('change', () => this.action('/live', { broadcast_id: this.id(), enabled: $('#live-summary').checked }));
     $('#minutes-edit').addEventListener('click', () => this.loadEditor().catch(error => message(error.message)));
@@ -107,6 +107,15 @@ export class Workspace {
     }
   }
   renderStatus(id, value, audio) {
+    const final = value.final_speakers;
+    const readiness = { transcribing: '전사 완료 대기', end_unverified: '수집 종료 확인 중 (마지막 입력 후 10분 대기)', incomplete: '누락·오류 기록 확인 필요',
+      empty: '받아쓰기 없음', correcting: '문장 후보정 완료 대기', ready: '전체 발언자 검토 가능' };
+    const finalPhases = { running: '발언자 검토 중', complete: '발언자 검토 완료', partial: '검토 완료·일부 발언자 미확인', failed: '검토 실패', interrupted: '검토 중단', paused: '검토 중지' };
+    $('#final-speakers-status').textContent = (readiness[final?.readiness] ?? '기록을 선택해 주세요.')
+      + (final?.job ? ' · ' + finalPhases[final.job.phase] + ' · ' + final.job.completed + '/' + final.job.total + '묶음' : '')
+      + (final?.result ? ' · 이름 확인 ' + final.result.assigned + '개 구간 · 미확인 ' + final.result.unresolved + '개 구간' : '');
+    $('#final-speakers').disabled = final?.readiness !== 'ready' || final?.job?.phase === 'running';
+    $('#pause-final-speakers').disabled = final?.job?.phase !== 'running';
     const job = value.job;
     $('#minutes-job').textContent = job ? (phases[job.phase] ?? job.phase) + ' · ' + job.completed + '/' + job.total + '묶음'
       + (job.remaining_ms ? ' · 남은 시간 추정 ' + Math.ceil(job.remaining_ms / 1000) + '초' : '') + (job.error ? ' · ' + job.error : '') : '생성 대기';

@@ -9,6 +9,8 @@ export function youtubePhase(value) {
     case 'is_upcoming': return 'waiting';
     case 'was_live': case 'post_live': return 'ended';
     case 'not_live': return 'offline';
+    // yt-dlp prints NA for removed or private videos.
+    case null: case undefined: return 'offline';
     default: throw new Error('방송 상태를 확인하지 못했습니다. 다음 확인 때 다시 시도합니다.');
   }
 }
@@ -37,7 +39,7 @@ export function probeYouTube(config, stream, signal) {
     child.on('close', code => {
       if (code !== 0) { finish(new Error('방송 상태 조회에 실패했습니다. 다음 확인 때 다시 시도합니다.')); return; }
       try {
-        const value = JSON.parse(output.trim());
+        const value = JSON.parse(output.trim().replace(/:NA(?=[,}])/g, ':null'));
         if (value.id !== id) throw new Error('등록한 영상과 응답 영상이 다릅니다. 주소를 확인해 주세요.');
         finish(null, { phase: youtubePhase(value.live_status), key: 'youtube:' + id });
       } catch (error) { finish(error); }

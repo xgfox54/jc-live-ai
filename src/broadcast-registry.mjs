@@ -1,3 +1,5 @@
+import { finalSourceGuard, REVIEW_METHOD } from './final-speakers.mjs';
+import { publicSpeech } from './silence-filter.mjs';
 import { createHash } from 'node:crypto';
 
 export class BroadcastRegistry {
@@ -67,8 +69,8 @@ export class BroadcastRegistry {
       .all(id).map(row => JSON.parse(row.document));
   }
   segments(id) {
-    return this.db.prepare('SELECT s.document FROM segments s JOIN broadcast_sessions b ON b.session_id=s.session_id WHERE b.broadcast_id=? ORDER BY s.rowid')
-      .all(id).map(row => JSON.parse(row.document));
+    return this.db.prepare('SELECT s.document,s.rowid AS sequence FROM segments s JOIN broadcast_sessions b ON b.session_id=s.session_id WHERE b.broadcast_id=? ORDER BY s.rowid')
+      .all(id).map(row => ({ ...JSON.parse(row.document), sequence: row.sequence }));
   }
   gaps(id) {
     return this.db.prepare("SELECT e.payload FROM events e JOIN broadcast_sessions b ON json_extract(e.payload,'$.session_id')=b.session_id WHERE b.broadcast_id=? AND e.kind='gap' ORDER BY e.id")
@@ -85,12 +87,18 @@ export class BroadcastRegistry {
     return this.db.prepare("SELECT count(*) AS total,coalesce(sum(s.version),0) AS version_sum FROM segments s JOIN broadcast_sessions b ON b.session_id=s.session_id "
       + "WHERE b.broadcast_id=? AND json_extract(s.document,'$.ai_corrected')=1 AND trim(coalesce(json_extract(s.document,'$.corrected_text'),''))<>''").get(id);
   }
-  publishedSegments(id) { return this.segments(id).filter(row => row.ai_corrected === true && typeof row.corrected_text === 'string' && row.corrected_text.trim()); }
+  publishedSegments(id) { return this.segments(id).filter(row => row.ai_corrected === true && typeof row.corrected_text === 'string' && row.corrected_text.trim() && publicSpeech(row)); }
   reviewState(key) {
     if (!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='review_state'").get()) return null;
     const row = this.db.prepare('SELECT document FROM review_state WHERE id=?').get(key); return row ? JSON.parse(row.document) : null;
   }
   participants(id) { return this.reviewState('participants:' + id)?.names ?? {}; }
+  finalSpeakers(id) {
+    const value = this.reviewState('final-speakers:' + id);
+    return value && ['complete', 'partial'].includes(value.phase)
+      && [REVIEW_METHOD, REVIEW_METHOD + '-revalidated'].includes(value.method)
+      && value.source_guard === finalSourceGuard(this, id) ? value : null;
+  }
   structuredCurrent(id, structured) {
     if (!structured) return false;
     if (structured.scope === 'published') return JSON.stringify(structured.revision) === JSON.stringify(this.publishedRevision(id));
@@ -100,8 +108,19 @@ export class BroadcastRegistry {
   summary(id) {
     const structured = this.reviewState('structured:' + id);
     if (!structured || structured.scope !== 'published' || !this.structuredCurrent(id, structured)) return null;
+    const sources = new Map(structured.sources.map(part => [part.id, part]));
+    const titles = new Map((structured.digest?.groups ?? []).map(group => [group.group, group.title]));
+    const groups = [];
+    structured.notes.forEach((note, group) => {
+      const items = (note.summary ?? []).map(fact => {
+        const source = sources.get(fact.source_id);
+        return { text: fact.text, quote: fact.quote, source_id: fact.source_id, group, segment_id: source?.segment_id ?? null,
+          session_id: source?.session_id ?? null, start_ms: Number.isFinite(source?.start_ms) ? source.start_ms : null };
+      });
+      if (items.length) groups.push({ group, title: titles.get(group) ?? '', items });
+    });
     return { method: 'grounded_ai', model: structured.model, updated_ms: structured.updated_ms,
-      items: structured.notes.flatMap(note => note.summary).map(fact => ({ text: fact.text, quote: fact.quote, source_id: fact.source_id })) };
+      items: groups.flatMap(group => group.items), groups, digest: structured.digest ?? null };
   }
   minutes(id) {
     const row = this.db.prepare('SELECT document FROM minutes WHERE broadcast_id=?').get(id);
@@ -113,8 +132,8 @@ export class BroadcastRegistry {
     const current = this.structuredCurrent(id, structured);
     return { ...value, structured: structured ? { ...structured, stale: !current } : null, manual,
       method: manual?.markdown ? 'manual_review' : current ? 'grounded_ai' : value.method,
-      updated_ms: Math.max(value.updated_ms, structured?.updated_ms ?? 0, manual?.updated_ms ?? 0),
-      markdown: manual?.markdown || (current ? structured.markdown : value.markdown) };
+      updated_ms: Math.max(value.updated_ms, structured?.updated_ms ?? 0, manual?.updated_ms ?? 0, this.reviewState('final-speakers:' + id)?.updated_ms ?? 0),
+      markdown: manual?.markdown || (current && !this.finalSpeakers(id) ? structured.markdown : value.markdown) };
   }
   minuteList() {
     const reviewExists = Boolean(this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='review_state'").get());

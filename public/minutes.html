@@ -6,7 +6,28 @@
 <main><div class="intro"><div><p class="eyebrow">회의록</p><h1>방송별 회의록을 확인합니다</h1>
 <p>실시간 회의록은 AI가 작성한 초안입니다. 이름, 장소 등 고유명사와 숫자는 틀릴 수 있으니 원본 영상 다시보기로 확인해주세요</p></div><button id="reload" class="secondary">새로고침</button></div>
 <p class="service-disclaimer">※ JC-LIVE는 의회에서 공식 제공하는 서비스가 아닙니다. 비공식 서비스인 점 참고바랍니다.</p>
-<p id="minutes-notice" role="status"></p><div class="admin-columns minutes-columns">
-<section class="surface"><h2>회의 목록</h2><div id="minutes-list" class="minutes-list"></div></section>
-<article id="minutes-detail" class="surface minutes-detail" aria-label="선택한 회의록"><h2>열람할 회의를 선택해 주세요</h2><p>방송이 등록되고 수집이 시작되면 회의록이 추가됩니다.</p></article>
+<p id="minutes-notice" role="status"></p>
+<div class="minutes-shell">
+<nav class="surface minutes-nav" aria-label="회의 목록"><details class="minutes-fold" open><summary>회의 목록</summary><div id="minutes-list" class="minutes-list"></div></details></nav>
+<section id="minutes-detail" class="surface minutes-document" aria-label="선택한 회의록">
+<div id="minutes-head" class="minutes-head"><h2>열람할 회의를 선택해 주세요</h2><p>방송이 등록되고 수집이 시작되면 회의록이 추가됩니다.</p></div>
+<div id="minutes-tabs" class="minutes-tabs" role="tablist" aria-label="회의록 보기" hidden>
+<button type="button" role="tab" id="tab-chapter" aria-controls="panel-chapter" aria-selected="true" data-view="chapter">1장 회의록</button>
+<button type="button" role="tab" id="tab-points" aria-controls="panel-points" aria-selected="false" tabindex="-1" data-view="points">핵심 내용 요약</button>
+<button type="button" role="tab" id="tab-transcript" aria-controls="panel-transcript" aria-selected="false" tabindex="-1" data-view="transcript">전체 회의 받아쓰기 기록</button>
+</div>
+<div id="minutes-body" class="minutes-body" hidden>
+<div class="minutes-main">
+<div id="panel-chapter" class="minutes-panel" role="tabpanel" aria-labelledby="tab-chapter" tabindex="0"></div>
+<div id="panel-points" class="minutes-panel" role="tabpanel" aria-labelledby="tab-points" tabindex="0" hidden></div>
+</div>
+<section id="panel-transcript" class="transcript-pane" aria-labelledby="transcript-heading">
+<div class="transcript-head"><h3 id="transcript-heading">받아쓰기</h3>
+<div class="transcript-filters"><label>발언자<select id="transcript-speaker"><option value="">전체</option></select></label>
+<label>검색<input id="transcript-search" type="search" placeholder="발언 내용" autocomplete="off"></label></div></div>
+<p id="transcript-count" class="help"></p>
+<div id="transcript-list" class="transcript-list"></div>
+</section>
+</div>
+</section>
 </div></main></body></html>

@@ -69,13 +69,15 @@ export function youtubeDirectory(config, signal) {
       '--skip-download', '--dump-single-json', '--socket-timeout', '10', '--retries', '0',
       'https://www.youtube.com/channel/' + CHANNEL + '/streams'],
     { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], signal });
-    let output = ''; let settled = false;
+    let output = ''; let errors = ''; let settled = false;
     const finish = (error, value) => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(value); };
     const timer = setTimeout(() => { child.kill(); finish(new Error('YouTube 방송 목록 조회 시간이 초과됐습니다.')); }, 45000);
-    child.stderr.resume();
+    child.stderr.on('data', part => { if (errors.length < 4096) errors += part.toString(); });
     child.stdout.on('data', part => { output += part.toString(); if (output.length > 2097152) { child.kill(); finish(new Error('YouTube 목록 크기 제한을 넘었습니다.')); } });
     child.on('error', () => finish(new Error('YouTube 조회 도구를 실행하지 못했습니다.')));
     child.on('close', code => {
+      // The channel hides finished broadcasts; with no live or upcoming video YouTube removes the streams tab.
+      if (code !== 0 && /does not have a streams tab/.test(errors)) { finish(null, []); return; }
       if (code !== 0) { finish(new Error('YouTube 공식 채널 조회에 실패했습니다.')); return; }
       try { finish(null, parseYouTubeDirectory(JSON.parse(output))); } catch (error) { finish(error); }
     });

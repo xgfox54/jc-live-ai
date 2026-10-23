@@ -13,13 +13,13 @@
     },
     {
       "path": "bin/yt-dlp.exe",
-      "bytes": 17840399,
-      "sha256": "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a"
+      "bytes": 17880111,
+      "sha256": "33121d192d706e62f684a06f80918e3f3a8ba52ac3a65213b6951c39c7d9f555"
     },
     {
       "path": "bin/jc-live-worker.exe",
-      "bytes": 4022784,
-      "sha256": "3eac342b5415441e1c1ee7f90e771f6d8844cacd742d6a13725b332c6d147965"
+      "bytes": 3991040,
+      "sha256": "b525a725f713ca0de5e8d1d62568940a27cd768efd5ad04938db2490db1445dd"
     },
     {
       "path": "bin/diarization/concrt140.dll",
@@ -115,6 +115,16 @@
       "path": "bin/diarization/licenses/UPSTREAM-THIRD-PARTY-NOTICES.md",
       "sha256": "865dbd5bb2fb4e08811d2d6c90ebf260645b101ba8b0a9e6ba739b1d0222acf0",
       "bytes": 9171
+    },
+    {
+      "path": "bin/node/node.exe",
+      "bytes": 93915464,
+      "sha256": "d702daa815eabbff763c7d3808e235cf031cf2ca70211b56847bc72f51e240e5"
+    },
+    {
+      "path": "bin/cuda/jc-live-worker.exe",
+      "bytes": 91655168,
+      "sha256": "67709f433d5af6f4bab059b9e710c9c8874f7ad01bb197ec3bae7ba862ec75ef"
     }
   ]
 }

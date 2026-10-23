@@ -1,13 +1,15 @@
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { createWriteStream, mkdirSync, writeFileSync } from 'node:fs';
+import { promisify } from 'node:util';
+import { createWriteStream, mkdirSync, writeFileSync, statSync, fsync, openSync, closeSync, fsyncSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { resolveYouTube } from './youtube.mjs';
 import { resolveCouncil } from './council.mjs';
 import { stopProcessTree } from './subprocess.mjs';
+import { createLiveProbe } from './live-probe.mjs';
+import { AudioTimeline, saveAudioTimeline } from './audio-timeline.mjs';
 
 export class FileInputs {
-  constructor(scheduler, config) { this.scheduler = scheduler; this.config = config; this.children = new Map(); this.resolving = new Map(); }
+  constructor(scheduler, config) { this.scheduler = scheduler; this.config = config; this.children = new Map(); this.resolving = new Map(); this.endProbe = createLiveProbe(config); }
   isActive(id) { return this.children.has(id) || this.resolving.has(id); }
   startYouTube(stream) {
     return this.startResolved(stream, async signal => ({ url: await resolveYouTube(this.config, stream, signal), youtube: true }));
@@ -66,7 +68,7 @@ export class FileInputs {
     return this.start(stream, 'pipe:0', false, { upstream });
   }
   start(stream, path, realtime = true, options = {}) {
-    const args = ['-nostdin', '-v', 'error'];
+    const args = ['-nostdin', '-hide_banner', '-nostats', '-v', 'info', '-copyts'];
     if (realtime) args.push('-re');
     if (options.loop) args.push('-stream_loop', '-1');
     if (options.remote) args.push('-protocol_whitelist', 'https,tls,tcp', '-rw_timeout', '15000000');
@@ -76,7 +78,8 @@ export class FileInputs {
     if (options.raw) args.push('-f', 's16le', '-ar', '16000', '-ac', '1');
     args.push('-i', path);
     if (options.duration) args.push('-t', String(options.duration));
-    args.push('-vn', '-ac', '1', '-ar', '16000', '-f', 's16le', 'pipe:1');
+    args.push('-vn', '-af', 'aformat=sample_fmts=s16:sample_rates=16000:channel_layouts=mono,asettb=1/16000,ashowinfo',
+      '-ac', '1', '-ar', '16000', '-f', 's16le', 'pipe:1');
     const child = spawn(this.config.ffmpeg, args, { shell: false, windowsHide: true,
       stdio: [options.upstream ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
     if (options.upstream) {
@@ -86,12 +89,13 @@ export class FileInputs {
     this.children.set(stream.stream_id, child);
     const exited = new Promise(resolve => {
       child.once('error', error => resolve({ error: error.message }));
-      child.once('exit', (code, signal) => resolve({ code, signal }));
+      child.once('close', (code, signal) => resolve({ code, signal }));
     });
-    child.stderr.resume();
+    const timeline = new AudioTimeline();
+    child.stderr.setEncoding('utf8'); child.stderr.on('data', text => timeline.write(text));
     child.once('exit', code => { if (code !== 0 && options.upstream) stopProcessTree(options.upstream); });
     const task = (async () => {
-      let buffer = Buffer.alloc(0); let seq = 0; let recording; let recordingError; let recordedBytes = 0;
+      let buffer = Buffer.alloc(0); let seq = 0; let recording; let recordingError; let recordedBytes = 0; let endReason = 'manual'; let lastReceivedMs; let decodedBytes = 0; let timelinePath; let checkpointAt = 0; let captureComplete = false; let recordingOpened = false;
       try {
         if (this.config.recordAudio || stream.auto_record) {
           const channel = this.scheduler.channel(stream.stream_id);
@@ -100,11 +104,14 @@ export class FileInputs {
           writeFileSync(directory + '/source.json', JSON.stringify({ page_url: stream.page_url ?? '',
             stream_id: stream.stream_id, session_id: channel.session_id, format: 's16le', sample_rate: 16000,
             channels: 1, started_at: new Date().toISOString(),
-            capture_from_start: Boolean(stream.capture_from_start && !stream.beginning_fallback), coverage: 'unverified' }, null, 2));
+            capture_from_start: Boolean(stream.capture_from_start && !stream.beginning_fallback), coverage: 'unverified' }, null, 2), { flag: 'wx' });
+          timelinePath = directory + '/audio-timeline.json';
           recording = createWriteStream(directory + '/audio.pcm', { flags: 'wx' });
+          recording.once('open', () => { recordingOpened = true; });
           recording.on('error', error => { recordingError = error; child.kill(); });
         }
         for await (const part of child.stdout) {
+          lastReceivedMs = Date.now(); decodedBytes += part.length;
           if (recordingError) throw recordingError;
           if (recording) {
             recordedBytes += part.length;
@@ -112,7 +119,12 @@ export class FileInputs {
               this.scheduler.channel(stream.stream_id).recording_failed = true;
               throw new Error('Recording quota reached');
             }
-            if (!recording.write(part)) await once(recording, 'drain');
+            await new Promise((resolve, reject) => recording.write(part, error => error ? reject(error) : resolve()));
+            if (Date.now() - checkpointAt >= 1000) {
+              await promisify(fsync)(recording.fd);
+              saveAudioTimeline(timelinePath, timeline.checkpoint(recording.bytesWritten));
+              checkpointAt = Date.now();
+            }
           }
           buffer = Buffer.concat([buffer, part]);
           while (buffer.length >= 32_000) {
@@ -122,7 +134,7 @@ export class FileInputs {
                 await new Promise(resolve => setTimeout(resolve, 5));
             }
             this.scheduler.feed(stream.stream_id, { session_id: state.session_id, epoch: state.timeline_epoch,
-              seq: seq++, pcm: buffer.subarray(0, 32_000) });
+              seq: seq++, pcm: buffer.subarray(0, 32_000) }, { receivedMs: lastReceivedMs });
             buffer = buffer.subarray(32_000);
           }
         }
@@ -133,10 +145,22 @@ export class FileInputs {
         }
         if (recordingError) throw recordingError;
         if (result.error || (result.code !== 0 && !child.killed)) throw new Error('Audio decoder failed');
+        captureComplete = result.code === 0 && !child.killed && !child.stopRequested;
         const state = this.scheduler.channel(stream.stream_id);
         if (buffer.length && state.state === 'running') this.scheduler.feed(stream.stream_id,
-          { session_id: state.session_id, epoch: state.timeline_epoch, seq, pcm: buffer });
+          { session_id: state.session_id, epoch: state.timeline_epoch, seq, pcm: buffer }, { receivedMs: lastReceivedMs });
+        if (child.stopReason === 'eof') endReason = 'eof';
+        else if (!child.killed && !child.stopRequested && result.code === 0) {
+          endReason = options.duration ? 'duration_limit' : 'eof';
+          if (endReason === 'eof' && ['youtube', 'council'].includes(stream.kind)) {
+            child.endProbeController = new AbortController();
+            const ended = await this.endProbe(stream, child.endProbeController.signal).catch(() => null);
+            if (ended?.phase !== 'ended' && !(ended?.key?.startsWith('youtube:') && ended.phase === 'offline')) endReason = 'end_unverified';
+          }
+          if (child.stopRequested) endReason = child.stopReason ?? 'manual';
+        }
       } catch (error) {
+        endReason = 'error';
         if (recordingError || ['ENOSPC', 'EACCES', 'EPERM', 'EROFS', 'EIO', 'EEXIST'].includes(error.code))
           this.scheduler.channel(stream.stream_id).recording_failed = true;
         if (!child.killed || recordingError) {
@@ -151,15 +175,27 @@ export class FileInputs {
         if (recording && !recording.destroyed) {
           const finished = new Promise(resolve => recording.end(resolve)); await finished;
         }
-        this.children.delete(stream.stream_id); this.scheduler.stop(stream.stream_id);
+        if (timelinePath && recordingOpened) {
+          await exited;
+          try {
+            const storedBytes = statSync(recording.path).size;
+            if (recordingError || storedBytes !== decodedBytes) timeline.invalid = true;
+            const fd = openSync(recording.path, 'r+');
+            try { fsyncSync(fd); } finally { closeSync(fd); }
+            saveAudioTimeline(timelinePath, timeline.finish(storedBytes, captureComplete));
+          }
+          catch { this.scheduler.channel(stream.stream_id).recording_failed = true; }
+        }
+        this.children.delete(stream.stream_id); this.scheduler.stop(stream.stream_id, endReason);
       }
     })();
     child.task = task; return task;
   }
-  async stop(id) {
+  async stop(id, reason = 'manual') {
+    if (!['manual', 'eof'].includes(reason)) throw new Error('Invalid input stop reason');
     const pending = this.resolving.get(id); pending?.controller.abort();
     const child = this.children.get(id);
-    if (child) { child.kill(); await child.task; }
+    if (child) { child.stopRequested = true; child.stopReason = reason; child.endProbeController?.abort(); child.kill(); await child.task; }
     if (pending) await pending.task;
   }
   async close() { await Promise.all([...new Set([...this.children.keys(), ...this.resolving.keys()])].map(id => this.stop(id))); }

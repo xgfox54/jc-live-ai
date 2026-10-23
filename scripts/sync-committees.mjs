@@ -56,8 +56,11 @@ export async function syncCommittees() {
     images.push({ photo, source_url, bytes: bytes.length, sha256: digest(bytes) });
   }
   await writeFile(new URL('committees.mjs', output), 'export const committees = ' + JSON.stringify(committees, null, 2) + ';\n'
-    + 'export const CHANNEL_IDS = committees.map(committee => committee.stream_id);\n'
-    + 'export const committeeForChannel = id => committees.find(committee => committee.stream_id === id);\n');
+    + '// Channel 0 receives official broadcasts that belong to no committee, such as plenary sessions.\n'
+    + "export const GENERAL_CHANNEL = { id: 'G00', name: '채널0번', stream_id: 'ch0', category: '위원회 외 방송', general: true, members: [] };\n"
+    + 'export const CHANNELS = [GENERAL_CHANNEL, ...committees];\n'
+    + 'export const CHANNEL_IDS = CHANNELS.map(committee => committee.stream_id);\n'
+    + 'export const committeeForChannel = id => CHANNELS.find(committee => committee.stream_id === id);\n');
   const manifest = { checked_at, pages, images };
   await writeFile(new URL('manifest.json', evidence), JSON.stringify(manifest, null, 2));
   const provenance = new URL('../licenses/committee-members/', import.meta.url); await mkdir(provenance, { recursive: true });

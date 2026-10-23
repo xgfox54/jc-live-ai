@@ -1020,5 +1020,8 @@ export const committees = [
     ]
   }
 ];
-export const CHANNEL_IDS = committees.map(committee => committee.stream_id);
-export const committeeForChannel = id => committees.find(committee => committee.stream_id === id);
+// Channel 0 receives official broadcasts that belong to no committee, such as plenary sessions.
+export const GENERAL_CHANNEL = { id: 'G00', name: '채널0번', stream_id: 'ch0', category: '위원회 외 방송', general: true, members: [] };
+export const CHANNELS = [GENERAL_CHANNEL, ...committees];
+export const CHANNEL_IDS = CHANNELS.map(committee => committee.stream_id);
+export const committeeForChannel = id => CHANNELS.find(committee => committee.stream_id === id);

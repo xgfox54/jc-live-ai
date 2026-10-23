@@ -1,16 +1,39 @@
+import { peopleGlossary } from './people-reference.mjs';
+import { nonSpeech } from './silence-filter.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { HttpError } from './validate.mjs';
 import { glossaryCatalog, glossaryText, chooseGlossary } from './glossary.mjs';
 import { proxyBase, sealCredential, openCredential } from './ai-proxy.mjs';
 
 // Adapted from StreamRecord transcript-correction.ts; see STREAMRECORD-PORT.md.
-// Whole-segment phrases Whisper emits over silence or music; observed 528 times in the 2026-10-21 council broadcasts.
-const hallucinations = [/^(?:[A-Za-z가-힣]{2,10}\s*)?뉴스\s*[가-힣]{2,4}(?:\s*기자)?입니다\.?$/, /^시청해\s*주셔서\s*감사합니다\.?$/, /^구독과\s*좋아요/];
-export const hallucination = text => hallucinations.some(pattern => pattern.test(text.trim()));
+// Phrases Whisper emits over silence or music; the patterns live in silence-filter.mjs.
+export const hallucination = (text, evidence = null) => nonSpeech(text, evidence);
 export function correctionIssue(source, candidate) {
-  const numbers = text => JSON.stringify(text.match(/[0-9]+(?:[.,][0-9]+)*/g) ?? []);
-  if (numbers(source) !== numbers(candidate)) return 'numbers';
-  return candidate.length < source.trim().length * .5 || candidate.length > source.length * 2.5 + 40 ? 'length' : null;
+  const before = amounts(source); const after = amounts(candidate); const left = [...after];
+  for (const value of before) { const index = left.indexOf(value); if (index < 0) return 'numbers'; left.splice(index, 1); }
+  if (left.length && !HANGUL_NUMBER.test(source)) return 'numbers';
+  const trimmed = source.trim();
+  return (trimmed.length >= 12 && candidate.length < trimmed.length * .4) || candidate.length > source.length * 2.5 + 40 ? 'length' : null;
+}
+// Spelling variants of one amount compare equal: 6천/6,000/6000, 18만 6천/186000, 4천억/4000억, 1억 9천/1억 9000만,
+// and a two-digit year (23년) with its four-digit form. Digits written for spoken numerals are allowed.
+const UNITS = { 억: 1e8, 만: 1e4, 천: 1e3, 백: 100 };
+const HANGUL_NUMBER = /(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|스무|스물|서른|마흔|쉰|일|이|삼|사|오|육|칠|팔|구|십|백|천|만|억)\s*(?:개|명|건|번|회|차|원|년|월|일|시|분|곳|가지|배|퍼센트|프로|억|만|천|백|대|호|항|조|층|주|개월|세)/;
+function amounts(text) {
+  const values = []; let group = null; let scale = Infinity; let end = -1;
+  for (const match of text.matchAll(/(\d+(?:[.,]\d+)*)\s*(천|백)?\s*(억|만)?(\s*년)?/g)) {
+    const joined = group !== null && !text.slice(end, match.index).trim();
+    let number = Number(match[1].replace(/,(?=\d{3})/g, ''));
+    if (match[4] && !match[2] && !match[3] && number < 100) number += 2000;
+    const small = UNITS[match[2]] ?? 1;
+    const large = UNITS[match[3]] ?? (joined && scale === 1e8 && small > 1 ? 1e4 : 1);
+    const rank = large > 1 ? large : small; const value = number * small * large;
+    if (joined && rank < scale) group += value;
+    else { if (group !== null) values.push(group); group = value; }
+    scale = rank; end = match.index + match[0].length;
+  }
+  if (group !== null) values.push(group);
+  return values.map(value => Math.round(value * 1000) / 1000);
 }
 export function parseCorrections(raw, parts) {
   let value;
@@ -62,7 +85,7 @@ export class CorrectionService {
       .run(id, JSON.stringify(value)); return value;
   }
   settings() {
-    const value = { model: '', automatic: false, auto_apply_safe: false, provider: 'ollama', base: 'http://127.0.0.1:10100/v1',
+    const value = { model: '', refine_model: '', automatic: false, auto_apply_safe: false, provider: 'ollama', base: 'http://127.0.0.1:10100/v1',
       ...this.get('ai_settings', 'global'), has_api_key: Boolean(this.get('ai_settings', 'proxy-credential')),
       ...(this.config.manualMode ? { automatic: false, auto_apply_safe: false } : {}) };
     // Automatic correction publishes warning-free candidates; flagged candidates stay for administrator review.
@@ -77,7 +100,11 @@ export class CorrectionService {
     if (!this.registry.get(id)) throw new HttpError(404, '방송 기록을 찾지 못했습니다.');
     const value = this.get('ai_settings', id) ?? { pack_ids: ['council', 'jeju'], custom: '', auto_select: false };
     if (value.auto_select) value.pack_ids = [...new Set(['council', 'jeju', ...chooseGlossary(this.registry.get(id).title + ' ' + this.registry.segments(id).slice(-30).map(row => row.corrected_text ?? row.raw_text).join(' '))])];
-    return { ...value, glossary: glossaryText(value.pack_ids, value.custom) };
+    const glossary = glossaryText(value.pack_ids, value.custom);
+    const names = peopleGlossary(this.registry.get(id), this.peopleDirectory);
+    const terms = [...new Set([...names, ...glossary.text.split(', ')])]; const kept = []; let size = 0;
+    for (const term of terms) { const next = size + term.length + (kept.length ? 2 : 0); if (next > 3000) break; kept.push(term); size = next; }
+    return { ...value, glossary: { ...glossary, text: kept.join(', '), count: kept.length, omitted: glossary.omitted + terms.length - kept.length } };
   }
   saveSettings(value) {
     const previous = this.settings(); const provider = value.provider ?? previous.provider;
@@ -88,10 +115,13 @@ export class CorrectionService {
       throw new HttpError(400, '후보정 모델과 자동 생성 설정을 확인해 주세요.');
     if (this.pending || this.externalBusy) throw new HttpError(409, 'AI 작업을 중단한 뒤 설정을 저장해 주세요.');
     if (value.auto_apply_safe !== undefined && typeof value.auto_apply_safe !== 'boolean') throw new HttpError(400, '자동 적용 설정을 확인해 주세요.');
+    if (value.refine_model !== undefined && (typeof value.refine_model !== 'string' || !/^[a-zA-Z0-9_.:/-]{0,200}$/.test(value.refine_model)))
+      throw new HttpError(400, '정밀 후보정 모델을 확인해 주세요.');
     this.store.transaction(() => {
       if (value.clear_key === true || base !== previous.base) this.store.db.prepare("DELETE FROM ai_settings WHERE id='proxy-credential'").run();
       if (value.api_key) this.save('ai_settings', 'proxy-credential', sealCredential(value.api_key, base, this.config.adminToken));
-      this.save('ai_settings', 'global', { model: value.model, automatic: value.automatic, auto_apply_safe: value.auto_apply_safe ?? previous.auto_apply_safe, provider, base });
+      this.save('ai_settings', 'global', { model: value.model, refine_model: value.refine_model ?? previous.refine_model ?? '', automatic: value.automatic,
+        auto_apply_safe: value.auto_apply_safe ?? previous.auto_apply_safe, provider, base });
     });
     return this.settings();
   }
@@ -149,7 +179,8 @@ export class CorrectionService {
     if (settings.provider === 'proxy') {
       const response = await this.fetcher(settings.base + '/chat/completions', { method: 'POST', redirect: 'error',
         signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]), headers: this.proxyHeaders(settings),
-        body: JSON.stringify({ model, stream: false, max_tokens: 4000, messages }) });
+        // The proxy counts model reasoning tokens against max_tokens; 4,000 left batch summaries with empty content.
+        body: JSON.stringify({ model, stream: false, max_tokens: 16000, messages }) });
       const result = await readJson(response); const choice = result.choices?.[0];
       if (!choice || choice.finish_reason === 'length' || choice.message?.tool_calls?.length || typeof choice.message?.content !== 'string')
         throw new Error('프록시 응답이 비었거나 출력이 잘렸습니다. 원문은 보존했습니다.');
@@ -176,14 +207,15 @@ export class CorrectionService {
       }
       const pending = this.store.db.prepare('SELECT s.document FROM segments s JOIN broadcast_sessions b ON b.session_id=s.session_id '
         + 'WHERE b.broadcast_id=? AND NOT EXISTS(SELECT 1 FROM ai_candidates c WHERE c.segment_id=s.id AND c.source_version=s.version AND c.context=?) ORDER BY s.rowid')
-        .all(job.id, context).map(row => JSON.parse(row.document)).filter(row => row.corrected_text === null && row.raw_text.trim()).slice(0, limit);
-      for (const row of pending.filter(row => hallucination(row.raw_text))) {
+        .all(job.id, context).map(row => JSON.parse(row.document))
+        .filter(row => row.corrected_text === null && row.raw_text.trim() && !this.liveInflight?.has(row.segment_id)).slice(0, limit);
+      for (const row of pending.filter(row => hallucination(row.raw_text, row))) {
         const candidate = { id: randomUUID(), broadcast_id: job.id, segment_id: row.segment_id, source_version: row.version, source_text: row.raw_text,
           text: row.raw_text, model: settings.model, provider: settings.provider, issue: 'hallucination', status: 'rejected',
           start_ms: row.start_ms, end_ms: row.end_ms, created_ms: this.now() };
         this.store.db.prepare('INSERT INTO ai_candidates VALUES(?,?,?,?,?,?)').run(candidate.id, job.id, row.segment_id, row.version, context, JSON.stringify(candidate));
       }
-      const rows = pending.filter(row => !hallucination(row.raw_text));
+      const rows = pending.filter(row => !hallucination(row.raw_text, row));
       const parts = rows.flatMap((row, index) => {
         const result = [];
         for (let offset = 0; offset < row.raw_text.length; offset += 900)
@@ -221,9 +253,11 @@ export class CorrectionService {
       }
       this.save('ai_jobs', job.id, { ...job, phase: 'completed', ended_ms: this.now(), failures: 0 });
     } catch (error) {
-      this.save('ai_jobs', job.id, { ...job, phase: signal.aborted ? 'cancelled' : 'failed', ended_ms: this.now(),
+      const interrupted = signal.aborted && this.closed;
+      this.save('ai_jobs', job.id, { ...job, phase: interrupted ? 'interrupted' : signal.aborted ? 'cancelled' : 'failed', ended_ms: this.now(),
         failures: signal.aborted ? job.failures : job.failures + 1,
-        error: signal.aborted ? '후보 생성을 중단했습니다. 원문과 생성된 후보는 보존했습니다.' : error.message });
+        error: interrupted ? '서버 종료로 후보정이 중단되었습니다. 자동 처리가 설정되어 있으면 재시작 후 이어서 처리합니다.'
+          : signal.aborted ? '후보 생성을 중단했습니다. 원문과 생성된 후보는 보존했습니다.' : error.message });
     }
   }
   async cancel(id) {
@@ -248,7 +282,8 @@ export class CorrectionService {
     this.field(id); let applied = 0; let skipped = 0;
     for (const row of this.store.db.prepare("SELECT document FROM ai_candidates WHERE broadcast_id=? AND json_extract(document,'$.status')='pending'").all(id)) {
       const candidate = JSON.parse(row.document);
-      if (hallucination(candidate.source_text)) {
+      const source = this.store.db.prepare('SELECT document FROM segments WHERE id=?').get(candidate.segment_id);
+      if (hallucination(candidate.source_text, source ? JSON.parse(source.document) : null)) {
         this.store.db.prepare('UPDATE ai_candidates SET document=? WHERE id=?').run(JSON.stringify({ ...candidate, status: 'rejected', issue: 'hallucination' }), candidate.id);
         skipped++; continue;
       }

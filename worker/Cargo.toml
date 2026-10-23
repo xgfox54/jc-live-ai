@@ -20,6 +20,7 @@ whisper-rs = "=0.13.2"
 
 [patch.crates-io]
 bindgen = { path = "../vendor/bindgen-0.69.5" }
+whisper-rs-sys = { path = "../vendor/whisper-rs-sys-0.11.1" }
 
 [lints.rust]
 unsafe_code = "forbid"

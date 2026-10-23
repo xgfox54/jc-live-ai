@@ -31,7 +31,8 @@ export class ArchiveEnricher {
     const rows = parseCouncilArchive(await this.fetchHtml(ARCHIVE_URL, signal)); const filled = [];
     for (const record of records) {
       if (signal?.aborted) break;
-      const committee = record.committee || committeeForChannel(record.stream_id)?.name || '';
+      const channel = committeeForChannel(record.stream_id);
+      const committee = record.committee || (channel?.general ? '' : channel?.name) || '';
       const started = this.registry.sessions(record.id).map(session => session.started_ms).filter(Number.isFinite).sort((a, b) => a - b)[0];
       const date = started ? seoulDate(started) : null;
       const matches = rows.filter(row => row.date === date && normalize(row.title) === normalize(committee));

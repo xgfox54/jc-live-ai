@@ -104,7 +104,7 @@ test('discovered broadcast records once, drains to minutes, applies corrections 
   const first = f.registry.minutes(stream.broadcast_id);
   assert.equal(first.status, 'draft'); assert.equal(first.segment_count, 2); assert.ok(first.paragraphs.length >= 1); assert.equal(first.decision_quotes, undefined);
   assert.equal(f.registry.get(stream.broadcast_id).completed, true);
-  assert.match(readFileSync(join(f.dir, 'minutes', stream.broadcast_id + '.md'), 'utf8'), /全|전체 회의록 받아쓰기/);
+  assert.match(readFileSync(join(f.dir, 'minutes', stream.broadcast_id + '.md'), 'utf8'), /## 1장 회의록[^]*## 핵심 내용 요약[^]*## 전체 회의 받아쓰기 기록/);
   const segment = f.registry.segments(stream.broadcast_id)[0]; f.store.correct(segment.segment_id, { version: 1, text: '검토자가 수정한 발언입니다.' });
   f.minutes.flush(); assert.equal(f.registry.minutes(stream.broadcast_id).transcript[0].text, '검토자가 수정한 발언입니다.');
   f.items([candidate(9)]); await f.discovery.scan(); await f.monitor.tick();

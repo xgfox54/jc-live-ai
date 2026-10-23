@@ -61,8 +61,11 @@ export class BroadcastMonitor {
       const current = this.store.streams().find(item => item.stream_id === id);
       if (this.closed || signal.aborted || !current || JSON.stringify(current) !== JSON.stringify(stream) || !autoEnabled(current)) return;
       let phase = result.phase;
-      if (result.phase === 'ended' && this.owned.has(id) && !stream.capture_from_start) {
-        await this.inputs.stop(id); this.scheduler.stop(id);
+      const channel = this.scheduler.channels.get(id);
+      const liveEdge = !stream.capture_from_start || stream.beginning_fallback === true;
+      const quiet = Number.isFinite(channel?.last_receive_ms) && this.now() - channel.last_receive_ms >= 30000;
+      if (result.phase === 'ended' && this.owned.has(id) && liveEdge && quiet) {
+        await this.inputs.stop(id, 'eof'); this.scheduler.stop(id, 'eof');
       } else if (result.phase === 'live' && !this.active(id)) {
         if (stream.auto_completed_key === result.key) phase = 'completed';
         else {

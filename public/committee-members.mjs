@@ -3,7 +3,8 @@ import { committeeForChannel } from './committees.mjs';
 export function committeeMembers(streamId) {
   const committee = committeeForChannel(streamId);
   const aside = document.createElement('aside'); aside.className = 'committee-members';
-  if (!committee) { aside.hidden = true; return aside; }
+  // Channel 0 (plenary and other non-committee broadcasts) has no committee roster.
+  if (!committee || !committee.members.length) { aside.hidden = true; return aside; }
   aside.setAttribute('aria-label', committee.name + ' 의원 명단');
   const details = document.createElement('details'); details.open = true;
   const summary = document.createElement('summary'); summary.textContent = '위원 명단 · ' + committee.members.length + '명';

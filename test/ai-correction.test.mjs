@@ -27,8 +27,8 @@ function fixture(t, transform = text => text.replace('돌봄 써비스', '돌봄
   const record = registry.upsert({ page_url, sources: [page_url], title: '후보정 시험', kind: 'youtube' });
   registry.attach({ stream_id: 'ch1', broadcast_id: record.id }, { session_id: 'session-one' });
   store.saveSession({ stream_id: 'ch1', session_id: 'session-one', state: 'stopped' });
-  const add = (text = '돌봄 써비스 예산은 100원입니다.') => store.segment({ stream_id: 'ch1', session_id: 'session-one',
-    start_ms: 0, end_ms: 10000, raw_text: text });
+  const add = (text = '돌봄 써비스 예산은 100원입니다.', evidence = {}) => store.segment({ stream_id: 'ch1', session_id: 'session-one',
+    start_ms: 0, end_ms: 10000, raw_text: text, ...evidence });
   t.after(async () => { await ai.close(); store.close(); });
   return { ai, store, registry, scheduler, calls, id: record.id, add };
 }
@@ -104,6 +104,29 @@ test('collection takes precedence and long rows split into bounded requests with
   assert.equal(f.ai.list(f.id).items[0].text.replaceAll(' ', ''), raw.trim().replaceAll(' ', ''));
   assert.ok(f.calls.every(call => JSON.parse(call.messages.at(-1).content).segments.reduce((sum, part) => sum + part.text.length, 0) <= 1800));
 });
+test('service shutdown interrupts automatic correction and restart resumes the saved backlog', async t => {
+  const f = fixture(t); f.add();
+  f.registry.saveMinutes(buildMinutes(f.registry.get(f.id), f.registry.sessions(f.id), f.registry.segments(f.id), []));
+  f.ai.saveSettings({ model: 'fixture-model', automatic: true });
+  const original = f.ai.fetcher;
+  let began;
+  const started = new Promise(resolve => { began = resolve; });
+  f.ai.fetcher = async (url, options) => {
+    if (url.endsWith('/show')) return Response.json({});
+    began();
+    await new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+  };
+  f.ai.start(f.id); await started; await f.ai.close();
+  assert.equal(f.ai.jobs()[0].phase, 'interrupted');
+  const reopened = new CorrectionService({ ...f, aiFetch: original });
+  try {
+    reopened.auto();
+    assert.ok(reopened.pending, 'saved automatic backlog must resume after shutdown');
+    await reopened.pending;
+    assert.equal(reopened.jobs()[0].phase, 'completed');
+    assert.equal(f.store.snapshot(['ch1']).segments[0].ai_corrected, true);
+  } finally { await reopened.close(); }
+});
 test('candidate history pages are complete and rejected candidates stay excluded from automatic reuse', async t => {
   const f = fixture(t, text => text); for (let i = 0; i < 53; i++) f.add('발언 ' + i);
   f.ai.start(f.id); await f.ai.pending;
@@ -164,7 +187,7 @@ test('proxy rejects truncated output and creates incremental candidates during c
   const chat = calls.find(call => call.url.endsWith('/chat/completions'));
   assert.equal(chat.options.redirect, 'error'); assert.equal(chat.options.headers.Authorization, 'Bearer private-key');
   const payload = JSON.parse(chat.options.body); assert.equal(payload.stream, false); assert.equal(payload.model, 'proxy-model');
-  assert.equal(payload.tools, undefined); assert.equal(payload.max_tokens, 4000);
+  assert.equal(payload.tools, undefined); assert.equal(payload.max_tokens, 16000);
 });
 test('automatic correction publishes safe candidates, keeps flagged ones for review and retries failures with backoff', async t => {
   let now = 1_000_000; let fail = true;
@@ -173,7 +196,7 @@ test('automatic correction publishes safe candidates, keeps flagged ones for rev
   f.ai.fetcher = async (url, options) => { if (fail && url.endsWith('/chat')) return new Response('busy', { status: 503 }); return original(url, options); };
   f.ai.saveSettings({ model: 'fixture-model', automatic: true });
   assert.equal(f.ai.settings().auto_apply_safe, true);
-  f.add(); f.add('돌봄 써비스 예산은 200원입니다.'); f.add('MBC 뉴스 김지경입니다.');
+  f.add(); f.add('돌봄 써비스 예산은 200원입니다.'); f.add('MBC 뉴스 김지경입니다.', { speech_activity: { state: 'silence' } });
   f.registry.saveMinutes(buildMinutes(f.registry.get(f.id), f.registry.sessions(f.id), f.registry.segments(f.id), []));
   f.ai.auto(); await f.ai.pending; assert.equal(f.ai.jobs()[0].phase, 'failed'); assert.equal(f.ai.jobs()[0].failures, 1);
   fail = false; now += 30_000; f.ai.auto(); assert.equal(f.ai.pending, null);
@@ -187,7 +210,7 @@ test('automatic correction publishes safe candidates, keeps flagged ones for rev
   assert.equal(f.ai.jobs()[0].failures, 0);
 });
 test('enabling automatic correction publishes earlier pending candidates except hallucinations', async t => {
-  const f = fixture(t); f.add(); f.add('MBC 뉴스 김지경입니다.');
+  const f = fixture(t); f.add(); f.add('MBC 뉴스 김지경입니다.', { speech_activity: { state: 'silence' } });
   f.ai.start(f.id); await f.ai.pending;
   assert.deepEqual(f.ai.list(f.id).items.map(item => item.status).sort(), ['pending', 'rejected']);
   f.ai.saveSettings({ model: 'fixture-model', automatic: true });

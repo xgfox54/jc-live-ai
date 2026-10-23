@@ -1,19 +1,20 @@
-import { TranscriptState } from './client-state.mjs';
+import { TranscriptState, publicationConnectionMessage } from './client-state.mjs';
 import { subscribe } from './subscription.mjs';
 import { toggleSelection } from './selection.mjs';
 import { ViewerStage } from './viewer-stage.mjs';
-import { pollSnapshots } from './polling.mjs';
+import { pollSnapshots, retryWithJitter } from './polling.mjs';
 import './display.mjs';
-import { committees, CHANNEL_IDS, committeeForChannel } from './committees.mjs';
+import { CHANNELS, CHANNEL_IDS, committeeForChannel } from './committees.mjs';
 
 const $ = selector => document.querySelector(selector);
 const ids = CHANNEL_IDS;
 const state = new TranscriptState();
 const choices = new Map(); const stages = new Map();
-const withCommittees = values => committees.map(committee => ({ page_url: '', video_id: null,
+const withCommittees = values => CHANNELS.map(committee => ({ page_url: '', video_id: null,
   ...values.find(stream => stream.stream_id === committee.stream_id), stream_id: committee.stream_id, name: committee.name }));
 let streams = withCommittees([]); let selected = []; let subscription; let before = {};
-let delivery; let loaded = false; let schedule = null;
+let delivery; let publication; let loaded = false; let schedule = null;
+let refreshEpoch = 0; let snapshotKey = ''; let snapshotTag = '';
 const message = value => { $('#notice').textContent = value; };
 const seoulToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(Date.now());
 const dayLabel = date => {
@@ -23,19 +24,21 @@ const dayLabel = date => {
 const upcoming = () => (schedule?.items ?? []).filter(item => item.date >= seoulToday());
 async function api(path, options = {}) {
   const response = await fetch(path.replace('/api/', '/api/viewer/'), options);
-  if (!response.ok) throw new Error('방송 정보를 불러오지 못했습니다. 다시 연결해 주세요.');
+  if (!response.ok && response.status !== 304) throw Object.assign(new Error('방송 정보를 불러오지 못했습니다. 다시 연결해 주세요.'),
+    { retry: response.status >= 500 || response.status === 429 });
   return response;
 }
-for (const [index, id] of ids.entries()) {
-  const choice = document.createElement('button'); choice.className = 'channel-choice'; choice.disabled = true;
+for (const id of ids) {
+  const choice = document.createElement('button'); choice.className = 'channel-choice' + (committeeForChannel(id).general ? ' general-channel' : ''); choice.disabled = true;
   choice.setAttribute('aria-pressed', 'false');
-  const number = document.createElement('span'); number.className = 'channel-number'; number.textContent = String(index + 1).padStart(2, '0');
+  const number = document.createElement('span'); number.className = 'channel-number'; number.textContent = id.slice(2).padStart(2, '0');
   const name = document.createElement('strong'); const status = document.createElement('span'); status.className = 'channel-status';
   choice.append(number, name, status); $('#channels').append(choice); choices.set(id, { choice, name, status });
   choice.addEventListener('click', () => {
     const result = toggleSelection(selected, id, streams.map(stream => stream.stream_id));
     if (result.limited) { message('동시 시청은 2개까지 가능합니다. 선택한 방송 하나를 먼저 해제해 주세요.'); return; }
     selected = result.ids; message(''); reconcile(); renderChoices();
+    refresh().catch(error => message(error.message));
   });
 }
 function renderChoices() {
@@ -73,7 +76,7 @@ function renderSchedule() {
       const title = document.createElement('span'); title.className = 'schedule-title'; title.textContent = item.title;
       const channel = document.createElement('span'); channel.className = 'schedule-channel';
       const committee = item.stream_id && committeeForChannel(item.stream_id);
-      channel.textContent = (item.status === 'live' ? '방송 중 · ' : '') + (committee ? String(ids.indexOf(item.stream_id) + 1).padStart(2, '0') + ' ' + committee.name + ' 채널' : '위원회 채널 외 방송');
+      channel.textContent = (item.status === 'live' ? '방송 중 · ' : '') + (committee ? item.stream_id.slice(2).padStart(2, '0') + ' ' + committee.name + ' 채널' : '위원회 채널 외 방송');
       row.append(time, title, channel); rows.append(row);
     }
     day.append(heading, rows); return day;
@@ -90,7 +93,7 @@ function reconcile() {
     const stream = streams.find(item => item.stream_id === id);
     if (!stages.has(id)) {
       const stage = new ViewerStage({ stream, api, state, message, before: before[id],
-        close: () => { selected = selected.filter(value => value !== id); reconcile(); renderChoices(); choices.get(id).choice.focus(); },
+        close: () => { selected = selected.filter(value => value !== id); reconcile(); renderChoices(); choices.get(id).choice.focus(); refresh().catch(error => message(error.message)); },
         sound: () => { for (const [otherId, other] of stages) if (otherId !== id) other.setMuted(true); } });
       stages.set(id, stage); $('#watch-grid').append(stage.element);
     } else stages.get(id).update(stream);
@@ -99,27 +102,36 @@ function reconcile() {
   $('#watch-grid').classList.toggle('dual', selected.length === 2);
   $('#empty-view').hidden = selected.length > 0;
 }
-async function refresh() {
-  const snapshot = await (await api('/api/snapshot')).json();
-  streams = withCommittees(snapshot.streams); before = snapshot.before; delivery = snapshot.delivery; state.reset(snapshot); loaded = true;
-  for (const [id, stage] of stages) stage.before = before[id] ?? Number.MAX_SAFE_INTEGER;
+async function refresh({ signal = subscription?.signal } = {}) {
+  const epoch = ++refreshEpoch; const key = [...selected].sort().join(',');
+  const requestSignal = AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]);
+  const response = await api('/api/snapshot?text_streams=' + encodeURIComponent(key), { signal: requestSignal,
+    headers: key === snapshotKey && snapshotTag ? { 'If-None-Match': snapshotTag } : {} });
+  requestSignal.throwIfAborted();
+  if (epoch !== refreshEpoch) return;
+  if (response.status === 304) { reconcile(); renderChoices(); return; }
+  const snapshot = await response.json();
+  if (epoch !== refreshEpoch || requestSignal.aborted) return;
+  snapshotKey = key; snapshotTag = response.headers.get('etag') ?? '';
+  streams = withCommittees(snapshot.streams); before = snapshot.before; delivery = snapshot.delivery; publication = snapshot.publication; state.reset(snapshot); loaded = true;
   reconcile(); renderChoices();
 }
 async function connect() {
   subscription?.abort(); subscription = new AbortController();
+  const signal = subscription.signal;
   $('#retry').hidden = true; $('#connection').textContent = '연결 중';
   try {
-    await refresh(); message('');
+    await retryWithJitter(() => refresh({ signal }), { signal }); message('');
     if (delivery?.mode === 'poll') {
       const showConnection = ok => {
-        $('#connection').textContent = !ok ? '새 자료 수신이 지연되고 있습니다'
-          : '최근 갱신 ' + new Date(delivery.published_ms).toLocaleTimeString('ko-KR');
+        $('#connection').textContent = publicationConnectionMessage(delivery, publication, ok);
       };
       showConnection(true);
-      pollSnapshots({ refresh, signal: subscription.signal, interval: delivery.interval_ms, connection: showConnection });
+      pollSnapshots({ refresh, signal, interval: delivery.interval_ms, connection: showConnection });
       return;
     }
-    subscribe({ api, state, ids, signal: subscription.signal, refresh,
+    pollSnapshots({ interval: 5_000, signal, connection: () => {}, refresh });
+    subscribe({ api, state, ids, signal, refresh: () => refresh({ signal }),
       changed: event => {
         if (event.kind === 'stream') {
           const previous = streams.find(stream => stream.stream_id === event.payload.stream_id);
@@ -127,19 +139,19 @@ async function connect() {
             for (const item of [...state.segments.values()]) if (item.stream_id === event.payload.stream_id) state.segments.delete(item.segment_id);
             state.gaps.delete(event.payload.stream_id); state.status.delete(event.payload.stream_id);
             before[event.payload.stream_id] = Number.MAX_SAFE_INTEGER;
-            const stage = stages.get(event.payload.stream_id); if (stage) stage.before = Number.MAX_SAFE_INTEGER;
           }
           streams = streams.filter(stream => stream.stream_id !== event.payload.stream_id);
           if (!event.payload.deleted) streams.push(event.payload); streams = withCommittees(streams); reconcile();
-        } else if (event.kind === 'segment' || event.kind === 'gap' || event.kind === 'partial' || event.kind === 'session') stages.get(event.payload.stream_id)?.render();
+        } else if (event.kind === 'segment' || event.kind === 'live-segment' || event.kind === 'gap' || event.kind === 'partial' || event.kind === 'session') stages.get(event.payload.stream_id)?.render();
         renderChoices();
       },
       connection: value => { $('#connection').textContent = value === '연결됨' ? '' : '다시 연결하는 중입니다'; }
-    }).catch(() => { message('연결이 끊겼습니다. 다시 연결해 주세요.'); $('#retry').hidden = false; });
-  } catch (error) { message(error.message); $('#connection').textContent = '연결하지 못했습니다'; $('#retry').hidden = false; }
+    }).catch(() => { if (!signal.aborted) { message('연결이 끊겼습니다. 다시 연결해 주세요.'); $('#retry').hidden = false; } });
+  } catch (error) { if (!signal.aborted) { message(error.message); $('#connection').textContent = '연결하지 못했습니다'; $('#retry').hidden = false; } }
 }
 $('#retry').addEventListener('click', connect);
 setInterval(loadSchedule, 600_000);
 window.addEventListener('pagehide', () => { subscription?.abort(); for (const stage of stages.values()) stage.dispose(); stages.clear(); });
 window.addEventListener('pageshow', event => { if (event.persisted) connect(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') connect(); });
 renderChoices(); connect(); loadSchedule();

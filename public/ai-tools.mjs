@@ -40,7 +40,7 @@ export class AITools {
     $('#ai-settings').addEventListener('submit', event => {
       event.preventDefault();
       const form = event.target;
-      this.action('/settings', { model: $('#ai-model').value, automatic: form.elements.automatic.checked,
+      this.action('/settings', { model: $('#ai-model').value, refine_model: $('#ai-refine-model').value, automatic: form.elements.automatic.checked,
         auto_apply_safe: form.elements.auto_apply_safe.checked,
         provider: form.elements.provider.value, base: form.elements.base.value, api_key: form.elements.api_key.value,
         clear_key: form.elements.clear_key.checked }, 'AI 설정을 저장했습니다.').then(ok => {
@@ -72,6 +72,8 @@ export class AITools {
     try {
       const value = await this.json('/models'); const selected = $('#ai-model').value || this.currentModel || '';
       fillModels($('#ai-model'), value.models, selected);
+      fillModels($('#ai-refine-model'), value.models, $('#ai-refine-model').value || this.currentRefineModel || '');
+      $('#ai-refine-model').options[0].textContent = '사용 안 함';
       $('#ai-model-status').textContent = value.error ?? '모델 ' + value.models.length + '개를 확인했습니다. 저장한 연결의 목록입니다.';
     } catch (error) { this.message(error.message); } finally { $('#ai-model-refresh').disabled = false; }
   }
@@ -79,6 +81,7 @@ export class AITools {
     const epoch = this.epoch; const value = await this.json('');
     if (epoch !== this.epoch) return;
     this.currentModel = value.settings.model;
+    this.currentRefineModel = value.settings.refine_model ?? '';
     if (!this.loaded) {
       this.fieldLoaded = false;
       $('#ai-settings').elements.automatic.checked = value.settings.automatic;

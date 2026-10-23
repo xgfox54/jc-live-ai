@@ -15,7 +15,7 @@ test('official live schedule maps date, Seoul time, status and committee channel
   const items = parseBroadcastSchedule(october);
   assert.deepEqual(items.map(item => [item.starts_at, item.status, item.stream_id]), [
     ['2026-10-20T10:00:00+09:00', 'ended', 'ch2'], ['2026-10-21T10:00:00+09:00', 'live', 'ch2'],
-    ['2026-10-21T15:00:00+09:00', 'scheduled', 'ch8'], ['2026-10-23T14:00:00+09:00', 'scheduled', null]]);
+    ['2026-10-21T15:00:00+09:00', 'scheduled', 'ch8'], ['2026-10-23T14:00:00+09:00', 'scheduled', 'ch0']]);
   assert.equal(items[2].title, '2차 교육위원회');
   assert.deepEqual(parseBroadcastSchedule(page([])), []);
   assert.throws(() => parseBroadcastSchedule('<html>차단</html>'), /형식/);

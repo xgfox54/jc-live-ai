@@ -19,11 +19,11 @@ function fixture(t, probe) {
     isActive: id => runs.has(id),
     startYouTube(source) {
       sources.push(source);
-      return new Promise(resolve => runs.set(source.stream_id, () => { runs.delete(source.stream_id); scheduler.stop(source.stream_id); resolve(); }));
+      return new Promise(resolve => runs.set(source.stream_id, reason => { runs.delete(source.stream_id); scheduler.stop(source.stream_id, reason); resolve(); }));
     },
-    async stop(id) { runs.get(id)?.(); await immediate(); }
+    async stop(id, reason) { runs.get(id)?.(reason); await immediate(); }
   };
-  let now = 100000;
+  let now = Date.now();
   const monitor = new BroadcastMonitor({ store, scheduler, config, inputs, probe, now: () => now });
   t.after(async () => { await monitor.close(); for (const id of runs.keys()) await inputs.stop(id); await scheduler.close(); store.close(); });
   return { store, scheduler, config, inputs, monitor, sources, advance: () => { now += 300000; } };
@@ -41,6 +41,21 @@ test('automatic collector waits for live, records once, transcribes and drains a
   assert.equal(f.scheduler.channel('ch1').state, 'stopped');
   assert.equal(f.store.snapshot(['ch1']).segments[0].raw_text, 'automatic test transcript');
   phase = 'live'; f.advance(); await f.monitor.tick(); assert.equal(f.sources.length, 1);
+});
+test('ended live-edge fallback drains with EOF; beginning capture and recent audio keep receiving', async t => {
+  let source = { ...stream, capture_from_start: true, beginning_fallback: true }; let phase = 'live';
+  const f = fixture(t, async () => ({ phase, source, key: 'youtube:abcdefghijk' }));
+  f.store.saveStream(source); await f.monitor.tick();
+  const c = f.scheduler.channel('ch1'); c.last_receive_ms = Date.now();
+  phase = 'ended'; await f.monitor.check(source);
+  assert.equal(c.state, 'running');
+  f.advance(); await f.monitor.check(source); await immediate();
+  assert.equal(c.state, 'stopped'); assert.equal(c.input_end_reason, 'eof');
+  source = { ...stream, capture_from_start: true, beginning_fallback: false };
+  f.store.saveStream(source); phase = 'live'; f.advance(); await f.monitor.check(source);
+  f.scheduler.channel('ch1').last_receive_ms = Date.now();
+  phase = 'ended'; f.advance(); await f.monitor.check(source);
+  assert.equal(f.scheduler.channel('ch1').state, 'running');
 });
 test('manual stop invalidates an in-flight live check and persists disabled state', async t => {
   let finish; const f = fixture(t, () => new Promise(resolve => { finish = resolve; }));
@@ -103,7 +118,8 @@ test('a changed registration cannot start from an old detector response', async 
 test('live classification excludes upcoming, VOD and unknown values', () => {
   assert.equal(youtubePhase('is_live'), 'live'); assert.equal(youtubePhase('is_upcoming'), 'waiting');
   assert.equal(youtubePhase('was_live'), 'ended'); assert.equal(youtubePhase('post_live'), 'ended');
-  assert.equal(youtubePhase('not_live'), 'offline'); assert.throws(() => youtubePhase(null));
+  // NA (removed or private video) is offline; an unrecognized status still throws.
+  assert.equal(youtubePhase('not_live'), 'offline'); assert.equal(youtubePhase(null), 'offline'); assert.throws(() => youtubePhase('something_new'));
   assert.equal(hlsSnapshot('#EXTM3U\n#EXT-X-ENDLIST').phase, 'ended');
   assert.equal(hlsSnapshot('#EXTM3U\n').phase, 'waiting');
   assert.equal(hlsSnapshot('#EXTM3U\n#EXTINF:5,\nchunk.ts').phase, 'sample');

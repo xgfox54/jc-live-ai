@@ -19,7 +19,7 @@ export function viewerMinutes(registry, id) {
   const rows = registry.segments(id);
   const published = registry.publishedSegments(id);
   const value = buildMinutes(registry.get(id), registry.sessions(id), published, registry.gaps(id),
-    { participants: registry.participants(id), summary: registry.summary(id) });
+    { participants: registry.participants(id), summary: registry.summary(id), finalSpeakers: registry.finalSpeakers(id) });
   value.publication_policy = 'ai-corrected-v1'; value.pending_segment_count = rows.length - published.length;
   value.updated_ms = stored.updated_ms;
   value.warnings.unshift('AI 후보정이 완료된 문장만 표시합니다. 후보정 전 문장은 공개하지 않습니다.');

@@ -24,7 +24,11 @@ export function minutesLabel(item, committee, participants = {}) {
 }
 export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
   const participants = extras.participants ?? {};
-  const committee = clean(record.committee) || committeeForChannel(record.stream_id)?.name || '';
+  const active = sessions.some(session => ['running', 'draining', 'degraded', 'reconnecting'].includes(session.state));
+  const finalReview = active ? null : extras.finalSpeakers;
+  // Channel 0 is not a committee: label its minutes with the official 소관 field or the broadcast title.
+  const channel = committeeForChannel(record.stream_id);
+  const committee = clean(record.committee) || (channel?.general ? clean(record.title) : channel?.name) || '';
   const transcript = segments.map(segment => ({ segment_id: segment.segment_id,
     session_number: sessions.findIndex(session => session.session_id === segment.session_id) + 1,
     epoch: segment.timeline_epoch ?? 0, start_ms: segment.start_ms, end_ms: segment.end_ms,
@@ -33,6 +37,15 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
     speaker_key: speakerKey(segment),
     ...(segment.speaker_state ? { speaker_scope: segment.speaker_scope ?? null, speaker_state: segment.speaker_state,
       speaker_ids: [...new Set((segment.speaker_turns ?? []).filter(turn => turn.end_ms - turn.start_ms >= 200).map(turn => turn.speaker_id))] } : {}) }));
+  for (const item of transcript) {
+    if (!active) item.speaker_final = true;
+    if (!finalReview) continue;
+    const identity = finalReview.assignments[item.segment_id];
+    item.speaker_name = identity?.name ?? null; item.speaker_role = identity?.role ?? null;
+    item.speaker_key = identity?.key ?? null;
+    // Final identity is a separate overlay; stored diarization and raw text are unchanged.
+    item.speaker_id = identity ? 1 + parseInt(identity.key.slice(7, 9), 16) % 8 : null;
+  }
   const paragraphs = paragraphsOf(transcript);
   const words = new Map();
   for (const item of paragraphs) for (const word of new Set(item.text.match(/[가-힣]{2,}|[A-Za-z]{3,}/g) ?? []))
@@ -44,12 +57,21 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
   for (const item of paragraphs) {
     if (!item.speaker_key) continue;
     const entry = speakers.get(item.speaker_key) ?? { key: item.speaker_key, speaker_id: item.speaker_id, label: speakerText(item, participants),
-      named: Boolean(participants[item.speaker_key]), paragraph_count: 0, first_ms: item.start_ms, seconds: 0 };
+      named: Boolean(item.speaker_name || participants[item.speaker_key]), speaker_name: item.speaker_name ?? null,
+      speaker_role: item.speaker_role ?? null, speaker_final: !active, paragraph_count: 0, first_ms: item.start_ms, seconds: 0 };
     entry.paragraph_count++; entry.seconds += Math.max(0, (item.end_ms - item.start_ms) / 1000); speakers.set(item.speaker_key, entry);
   }
   const participantList = [...speakers.values()].sort((a, b) => a.first_ms - b.first_ms).map(entry => ({ ...entry, seconds: Math.round(entry.seconds) }));
   const summary = extras.summary ?? null;
-  const active = sessions.some(session => ['running', 'draining', 'degraded', 'reconnecting'].includes(session.state));
+  const sessionNumber = sessionId => sessions.findIndex(session => session.session_id === sessionId) + 1;
+  // Time-ordered summary groups: one group per AI batch that produced grounded summary facts.
+  const timeline = (summary?.groups ?? []).map(group => {
+    const starts = group.items.map(item => item.start_ms).filter(Number.isFinite);
+    return { group: group.group, title: clean(group.title), session_number: sessionNumber(group.items[0]?.session_id),
+      start_ms: starts.length ? Math.min(...starts) : 0,
+      items: group.items.map(item => ({ text: item.text, quote: item.quote, segment_id: item.segment_id ?? null })) };
+  }).filter(group => group.items.length).sort((a, b) => a.session_number - b.session_number || a.start_ms - b.start_ms);
+  const digest = summary?.digest ? { overview: summary.digest.overview, topics: summary.digest.topics } : null;
   const warnings = ['AI 음성 전사에서 발언을 발췌한 검토용 회의록입니다. 발언자·참석자·정식 의결 결과는 원음과 공식 기록으로 확인해야 합니다.',
     '시각은 수집 세션과 입력 구간별 경과 시간입니다. 방송 영상의 시각과 일치 여부는 확인되지 않았습니다.',
     record.capture_from_start ? '방송 시작 부분부터 수집을 요청했습니다. 제공자의 다시보기·보관 구간에 따라 시작 부분이 누락될 수 있으며 전체 수록 여부는 확인되지 않았습니다.'
@@ -63,24 +85,36 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
     scheduled_at: clean(record.scheduled_at) || (started ? seoul(started) + ' (수집 시작 시각)' : ''), meeting_round: record.meeting_round ?? '', meeting_type: record.meeting_type ?? '',
     committee, agenda: record.agenda ?? '', status: active ? 'in_progress' : 'draft',
     method: 'extractive_transcript', updated_ms: Date.now(), segment_count: transcript.length,
-    session_count: sessions.length, warnings, summary, discussion: ranked, participants: participantList, paragraphs, transcript,
+    session_count: sessions.length, warnings, summary, digest, timeline, discussion: ranked, participants: participantList, paragraphs, transcript,
+    final_speakers: finalReview ? { phase: finalReview.phase, assigned: finalReview.assigned, unresolved: finalReview.unresolved, updated_ms: finalReview.updated_ms }
+      : { phase: active ? 'live' : 'pending', assigned: 0, unresolved: transcript.length, updated_ms: 0 },
     gaps: gaps.map(gap => ({ session_number: sessions.findIndex(session => session.session_id === gap.session_id) + 1,
       epoch: gap.timeline_epoch ?? 0, start_ms: gap.start_ms ?? null, end_ms: gap.end_ms ?? null, reason: gap.reason })) };
   const quote = item => '**' + minutesLabel(item, committee, participants) + '**  \n' + clean(item.text);
-  const bySpeaker = participantList.map(entry => '### ' + entry.label + (entry.named ? ' (참여자 ' + entry.speaker_id + ')' : '') + ' · 발언 ' + entry.paragraph_count + '건\n\n'
-    + paragraphs.filter(item => item.speaker_key === entry.key).map(quote).join('\n\n'));
-  const unassigned = paragraphs.filter(item => !item.speaker_key);
-  if (unassigned.length) bySpeaker.push('### 참여자 미확인·교대 구간 · ' + unassigned.length + '건\n\n' + unassigned.map(quote).join('\n\n'));
+  const role = entry => entry.speaker_role === 'member' ? ' 의원' : entry.speaker_role === 'official' ? ' (공무원)' : '';
+  const fact = item => '- ' + clean(item.text) + (item.evidence?.length ? '\n  근거: ' + clean(item.evidence[0].quote) : item.quote ? '\n  근거: ' + clean(item.quote) : '');
+  const speakerLines = participantList.map(entry => '- ' + entry.label + role(entry) + ' · 발언 ' + entry.paragraph_count + '건 · 약 ' + Math.round(entry.seconds / 60) + '분');
+  const unassigned = paragraphs.filter(item => !item.speaker_key).length;
+  if (unassigned) speakerLines.push('- 발언자 미확인·교대 구간 · ' + unassigned + '건');
+  const speakerNote = finalReview ? '전체 발언 구간을 재검토했습니다. 이름을 뒷받침할 근거가 부족한 구간은 발언자 미확인으로 남깁니다.'
+    : active ? '번호는 실시간 분석의 임시 번호입니다. 회의가 끝나면 발언자를 자동으로 재검토합니다.' : '회의가 끝나 발언자 재검토를 기다리고 있습니다.';
+  const chapter = digest ? '### 회의 한줄 요약\n\n' + clean(digest.overview.text) + '\n\n### 주요 논의 사항\n\n'
+    + digest.topics.map(topic => '#### ' + clean(topic.title) + '\n\n' + topic.items.map(fact).join('\n')).join('\n\n')
+    : timeline.length ? 'AI 전체 요약을 아직 만들지 않았습니다. 핵심 내용 요약에서 시간순 요약을 확인해 주세요.' : active ? '수집 중입니다. 후보정이 완료된 발언으로 요약을 작성합니다.' : '요약할 발언이 아직 없습니다.';
+  const keyPoints = timeline.length ? timeline.map(group => '### ' + (value.session_count > 1 ? '세션 ' + group.session_number + ' · ' : '') + time(group.start_ms)
+    + (group.title ? ' · ' + group.title : '') + '\n\n' + group.items.map(fact).join('\n')).join('\n\n')
+    : active ? '수집 중입니다. 후보정이 완료된 발언으로 요약을 작성합니다.' : '요약할 발언이 아직 없습니다.';
   value.markdown = '# ' + clean(value.title) + '\n\n작성 상태: ' + (active ? '수집·작성 중' : '검토용 초안') + '\n\n'
     + warnings.map(text => '- ' + text).join('\n') + '\n\n## 회의 정보\n\n'
-    + [['일시', value.scheduled_at], ['회차', value.meeting_round], ['회의', value.meeting_type], ['소관', value.committee]]
+    + [['일시', value.scheduled_at], ['회차', value.meeting_round], ['회의', value.meeting_type], ['소관', value.committee],
+      ['발언자', participantList.length + '명' + (unassigned ? ' · 미확인 구간 ' + unassigned + '건' : '')], ['받아쓰기', transcript.length + '개 구간 · ' + paragraphs.length + '개 문단']]
       .map(([label, text]) => '- ' + label + ': ' + (clean(text) || '미확인')).join('\n')
     + '\n\n출처:\n' + value.sources.map(url => '- ' + url).join('\n')
-    + '\n\n## 공식 심의 안건\n\n' + (value.agenda || '공식 페이지에서 안건을 확인하지 못했습니다.')
-    + '\n\n## 주요 논의 요약\n\n' + (summary?.items?.length ? summary.items.map(item => '- ' + clean(item.text)).join('\n')
-      : ranked.length ? 'AI 요약이 아직 생성되지 않아 받아쓰기에서 발췌한 문단을 표시합니다.\n\n' + ranked.map(quote).join('\n\n') : '요약할 발언이 아직 없습니다.')
-    + '\n\n## 발언 내용 정리\n\n' + (bySpeaker.length ? '참여자 이름은 관리자가 지정한 경우에만 표시하며, 번호는 방송별 임시 번호입니다.\n\n' + bySpeaker.join('\n\n') : '정리할 발언이 아직 없습니다.')
-    + '\n\n## 전체 회의록 받아쓰기\n\n' + (paragraphs.length ? paragraphs.map(quote).join('\n\n') : '전사 결과를 기다립니다.')
+    + '\n\n공식 심의 안건:\n' + (value.agenda || '공식 페이지에서 안건을 확인하지 못했습니다.')
+    + '\n\n## 1장 회의록\n\n' + chapter
+    + '\n\n### 발언자\n\n' + (speakerLines.length ? speakerNote + '\n\n' + speakerLines.join('\n') : '정리할 발언이 아직 없습니다.')
+    + '\n\n## 핵심 내용 요약\n\n' + keyPoints
+    + '\n\n## 전체 회의 받아쓰기 기록\n\n' + (paragraphs.length ? paragraphs.map(quote).join('\n\n') : '전사 결과를 기다립니다.')
     + '\n\n## 누락·중단 기록\n\n' + (value.gaps.length ? value.gaps.map(gap => '- 세션 ' + gap.session_number
       + ' / 구간 ' + gap.epoch + ' / ' + (gap.start_ms === null ? '범위 미확인' : time(gap.start_ms) + '~' + time(gap.end_ms ?? gap.start_ms))
       + ' / ' + gap.reason).join('\n') : '기록된 누락·중단이 없습니다. 전체 수록을 보장하는 의미는 아닙니다.') + '\n';
@@ -107,7 +141,7 @@ export class MinutesService {
         const sessions = this.registry.sessions(id);
         if (!sessions.length) { this.dirty.delete(id); continue; }
         const value = buildMinutes(record, sessions, this.registry.segments(id), this.registry.gaps(id),
-          { participants: this.registry.participants(id), summary: this.registry.summary(id) });
+          { participants: this.registry.participants(id), summary: this.registry.summary(id), finalSpeakers: this.registry.finalSpeakers(id) });
         this.registry.saveMinutes(value);
         const directory = resolve(this.config.minutesDirectory ?? 'data/minutes'); mkdirSync(directory, { recursive: true });
         for (const [extension, data] of [['md', value.markdown], ['json', JSON.stringify(value, null, 2)]]) {

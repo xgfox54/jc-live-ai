@@ -1,12 +1,33 @@
 import { randomUUID } from 'node:crypto';
 import { HttpError } from './validate.mjs';
+import { RecoveryQueue } from './recovery-queue.mjs';
+import { Segmenter } from './segmenter.mjs';
+import { nonSpeech } from './silence-filter.mjs';
+import { speechActivity } from './speech-activity.mjs';
 
 export class Scheduler {
   constructor(store, engine, config) {
     this.store = store; this.engine = engine; this.config = config;
-    this.channels = new Map(); this.last = -1; this.busy = false; this.accepting = true;
+    this.channels = new Map(); this.last = -1; this.busy = false; this.active = 0; this.accepting = true;
     this.metrics = { jobs: 0, silence: 0, gaps: 0, errors: 0, unique_audio_s: 0, inferred_audio_s: 0 };
     this.samples = []; this.started_ms = Date.now(); this.finishes = new Set();
+    this.recognizing = 0; this.recognitionWaiters = [];
+    this.recovery = new RecoveryQueue(store); this.closed = false;
+    for (const { job, session } of this.recovery.restore()) {
+      if (this.recovery.hasSegment(job)) { this.recovery.complete(job); continue; }
+      let c = this.channels.get(job.stream_id);
+      if (!c) {
+        c = { ...session, state: 'draining', input_end_reason: 'process_restart', queue: [],
+          segmenter: this.segmenter(), inflight: false, received: 0, next_seq: 0, prompt: job.prompt };
+        this.channels.set(job.stream_id, c);
+      }
+      c.queue.push(job);
+    }
+    if (this.channels.size) this.wake();
+  }
+  segmenter() {
+    const [minS, maxS] = this.config.segmentSeconds ?? [this.config.chunkSeconds, this.config.chunkSeconds];
+    return new Segmenter({ minS, maxS });
   }
   start(stream) {
     if (!this.accepting || !this.engine.ready) throw new HttpError(503, 'Transcription engine is not ready');
@@ -17,21 +38,22 @@ export class Scheduler {
       throw new HttpError(409, '동시 전사는 최대 8개입니다. 수집 중인 채널을 중지한 뒤 다시 시작해 주세요.');
     const channel = { stream_id: stream.stream_id, session_id: randomUUID(), timeline_epoch: 0,
       state: 'running', started_ms: Date.now(), audio_received_until: 0, audio_processed_until: 0,
-      last_speech_segment_end: null, last_receive_ms: null, queue: [], buffer: Buffer.alloc(0),
+      last_speech_segment_end: null, last_receive_ms: null, queue: [], segmenter: this.segmenter(), inflight: false,
       received: 0, next_seq: 0, prompt: stream.prompt ?? '', config: this.engine.metadata,
       total_received_s: 0, total_processed_s: 0, total_gap_s: 0 };
     this.channels.set(stream.stream_id, channel); this.save(channel); return this.public(channel);
   }
   public(c) {
     return { stream_id: c.stream_id, session_id: c.session_id, timeline_epoch: c.timeline_epoch,
-      state: c.state === 'running' && (c.error || c.queue.some(j => Date.now() - j.received_ms > 20000)) ? 'degraded' : c.state,
-      started_ms: c.started_ms, ended_ms: c.ended_ms ?? null,
+      state: c.state === 'running' && (!this.engine.ready || c.error || c.queue.some(j => Date.now() - j.received_ms > 20000)) ? 'degraded' : c.state,
+      started_ms: c.started_ms, ended_ms: c.ended_ms ?? null, input_end_reason: c.input_end_reason ?? null,
       audio_received_until: c.audio_received_until, audio_processed_until: c.audio_processed_until,
       last_speech_segment_end: c.last_speech_segment_end, last_receive_ms: c.last_receive_ms,
       queue_length: c.queue.length, queue_audio_s: c.queue.reduce((sum, j) => sum + j.unique_s, 0),
       queue_oldest_ms: c.queue[0] ? Date.now() - c.queue[0].received_ms : 0,
       input_stale: c.state === 'running' && Date.now() - (c.last_receive_ms ?? c.started_ms) > 10_000,
       total_received_s: c.total_received_s, total_processed_s: c.total_processed_s,
+      last_processed_ms: c.last_processed_ms ?? null, last_processing_result: c.last_processing_result ?? null,
       total_gap_s: c.total_gap_s, model: c.config, error: c.error ?? null,
       sync_state: 'unverified', timestamp_quality: 'chunk-envelope', partial: c.partial ?? null,
       diarization: c.diarization ?? null };
@@ -43,33 +65,33 @@ export class Scheduler {
     if (!channel) throw new HttpError(404, 'Active stream not found');
     return channel;
   }
-  feed(id, packet) {
+  feed(id, packet, { receivedMs = Date.now() } = {}) {
     const c = this.channel(id);
-    if (!this.engine.ready) throw new HttpError(503, 'Transcription engine failed; stop and restart the service');
     if (c.state !== 'running') throw new HttpError(409, 'Stream is not accepting audio');
     if (packet.session_id !== c.session_id || packet.epoch !== c.timeline_epoch) throw new HttpError(409, 'Session or epoch changed');
     if (packet.seq < c.next_seq) return { duplicate: true, next_seq: c.next_seq };
     if (packet.seq !== c.next_seq) throw new HttpError(409, 'Missing packet; create a new epoch');
     if (packet.pcm.length === 0 || packet.pcm.length % 2 || packet.pcm.length > 32_000) throw new HttpError(400, 'Expected up to one second of s16le 16 kHz mono');
-    c.next_seq++; c.last_receive_ms = Date.now();
+    if (!Number.isSafeInteger(receivedMs) || receivedMs <= 0) throw new HttpError(400, 'Invalid receive time');
+    c.next_seq++; c.last_receive_ms = Math.max(c.last_receive_ms ?? 0, receivedMs);
     c.total_received_s += packet.pcm.length / 32_000;
-    c.buffer = Buffer.concat([c.buffer, packet.pcm]);
-    c.audio_received_until = (c.received + c.buffer.length / 2) / 16;
-    const bytes = this.config.chunkSeconds * 32_000;
-    while (c.buffer.length >= bytes) {
-      const pcm = Buffer.from(c.buffer.subarray(0, bytes));
-      c.buffer = c.buffer.subarray(bytes); this.enqueue(c, pcm);
-    }
-    if (this.config.interim === true && this.config.chunkSeconds === 10 && c.buffer.length >= 160000 && c.preview_at !== c.received) {
+    for (const piece of c.segmenter.push(packet.pcm)) this.enqueue(c, piece.pcm);
+    const buffer = c.segmenter.buffer;
+    c.audio_received_until = (c.received + buffer.length / 2) / 16;
+    if (this.config.interim === true && this.config.chunkSeconds === 10 && buffer.length >= 160000 && c.preview_at !== c.received) {
       c.preview_at = c.received;
       if (c.queue.length < this.config.queueChunks - 1) c.queue.push({ stream_id: id, session_id: c.session_id, epoch: c.timeline_epoch,
-        pcm: Buffer.from(c.buffer), partial: true, start_ms: c.received / 16, end_ms: (c.received + c.buffer.length / 2) / 16,
-        prompt: c.prompt, received_ms: Date.now(), enqueued_ms: Date.now(), unique_s: 0 });
+        pcm: Buffer.from(buffer), partial: true, start_ms: c.received / 16, end_ms: (c.received + buffer.length / 2) / 16,
+        prompt: c.prompt, received_ms: c.last_receive_ms, enqueued_ms: Date.now(), unique_s: 0 });
     }
     this.pump(); return { duplicate: false, next_seq: c.next_seq };
   }
+  flush(c) {
+    for (const piece of c.segmenter.flush()) this.enqueue(c, piece.pcm);
+    c.segmenter = this.segmenter();
+  }
   gap(c, job, reason) {
-    this.metrics.gaps++; c.total_gap_s += job.unique_s;
+    this.metrics.gaps++; c.total_gap_s += job.unique_s; this.recovery.complete(job);
     this.store.event('gap', { stream_id: c.stream_id, session_id: c.session_id,
       timeline_epoch: job.epoch, start_ms: job.start_ms, end_ms: job.end_ms, reason });
   }
@@ -78,18 +100,19 @@ export class Scheduler {
     c.received += pcm.length / 2;
     const job = { stream_id: c.stream_id, session_id: c.session_id, epoch: c.timeline_epoch,
       start_ms, end_ms: c.received / 16, unique_s: pcm.length / 32_000,
-      received_ms: Date.now(), pcm, prompt: c.prompt, enqueued_ms: Date.now() };
+      received_ms: c.last_receive_ms ?? Date.now(), pcm, prompt: c.prompt, enqueued_ms: Date.now() };
     c.queue = c.queue.filter(item => !item.partial);
-    if (c.queue.length >= this.config.queueChunks) {
+    while (c.queue.reduce((sum, item) => sum + item.unique_s, 0) + job.unique_s > Math.min(7200, Math.max(10, this.config.recoverySeconds || 7200)) && c.queue.length) {
       const dropped = c.queue.shift(); this.gap(c, dropped, 'queue_overflow');
       this.store.event('status', { ...this.public(c), state: 'degraded', reason: 'queue_overflow' });
     }
-    c.queue.push(job);
+    c.queue.push(this.recovery.put(job));
+    c.audio_received_until = job.end_ms; this.save(c);
   }
   epoch(id) {
     const c = this.channel(id);
     if (c.state !== 'running') throw new HttpError(409, 'Stream is stopped');
-    if (c.buffer.length) { this.enqueue(c, Buffer.from(c.buffer)); c.buffer = Buffer.alloc(0); }
+    this.flush(c);
     c.timeline_epoch++; c.received = 0; c.next_seq = 0;
     c.partial = null; c.preview_at = null;
     c.audio_received_until = 0; c.audio_processed_until = 0; c.last_speech_segment_end = null;
@@ -97,15 +120,15 @@ export class Scheduler {
       reason: 'input_discontinuity', extent: 'unknown' });
     this.save(c); this.pump(); return this.public(c);
   }
-  stop(id) {
+  stop(id, reason = 'manual') {
     const c = this.channel(id);
     if (c.state !== 'running') return this.public(c);
-    c.state = 'draining';
-    if (c.buffer.length) { this.enqueue(c, Buffer.from(c.buffer)); c.buffer = Buffer.alloc(0); }
+    c.state = 'draining'; c.input_end_reason = reason;
+    this.flush(c);
     this.save(c); this.pump(); this.finish(c); return this.public(c);
   }
   finish(c) {
-    if (c.state === 'draining' && c.queue.length === 0 && this.inflight !== c.session_id && !c.finishing) {
+    if (c.state === 'draining' && c.queue.length === 0 && !c.inflight && !c.finishing) {
       if (this.diarizer) {
         c.finishing = true;
         const task = this.diarizer.finish(c).then(result => { if (result) c.diarization = result; }).finally(() => {
@@ -117,33 +140,83 @@ export class Scheduler {
   }
   next() {
     const channels = [...this.channels.values()];
-    const overdue = channels.filter(c => c.queue.length && Date.now() - c.queue[0].received_ms > 20000)
+    const ready = c => c.queue.length && !c.inflight && (c.queue[0].retry_at ?? 0) <= Date.now();
+    const overdue = channels.filter(c => ready(c) && Date.now() - c.queue[0].received_ms > 20000)
       .sort((a, b) => a.queue[0].received_ms - b.queue[0].received_ms);
     if (overdue.length) { this.last = channels.indexOf(overdue[0]); return overdue[0]; }
     for (let n = 1; n <= channels.length; n++) {
       const index = (this.last + n) % channels.length;
-      if (channels[index].queue.length) { this.last = index; return channels[index]; }
+      if (ready(channels[index])) { this.last = index; return channels[index]; }
     }
     return null;
   }
-  async pump() {
-    if (this.busy) return;
-    this.busy = true;
-    try {
-      for (let c = this.next(); c; c = this.next()) {
-        const job = c.queue.shift(); this.inflight = c.session_id;
+  wake() {
+    if (this.closed || this.wakeTimer) return;
+    this.wakeTimer = setTimeout(() => { this.wakeTimer = null; this.pump(); }, 100);
+    this.wakeTimer.unref();
+  }
+  retry(c, job, error) {
+    if (job.partial || error.code !== 'ENGINE_UNAVAILABLE') return false;
+    job.attempts = (job.attempts ?? 0) + 1;
+    if (job.attempts > 8) return false;
+    job.retry_at = Date.now() + Math.min(60_000, (this.config.recoveryRetryMs ?? 1000) * 2 ** (job.attempts - 1));
+    c.error = error.message;
+    c.queue.unshift(this.recovery.put(job));
+    this.store.event('status', { ...this.public(c), state: 'degraded', reason: 'engine_recovery' });
+    this.wake(); return true;
+  }
+  pump() {
+    if (this.closed) return;
+    const capacity = this.engine.capacity ?? 1;
+    const pipeline = Boolean(this.diarizer) && this.config.pipelineOverlap !== false;
+    while (this.engine.ready && (pipeline || (this.engine.available ?? 1) > 0)
+      && this.active < capacity + (pipeline ? 1 : 0) && !this.exclusive) {
+      const c = this.next(); if (!c) break;
+      let job = c.queue.shift();
+      if (!job.partial && this.recovery.hasSegment(job)) { this.recovery.complete(job); this.finish(c); continue; }
+      if (!job.partial) job = this.recovery.load(job);
+      c.inflight = true; this.active++; this.busy = true;
+      this.run(c, job).finally(() => {
+        c.inflight = false; this.active--; this.busy = this.active > 0; this.finish(c); this.pump();
+      });
+    }
+    if ([...this.channels.values()].some(c => c.queue.length)) this.wake();
+  }
+  async recognize(job) {
+    const waitingAt = Date.now();
+    if (this.recognizing >= (this.engine.capacity ?? 1))
+      await new Promise(resolve => this.recognitionWaiters.push(resolve));
+    else this.recognizing++;
+    job.recognition_wait_ms = Date.now() - waitingAt;
+    try { return await this.engine.transcribe(job); }
+    finally {
+      const next = this.recognitionWaiters.shift();
+      if (next) next(); else this.recognizing--;
+    }
+  }
+  async run(c, job) {
         const started = Date.now();
         try {
-          let energy = 0;
-          for (let i = 0; i < job.pcm.length; i += 2) energy += (job.pcm.readInt16LE(i) / 32768) ** 2;
-          const silent = this.config.silenceRms > 0 && Math.sqrt(energy / (job.pcm.length / 2)) < this.config.silenceRms;
-          const diarizationTask = !job.partial && this.diarizer ? this.diarizer.process(job) : Promise.resolve(null);
-          const [recognition, diarization] = await Promise.allSettled([
-            silent ? Promise.resolve({ spans: [], inference_ms: 0 }) : this.engine.transcribe(job), diarizationTask]);
+          const diarizationStarted = Date.now();
+          if (!Object.hasOwn(job, 'diarization_result')) {
+            job.diarization_result = !job.partial && this.diarizer
+              ? await this.diarizer.process(job).catch(() => ({ speaker_state: 'unavailable', speaker_turns: [] })) : null;
+          }
+          const diarizationElapsed = Date.now() - diarizationStarted;
+          const speakers = job.diarization_result;
+          const activity = this.config.speechGate === true || this.config.silenceRms > 0
+            ? speechActivity(job.pcm, speakers, job) : { state: 'unknown', method: 'disabled' };
+          const silent = activity.state === 'silence';
+          const alternativeTask = Object.hasOwn(job, 'alt_result') ? Promise.resolve(job.alt_result)
+            : !job.partial && !silent && this.alt ? this.alt.transcribe(job) : Promise.resolve(null);
+          const [recognition, alternative] = await Promise.allSettled([
+            silent ? Promise.resolve({ spans: [], inference_ms: 0 }) : this.recognize(job), alternativeTask]);
+          job.alt_result = alternative.status === 'fulfilled' ? alternative.value : null;
           if (recognition.status === 'rejected') throw recognition.reason;
           const result = recognition.value;
-          const speakers = diarization.status === 'fulfilled' ? diarization.value
-            : { speaker_state: 'unavailable', diarization_error: String(diarization.reason) };
+          const alt = job.alt_result;
+          if (alternative.status === 'rejected') this.metrics.alt_errors = (this.metrics.alt_errors ?? 0) + 1;
+          const evidence = { ...(speakers ?? {}), speech_activity: activity };
           if (speakers) c.diarization = { state: speakers.speaker_state, scope: speakers.speaker_scope,
             processed_until_ms: speakers.processed_until_ms, error: speakers.diarization_error ?? null };
           if (job.partial) {
@@ -152,51 +225,65 @@ export class Scheduler {
                 start_ms: job.start_ms, end_ms: job.end_ms, raw_text: result.spans.map(span => span.text).join('').trim(), status: 'provisional' };
               this.store.event('partial', c.partial); this.save(c);
             }
-            this.inflight = null; this.finish(c); continue;
+            return;
           }
           this.metrics.jobs++; this.metrics.unique_audio_s += job.unique_s;
           this.metrics.inferred_audio_s += silent ? 0 : job.unique_s;
           if (silent) this.metrics.silence++;
           c.total_processed_s += job.unique_s;
           if (job.epoch === c.timeline_epoch) c.audio_processed_until = job.end_ms;
-          const raw_text = result.spans.map(s => s.text).join('').trim();
+          let main_text = result.spans.map(s => s.text).join('').trim();
+          let alt_text = alt?.text.trim() ?? '';
+          if ((main_text && nonSpeech(main_text, evidence)) || (alt_text && nonSpeech(alt_text, evidence)))
+            this.store.db.prepare('INSERT INTO recognition_suppressed(session_id,start_ms,end_ms,document) VALUES(?,?,?,?)')
+              .run(job.session_id, job.start_ms, job.end_ms, JSON.stringify({ raw_text: main_text, alt_text, evidence }));
+          if (nonSpeech(main_text, evidence)) { main_text = ''; this.metrics.silence_artifacts = (this.metrics.silence_artifacts ?? 0) + 1; }
+          if (nonSpeech(alt_text, evidence)) alt_text = '';
+          const raw_text = main_text || (alt_text.length >= 2 ? alt_text : '');
           if (c.partial && c.partial.timeline_epoch === job.epoch && c.partial.start_ms <= job.start_ms) c.partial = null;
           if (raw_text) {
             this.store.segment({ stream_id: c.stream_id, session_id: c.session_id,
               timeline_epoch: job.epoch, start_ms: job.start_ms, end_ms: job.end_ms, raw_text,
+              ...(alt ? { alt_text, alt_ms: alt.inference_ms, raw_source: main_text ? 'main' : 'alt' } : {}),
+              live_preview: Boolean(main_text), preview_updated_ms: Date.now(),
               ready_ms: Date.now(), audio_received_ms: job.received_ms, timestamp_quality: 'chunk-envelope',
-              latency_ms: Date.now() - job.received_ms + job.unique_s * 1000, ...(speakers ?? {}) });
+              latency_ms: Date.now() - job.received_ms + job.unique_s * 1000, ...evidence });
             if (job.epoch === c.timeline_epoch) c.last_speech_segment_end = job.end_ms;
           }
           const sample = { stream_id: c.stream_id, session_id: c.session_id, epoch: job.epoch,
             start_ms: job.start_ms, end_ms: job.end_ms, unique_s: job.unique_s, silent,
             queue_ms: started - job.enqueued_ms, inference_ms: result.inference_ms,
+            diarization_wall_ms: diarizationElapsed, recognition_wait_ms: job.recognition_wait_ms ?? 0,
+            pipeline_ms: Date.now() - started,
             diarization_ms: speakers?.diarization_ms ?? 0, speaker_state: speakers?.speaker_state ?? 'disabled',
             ready_ms: Date.now(), readiness_ms: Date.now() - job.received_ms + job.unique_s * 1000 };
           this.samples.push(sample); if (this.samples.length > 20_000) this.samples.shift();
           this.store.event('metric', sample);
+          c.last_processed_ms = Date.now(); c.last_processing_result = raw_text ? 'speech' : silent ? 'silent' : 'unknown';
+          c.error = null;
           this.save(c);
+          this.recovery.complete(job);
         } catch (error) {
-          if (job.partial) { this.inflight = null; c.partial = null; this.save(c); this.finish(c); continue; }
+          if (job.partial) { c.partial = null; this.save(c); return; }
+          if (this.retry(c, job, error)) return;
           this.metrics.errors++; c.error = error.message; this.gap(c, job, 'inference_failed');
+          this.recovery.complete(job);
           this.store.event('status', { ...this.public(c), state: 'degraded' });
         }
-        this.inflight = null; this.finish(c);
-      }
-    } finally { this.busy = false; }
   }
   async close() {
     this.accepting = false;
     for (const id of this.channels.keys()) this.stop(id);
     const deadline = Date.now() + 95_000;
     while ((this.busy || this.finishes.size) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
-    await this.diarizer?.close(); await this.engine.stop();
+    this.closed = true; clearTimeout(this.wakeTimer);
+    await this.diarizer?.close(); await this.alt?.stop(); await this.engine.stop();
   }
   async background(job) {
     if (!this.accepting || !this.engine.ready || this.busy || this.states().some(state => ['running', 'draining', 'degraded', 'reconnecting'].includes(state.state)))
       throw new HttpError(409, '실시간 음성 처리를 마친 뒤 재전사를 시작해 주세요.');
-    this.busy = true;
+    this.busy = true; this.exclusive = true;
     try { return await this.engine.transcribe(job); }
-    finally { this.busy = false; this.pump(); }
+    finally { this.exclusive = false; this.busy = this.active > 0; this.pump(); }
   }
 }

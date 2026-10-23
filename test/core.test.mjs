@@ -51,7 +51,7 @@ test('queue overflow produces a durable gap while other channels continue', asyn
   // Given
   const store = new Store(':memory:'); const engine = fakeEngine(); let release;
   engine.transcribe = () => new Promise(resolve => { release = () => resolve({ spans: [], inference_ms: 1 }); });
-  const scheduler = new Scheduler(store, engine, config); scheduler.start({ stream_id: 'ch1' }); send(scheduler, 'ch1');
+  const scheduler = new Scheduler(store, engine, { ...config, recoverySeconds: 10 }); scheduler.start({ stream_id: 'ch1' }); send(scheduler, 'ch1');
   // When
   const c = scheduler.channel('ch1');
   for (let seq = 5; seq < 30; seq++) scheduler.feed('ch1', { session_id: c.session_id, epoch: 0, seq, pcm });

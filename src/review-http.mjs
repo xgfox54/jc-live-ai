@@ -1,4 +1,5 @@
 import { HttpError, jsonBody, text } from './validate.mjs';
+import { deliveryHealth } from './delivery-health.mjs';
 
 const send = (res, value, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(value)); };
 export async function reviewRequest(context, req, res, url) {
@@ -29,6 +30,7 @@ export async function reviewRequest(context, req, res, url) {
       case '/diagnostics': {
         // Explicit allowlist: no paths, transcript text, URL, credentials or account metadata.
         send(res, { product: 'JC-LIVE', version: '0.1.0', node: process.version, platform: process.platform, arch: process.arch,
+          delivery: deliveryHealth(context, store.streams().map(stream => stream.stream_id), { admin: true }),
           engine: { device: scheduler.config?.device ?? null, ready: scheduler.engine.ready,
             beam: scheduler.config?.beam ?? null, batch: scheduler.config?.batch ?? null },
           sessions: scheduler.states().map(state => ({ state: state.state, queue_length: state.queue_length,
@@ -37,6 +39,7 @@ export async function reviewRequest(context, req, res, url) {
       }
       case '/profiles': send(res, { items: correctionAI.profiles() }); return true;
       case '/participants': send(res, review.participants(id)); return true;
+      case '/final-speakers': send(res, review.finalSpeakers.state(id)); return true;
       case '/model-status': send(res, modelManager.status); return true;
       default: throw new HttpError(404, '작업 경로를 찾지 못했습니다.');
     }
@@ -53,6 +56,8 @@ export async function reviewRequest(context, req, res, url) {
     case '/pause-audio': send(res, audioReview.pause()); break;
     case '/speaker': send(res, store.speaker(text(value.segment_id, 80), value.version, value.speaker)); break;
     case '/participants': send(res, review.setParticipants(value.broadcast_id, value.names)); break;
+    case '/final-speakers': send(res, review.finalSpeakers.start(value.broadcast_id), 202); break;
+    case '/pause-final-speakers': send(res, review.finalSpeakers.pause(value.broadcast_id)); break;
     case '/profile-save': send(res, correctionAI.saveProfile(text(value.name, 100))); break;
     case '/profile-use': send(res, correctionAI.useProfile(text(value.id, 100))); break;
     case '/profile-delete': correctionAI.deleteProfile(text(value.id, 100)); send(res, { deleted: true }); break;

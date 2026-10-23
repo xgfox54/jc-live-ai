@@ -3,11 +3,20 @@
   "database": "data/live.sqlite",
   "tokenFile": "data/access.secret",
   "engineLog": "data/engine.log",
-  "worker": "bin/jc-live-worker.exe",
-  "model": "models/ggml-small-q5_1.bin",
+  "worker": "bin/cuda/jc-live-worker.exe",
+  "model": "models/ggml-large-v3-turbo-q8_0.bin",
   "device": "gpu",
   "beam": 2,
   "batch": 1,
+  "workers": 1,
+  "flashAttention": true,
+  "segmentSeconds": [
+    8,
+    10
+  ],
+  "decode": {
+    "no_timestamps": false
+  },
   "chunkSeconds": 10,
   "queueChunks": 12,
   "silenceRms": 0,
@@ -15,6 +24,10 @@
   "diarizationPython": "python",
   "diarizationDirectory": "bin/diarization",
   "diarizationChunkFrames": 64,
+  "altRecognizer": false,
+  "altPython": "bin/sensevoice/venv/Scripts/python.exe",
+  "altDirectory": "bin/sensevoice",
+  "altThreads": 4,
   "maxClients": 350,
   "maxBytes": 262144,
   "ffmpeg": "bin/ffmpeg.exe",

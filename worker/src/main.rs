@@ -11,6 +11,22 @@ struct Request {
     id: String,
     pcm: String,
     prompt: String,
+    #[serde(default)]
+    decode: Option<Decode>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct Decode {
+    beam: Option<i32>,
+    temperature: Option<f32>,
+    temperature_inc: Option<f32>,
+    no_timestamps: Option<bool>,
+    no_speech_thold: Option<f32>,
+    logprob_thold: Option<f32>,
+    entropy_thold: Option<f32>,
+    max_initial_ts: Option<f32>,
+    audio_ctx: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -30,24 +46,41 @@ struct Reply {
 
 fn transcribe(ctx: &WhisperContext, request: &Request, beam: i32) -> Result<Vec<Span>> {
     let bytes = STANDARD.decode(&request.pcm)?;
-    if bytes.is_empty() || bytes.len() > 16_000 * 2 * 11 || bytes.len() % 2 != 0 {
-        bail!("PCM must contain at most 11 seconds of mono 16 kHz s16le");
+    if bytes.is_empty() || bytes.len() > 16_000 * 2 * 30 || bytes.len() % 2 != 0 {
+        bail!("PCM must contain at most 30 seconds of mono 16 kHz s16le");
     }
+    let none = Decode::default();
+    let decode = request.decode.as_ref().unwrap_or(&none);
+    let beam = decode.beam.unwrap_or(beam);
+    if !(1..=8).contains(&beam) {
+        bail!("beam must be 1..8");
+    }
+    let bounded = |value: Option<f32>, default: f32, low: f32, high: f32| -> Result<f32> {
+        let value = value.unwrap_or(default);
+        if !(low..=high).contains(&value) {
+            bail!("decode option out of range");
+        }
+        Ok(value)
+    };
     let audio: Vec<f32> = bytes
         .as_chunks::<2>()
         .0
         .iter()
         .map(|v| f32::from(i16::from_le_bytes([v[0], v[1]])) / 32768.0)
         .collect();
-    let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-        beam_size: beam,
-        patience: 1.0,
-    });
+    let mut params = if beam == 1 {
+        FullParams::new(SamplingStrategy::Greedy { best_of: 1 })
+    } else {
+        FullParams::new(SamplingStrategy::BeamSearch {
+            beam_size: beam,
+            patience: 1.0,
+        })
+    };
     params.set_language(Some("ko"));
     params.set_translate(false);
     params.set_no_context(true);
     params.set_n_threads(4);
-    params.set_no_timestamps(true);
+    params.set_no_timestamps(decode.no_timestamps.unwrap_or(true));
     params.set_token_timestamps(true);
     params.set_print_special(false);
     params.set_print_progress(false);
@@ -55,12 +88,18 @@ fn transcribe(ctx: &WhisperContext, request: &Request, beam: i32) -> Result<Vec<
     params.set_print_timestamps(false);
     params.set_suppress_blank(true);
     params.set_suppress_non_speech_tokens(true);
-    params.set_temperature(0.2);
-    params.set_max_initial_ts(1.0);
-    params.set_entropy_thold(2.4);
-    params.set_logprob_thold(-1.0);
-    params.set_no_speech_thold(0.55);
+    params.set_temperature(bounded(decode.temperature, 0.2, 0.0, 1.0)?);
+    params.set_temperature_inc(bounded(decode.temperature_inc, 0.2, 0.0, 1.0)?);
+    params.set_max_initial_ts(bounded(decode.max_initial_ts, 1.0, 0.0, 30.0)?);
+    params.set_entropy_thold(bounded(decode.entropy_thold, 2.4, 0.0, 10.0)?);
+    params.set_logprob_thold(bounded(decode.logprob_thold, -1.0, -10.0, 0.0)?);
+    params.set_no_speech_thold(bounded(decode.no_speech_thold, 0.55, 0.0, 1.0)?);
     params.set_max_len(200);
+    let audio_ctx = decode.audio_ctx.unwrap_or(0);
+    if !(0..=1500).contains(&audio_ctx) {
+        bail!("audio_ctx must be 0..1500");
+    }
+    params.set_audio_ctx(audio_ctx);
     params.set_split_on_word(true);
     let prompt: String = request
         .prompt
@@ -99,9 +138,15 @@ fn main() -> Result<()> {
     if gpu && !cfg!(any(feature = "vulkan", feature = "cuda")) {
         bail!("GPU build required");
     }
+    let flash = match std::env::args().nth(4).as_deref() {
+        None | Some("standard") => false,
+        Some("flash") => true,
+        Some(_) => bail!("attention must be standard or flash"),
+    };
     let load_start = Instant::now();
     let options = WhisperContextParameters {
         use_gpu: gpu,
+        flash_attn: flash,
         ..Default::default()
     };
     let ctx = WhisperContext::new_with_params(&model, options)?;
@@ -111,6 +156,7 @@ fn main() -> Result<()> {
         id: "warmup".into(),
         pcm: STANDARD.encode(vec![0_u8; 32_000]),
         prompt: String::new(),
+        decode: None,
     };
     transcribe(&ctx, &warm, beam)?;
     let mut out = io::stdout().lock();
@@ -118,7 +164,7 @@ fn main() -> Result<()> {
         out,
         "{}",
         serde_json::json!({"ready":true,"load_ms":load_ms,
-        "warmup_ms":warm_start.elapsed().as_millis(),"gpu_requested":gpu,"beam":beam,
+        "warmup_ms":warm_start.elapsed().as_millis(),"gpu_requested":gpu,"beam":beam,"flash_attention":flash,
         "engine":"whisper-rs-0.13.2","batch":1,"timestamp_quality":"chunk-envelope"})
     )?;
     out.flush()?;

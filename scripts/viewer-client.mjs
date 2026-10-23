@@ -5,7 +5,7 @@ export class Viewer {
   constructor(base, token, publicFeed = false) {
     this.base = base; this.token = token; this.cursor = 0; this.count = 0; this.bytes = 0;
     this.duplicates = 0; this.latencies = []; this.versions = new Map(); this.reset = false;
-    this.readiness = new Map();
+    this.readiness = new Map(); this.kinds = new Map();
     this.publicFeed = publicFeed;
   }
   connect() {
@@ -25,12 +25,16 @@ export class Viewer {
               if (event.kind === 'heartbeat') { this.cursor = Math.max(this.cursor, event.event_id); continue; }
               if (event.event_id <= this.cursor) this.duplicates++;
               this.cursor = Math.max(this.cursor, event.event_id); this.count++;
+              this.kinds.set(event.kind, (this.kinds.get(event.kind) ?? 0) + 1);
               if (event.created_ms) this.latencies.push(Date.now() - event.created_ms);
-              if (event.kind === 'segment') {
+              if (event.kind === 'segment' || event.kind === 'live-segment') {
                 this.versions.set(event.payload.segment_id, event.payload.version);
-                if (Number.isFinite(event.payload.latency_ms)) {
+                const readiness = event.kind === 'live-segment' && Number.isFinite(event.payload.audio_received_ms)
+                  ? Date.now() - event.payload.audio_received_ms + event.payload.end_ms - event.payload.start_ms
+                  : Number.isFinite(event.payload.latency_ms) ? event.payload.latency_ms + Date.now() - event.created_ms : null;
+                if (Number.isFinite(readiness)) {
                   const samples = this.readiness.get(event.payload.stream_id) ?? [];
-                  samples.push(event.payload.latency_ms + Date.now() - event.created_ms);
+                  samples.push(readiness);
                   this.readiness.set(event.payload.stream_id, samples);
                 }
               }
@@ -62,6 +66,8 @@ export function viewerSummary(viewers) {
       p95_ms:percentile(samples,0.95),p99_ms:percentile(samples,0.99),over_30s:samples.filter(v=>v>30000).length};
   });
   return { connections: viewers.length, subscriptions: viewers.length * 8,
+    minimum_segment_versions: Math.min(...viewers.map(v => v.versions.size)),
+    live_segment_deliveries: viewers.reduce((n, v) => n + (v.kinds.get('live-segment') ?? 0), 0),
     readiness_including_transport: readiness,
     received_events: viewers.reduce((n, v) => n + v.count, 0), duplicates: viewers.reduce((n, v) => n + v.duplicates, 0),
     reset_clients: viewers.filter(v => v.reset).length, received_bytes: viewers.reduce((n, v) => n + v.bytes, 0),

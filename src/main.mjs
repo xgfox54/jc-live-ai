@@ -3,21 +3,35 @@ import { resolve, dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { Store } from './store.mjs';
-import { WhisperEngine } from './engine.mjs';
+import { EnginePool } from './engine.mjs';
 import { Scheduler } from './scheduler.mjs';
 import { FileInputs } from './files.mjs';
 import { createService } from './server.mjs';
 import { initializeCommitteeChannels } from './committees.mjs';
 import { LiveDiarization } from './live-diarization.mjs';
+import { AltEngine } from './alt-engine.mjs';
+import { assertSupportedRuntime } from '../web/lib/runtime.mjs';
 
+assertSupportedRuntime();
 const configPath = resolve(process.argv[2] ?? 'config.local.json');
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
+if (config.speechGate === undefined) config.speechGate = true;
+if (typeof config.speechGate !== 'boolean') throw new Error('Invalid speech gate configuration');
 if (process.argv.includes('--manual')) { config.manualMode = true; delete config.cloudSyncFile; }
 if (![5, 10].includes(config.chunkSeconds) || !Number.isInteger(config.queueChunks)
   || config.queueChunks < 2 || config.queueChunks > 24) throw new Error('Invalid chunk or queue configuration');
 if (config.batch !== 1) throw new Error('This whisper-rs adapter supports batch 1 only');
 if (!['cpu', 'gpu'].includes(config.device)) throw new Error('Invalid device');
 if (!Number.isInteger(config.beam) || config.beam < 1 || config.beam > 8) throw new Error('Invalid beam');
+if (config.workers !== undefined && (!Number.isInteger(config.workers) || config.workers < 1 || config.workers > 4)) throw new Error('Invalid worker count');
+if (config.flashAttention !== undefined && typeof config.flashAttention !== 'boolean') throw new Error('Invalid flash attention setting');
+if (config.segmentSeconds !== undefined && (!Array.isArray(config.segmentSeconds) || config.segmentSeconds.length !== 2
+  || !config.segmentSeconds.every(Number.isFinite) || config.segmentSeconds[0] < 2 || config.segmentSeconds[0] > config.segmentSeconds[1]
+  || config.segmentSeconds[1] > 10)) throw new Error('Invalid segment seconds');
+const decodeKeys = { beam: 'number', temperature: 'number', temperature_inc: 'number', no_timestamps: 'boolean', no_speech_thold: 'number',
+  logprob_thold: 'number', entropy_thold: 'number', max_initial_ts: 'number', audio_ctx: 'number' };
+if (config.decode !== undefined && (typeof config.decode !== 'object' || config.decode === null
+  || Object.entries(config.decode).some(([key, value]) => typeof value !== decodeKeys[key]))) throw new Error('Invalid decode options');
 if (!Number.isInteger(config.port ?? 4320) || (config.port ?? 4320) < 0 || (config.port ?? 4320) > 65535) throw new Error('Invalid port');
 if (!Number.isFinite(config.silenceRms) || config.silenceRms < 0 || config.silenceRms > 0.02) throw new Error('Invalid silence threshold');
 mkdirSync(dirname(resolve(config.database)), { recursive: true });
@@ -33,11 +47,13 @@ if (!/^[a-f0-9]{64}$/.test(config.adminToken) || !/^[a-f0-9]{64}$/.test(config.v
   || config.adminToken === config.viewerToken) throw new Error('Distinct 256-bit tokens required');
 const store = new Store(config.database); store.recover();
 initializeCommitteeChannels(store);
-const engine = new WhisperEngine(config);
+const engine = new EnginePool(config);
 const scheduler = new Scheduler(store, engine, config);
+scheduler.exclusive = true;
 if (config.liveDiarization === true) {
   scheduler.diarizer = new LiveDiarization(store, config); scheduler.metrics.diarization = scheduler.diarizer.metrics;
 }
+if (config.altRecognizer === true) scheduler.alt = new AltEngine(config);
 const inputs = new FileInputs(scheduler, config);
 const service = createService({ store, scheduler, inputs, config, configPath, shutdown: () => stop().catch(error => {
   process.stderr.write(error.message + '\n'); process.exitCode = 1;
@@ -45,7 +61,7 @@ const service = createService({ store, scheduler, inputs, config, configPath, sh
 let stopping = false;
 async function stop() {
   if (stopping) return; stopping = true;
-  await service.discovery.close(); await service.schedule.close(); await service.monitor.close(); await service.review.close(); await service.audioReview.close(); await service.modelManager.close(); await service.correctionAI.close(); await inputs.close(); await scheduler.close();
+  await service.finalSpeakers.close(); await service.discovery.close(); await service.schedule.close(); await service.speakerDirectory.close(); await service.monitor.close(); await service.review.close(); await service.audioReview.close(); await service.modelManager.close(); await service.liveCorrection.close(); await service.correctionAI.close(); await inputs.close(); await scheduler.close();
   service.minutes.flush(); await service.cloudSync.flush({ force: true });
   if (service.server.listening) await service.close(); else service.minutes.close(); store.close();
 }
@@ -58,12 +74,15 @@ for (const kind of ['unhandledRejection', 'uncaughtException']) process.on(kind,
 try {
   await engine.start();
   await scheduler.diarizer?.start();
+  await scheduler.alt?.start();
+  scheduler.exclusive = false; scheduler.pump();
   if (!stopping) {
     service.server.listen(config.port ?? 4320, '127.0.0.1'); await once(service.server, 'listening');
     service.schedule.start();
+    if (!config.manualMode) service.speakerDirectory.start(); else await service.speakerDirectory.load();
     if (!config.manualMode) { service.monitor.start(); service.discovery.start(); service.cloudSync.start(); }
     process.stdout.write(JSON.stringify({ event: 'service.ready', url: 'http://127.0.0.1:' + service.server.address().port,
-      engine: engine.metadata, diarization: scheduler.diarizer?.engine.metadata ?? null, manual: config.manualMode === true }) + '\n');
+      engine: engine.metadata, diarization: scheduler.diarizer?.engine.metadata ?? null, alt: scheduler.alt?.metadata ?? null, manual: config.manualMode === true }) + '\n');
   }
 } catch (error) {
   await stop(); process.stderr.write(error.message + '\n'); process.exitCode = 1;

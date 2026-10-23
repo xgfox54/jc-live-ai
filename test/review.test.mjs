@@ -21,6 +21,14 @@ import { TranscriptState } from '../public/client-state.mjs';
 import { importAudio } from '../src/import-audio.mjs';
 
 const note = parts => ({ summary: [{ text: parts[0].text, source_id: parts[0].id, quote: parts[0].text }], decisions: [], proposals: [], actions: [], numbers: [], open_questions: [] });
+// Fixture model: batch requests get a grounded note; the whole-meeting digest request gets one topic that cites every fact.
+const answer = messages => {
+  const data = JSON.parse(messages[1].content);
+  if (data.facts) return JSON.stringify({ overview: { text: '시험 회의 요약', refs: data.facts.map(fact => fact.id) },
+    topics: [{ title: '검토 주제', items: [{ text: '검토 항목', refs: [data.facts[0].id] }] }],
+    groups: [...new Set(data.facts.map(fact => fact.group))].map(group => ({ group, title: '검토 묶음' })) });
+  return JSON.stringify(note(data.segments));
+};
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'jc-review-'));
   const config = { adminToken: 'a'.repeat(64), viewerToken: 'b'.repeat(64), chunkSeconds: 5, queueChunks: 12, silenceRms: 0,
@@ -54,9 +62,11 @@ test('structured notes require literal source quotes and reject invented numbers
 test('saved AI batches resume without regenerating completed work and manual minutes survive later refresh', async t => {
   const f = fixture(t); for (let i = 0; i < 6; i++) f.add(('제' + i + ' 발언을 검토합니다. ').repeat(70), i * 1000);
   assert.throws(() => f.review.start(f.id), error => error.status === 400); f.publish();
-  let calls = 0; f.ai.requestText = async messages => { calls++; if (calls === 2) throw new Error('fixture disconnected'); return JSON.stringify(note(JSON.parse(messages[1].content).segments)); };
+  let calls = 0; f.ai.requestText = async messages => { calls++; if (calls === 2) throw new Error('fixture disconnected'); return answer(messages); };
   f.review.start(f.id); await f.review.pending; assert.equal(f.review.view(f.id).job.phase, 'failed'); const completed = f.review.view(f.id).job.completed; assert.equal(completed, 1);
-  f.review.start(f.id); await f.review.pending; const state = f.review.view(f.id); assert.equal(state.job.phase, 'completed'); assert.equal(calls, state.job.total + 1);
+  f.review.start(f.id); await f.review.pending; const state = f.review.view(f.id); assert.equal(state.job.phase, 'completed'); assert.equal(calls, state.job.total + 2);
+  assert.equal(state.structured.digest.topics[0].title, '검토 주제'); assert.equal(state.structured.digest_error, null);
+  assert.equal(f.registry.summary(f.id).groups.length, state.job.total); assert.equal(f.registry.summary(f.id).groups[0].title, '검토 묶음');
   assert.equal(f.store.snapshot(['ch1']).segments[0].corrected_text, f.store.snapshot(['ch1']).segments[0].raw_text);
   f.registry.saveMinutes(buildMinutes(f.record, f.registry.sessions(f.id), f.registry.segments(f.id), []));
   assert.equal(f.registry.minutes(f.id).method, 'grounded_ai');
@@ -68,17 +78,34 @@ test('saved AI batches resume without regenerating completed work and manual min
   assert.equal(f.review.view(f.id).stale, true); assert.equal(f.registry.minutes(f.id).method, 'manual_review');
   const publicDocument = publicMinutes(viewerMinutes(f.registry, f.id));
   assert.equal(publicDocument.method, 'extractive_transcript'); assert.equal(publicDocument.transcript.length, 6); assert.equal(publicDocument.summary, null);
-  assert.doesNotMatch(publicDocument.markdown, /담당자 검토본/); assert.match(publicDocument.markdown, /## 발언 내용 정리/);
+  assert.doesNotMatch(publicDocument.markdown, /담당자 검토본/); assert.match(publicDocument.markdown, /## 전체 회의 받아쓰기 기록/);
 });
 
 test('pause persists checkpoint, completed notes are reused and collection blocks local generation', async t => {
   const f = fixture(t); f.add('발언 검토 '.repeat(700)); f.publish(); let calls = 0;
-  f.ai.requestText = async messages => { calls++; f.review.pause(f.id); return JSON.stringify(note(JSON.parse(messages[1].content).segments)); };
+  f.ai.requestText = async messages => { calls++; f.review.pause(f.id); return answer(messages); };
   f.review.start(f.id); await f.review.pending; assert.equal(f.review.view(f.id).job.phase, 'paused'); assert.equal(calls, 1);
-  f.ai.requestText = async messages => { calls++; return JSON.stringify(note(JSON.parse(messages[1].content).segments)); };
-  f.review.start(f.id); await f.review.pending; assert.equal(f.review.view(f.id).job.phase, 'completed'); assert.equal(calls, sourceGroups(f.registry.segments(f.id)).length);
+  f.ai.requestText = async messages => { calls++; return answer(messages); };
+  f.review.start(f.id); await f.review.pending; assert.equal(f.review.view(f.id).job.phase, 'completed'); assert.equal(calls, sourceGroups(f.registry.segments(f.id)).length + 1);
+  // An invalid digest answer keeps the batch summaries and records the failure instead of publishing a digest.
+  const first = f.registry.segments(f.id)[0]; f.store.correct(first.segment_id, { version: first.version, text: first.raw_text + ' 수정', origin: 'ai' });
+  f.ai.requestText = async messages => JSON.parse(messages[1].content).facts ? '{"topics":[]}' : answer(messages);
+  f.review.start(f.id); await f.review.pending; assert.equal(f.review.view(f.id).job.phase, 'completed');
+  assert.equal(f.review.view(f.id).structured.digest, null); assert.match(f.review.view(f.id).structured.digest_error, /묶음/);
   f.ai.saveSettings({ provider: 'ollama', model: 'local-fixture', automatic: false }); f.scheduler.start({ stream_id: 'ch2' });
   assert.throws(() => f.review.start(f.id), error => error.status === 409);
+});
+
+test('cached batch notes with a number from another segment of the same batch are reused', async t => {
+  const f = fixture(t); f.add('예산 100원을 검토합니다.'); f.add('다음 안건을 논의합니다.', 1000); f.publish(); let calls = 0;
+  f.ai.requestText = async messages => {
+    calls++; const data = JSON.parse(messages[1].content); if (data.facts) return answer(messages);
+    const second = data.segments[1];
+    return JSON.stringify({ ...note(data.segments), summary: [{ text: '예산 100원 안건 논의', source_id: second.id, quote: second.text }] });
+  };
+  f.review.start(f.id); await f.review.pending; assert.equal(f.review.view(f.id).job.phase, 'completed'); assert.equal(calls, 2);
+  f.review.start(f.id); await f.review.pending; assert.equal(f.review.view(f.id).job.phase, 'completed'); assert.equal(calls, 2);
+  assert.equal(f.registry.summary(f.id).items[0].text, '예산 100원 안건 논의');
 });
 
 test('search reaches older than browser cache, matches both text versions and keeps literal query characters', t => {

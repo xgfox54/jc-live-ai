@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { HttpError } from './validate.mjs';
 import { committees, committeeForChannel } from '../public/committees.mjs';
+import { createDigest, digestFacts } from './meeting-digest.mjs';
 
 const categories = { summary: '논의 요약', decisions: '결정사항', proposals: '제안', actions: '후속 조치', numbers: '수치와 맥락', open_questions: '미결 사항' };
 const normal = value => value.replace(/\s+/g, ' ').trim();
@@ -118,7 +119,7 @@ export class ReviewService {
   }
   view(id) {
     this.record(id); const structured = this.get('structured:' + id);
-    return { id, job: this.get('job:' + id), structured, manual: this.get('manual:' + id), current_markdown: this.registry.minutes(id)?.markdown ?? '',
+    return { id, job: this.get('job:' + id), final_speakers: this.finalSpeakers?.state(id) ?? null, structured, manual: this.get('manual:' + id), current_markdown: this.registry.minutes(id)?.markdown ?? '',
       stale: Boolean(structured && !this.registry.structuredCurrent(id, structured)),
       live_summary: this.get('live:' + id) ?? { enabled: false }, timeline: this.get('timeline:' + id) ?? [] };
   }
@@ -189,15 +190,18 @@ export class ReviewService {
           signal.throwIfAborted();
           if (!note) note = Object.fromEntries(Object.keys(categories).map(category => [category, []]));
           else this.save(key, note);
-        } else note = groundedNote(note, group);
+        // Cached notes were accepted in lenient mode (numbers may come from the same batch); re-check them the same way.
+        } else note = groundedNote(note, group, { lenient: true });
         notes.push(note); job.completed++;
         job.elapsed_ms = Date.now() - started; job.remaining_ms = Math.round(job.elapsed_ms / job.completed * (job.total - job.completed));
         this.save('job:' + job.id, job);
         if (this.stopRequested) { this.save('job:' + job.id, { ...job, phase: 'paused' }); return; }
       }
       if (hash(this.published(job.id).map(row => [row.segment_id, row.version])) !== job.source_hash) throw new Error('회의록 받아쓰기가 변경되었습니다. 완료한 묶음은 보존했습니다. 다시 시작해 주세요.');
+      // The whole-meeting digest uses the administrator's second (refinement) model, like the final speaker review.
+      const { digest, digest_error } = await this.digest(notes, sources, { ...settings, model: settings.refine_model || settings.model }, signal);
       const value = { notes, sources, scope: 'published', source_hash: job.source_hash, revision: this.registry.publishedRevision(job.id), model: settings.model, updated_ms: Date.now(),
-        markdown: renderStructured(this.registry.get(job.id).title, notes, sources) };
+        digest, digest_error, markdown: renderStructured(this.registry.get(job.id).title, notes, sources) };
       this.save('structured:' + job.id, value);
       this.store.emit('broadcast', job.id);
       const timeline = this.get('timeline:' + job.id) ?? [];
@@ -209,6 +213,23 @@ export class ReviewService {
     }
   }
   pause(id) { this.record(id); if (this.active === id) this.stopRequested = true; return this.get('job:' + id); }
+  // Whole-meeting digest (one-line summary, topics, time-ordered group titles) built only from grounded batch summaries.
+  // A failed digest keeps the batch summaries; the public page then shows the time-ordered summary alone.
+  async digest(notes, sources, settings, signal) {
+    const facts = digestFacts(notes, sources);
+    if (!facts.length) return { digest: null, digest_error: null };
+    const key = 'digest:' + hash([3, settings.provider, settings.base, settings.model, facts]);
+    const cached = this.get(key);
+    if (cached) return { digest: cached, digest_error: null };
+    try {
+      const digest = await createDigest(notes, sources, messages => this.ai.requestText(messages, settings, signal), signal);
+      if (digest) this.save(key, digest);
+      return { digest, digest_error: null };
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return { digest: null, digest_error: error.message };
+    }
+  }
   live(id, enabled) {
     this.record(id); if (typeof enabled !== 'boolean') throw new HttpError(400, '누적 요약 설정을 확인해 주세요.');
     return this.save('live:' + id, { enabled });

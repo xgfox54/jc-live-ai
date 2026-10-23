@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { assertSupportedRuntime } from '../web/lib/runtime.mjs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { EventFeed } from './events.mjs';
@@ -8,6 +9,8 @@ import { BroadcastMonitor, supportsAutoStart } from './broadcast-monitor.mjs';
 import { createViewer, viewerStream } from './viewer.mjs';
 import { settingsView, saveSettings } from './settings.mjs';
 import { BroadcastRegistry } from './broadcast-registry.mjs';
+import { LiveCorrection } from './live-correction.mjs';
+import { SpeakerDirectory } from './speaker-directory.mjs';
 import { BroadcastDiscovery } from './broadcast-discovery.mjs';
 import { CouncilSchedule } from './council-schedule.mjs';
 import { ArchiveEnricher } from './council-archive.mjs';
@@ -16,6 +19,7 @@ import { minutesRequest } from './minutes-http.mjs';
 import { CloudPublisher } from './cloud-publisher.mjs';
 import { CorrectionService } from './ai-correction.mjs';
 import { ReviewService } from './review.mjs';
+import { FinalSpeakerReview } from './final-speakers.mjs';
 import { AudioReview } from './audio-review.mjs';
 import { reviewRequest } from './review-http.mjs';
 import { importAudio } from './import-audio.mjs';
@@ -26,7 +30,7 @@ import { namedCommitteeStream } from './committees.mjs';
 import { HttpError, identifier, integer, text, sourcePage, videoId, body, jsonBody } from './validate.mjs';
 
 const staticFiles = new Map(['index.html', 'app.mjs', 'style.css', 'capture.mjs', 'pcm-worklet.mjs',
-  'player.mjs', 'client-state.mjs', 'subscription.mjs', 'icon-192.png', 'logo-jc-live.png', 'admin.html', 'admin.mjs',
+  'player.mjs', 'sync.mjs', 'client-state.mjs', 'subscription.mjs', 'icon-192.png', 'logo-jc-live.png', 'admin.html', 'admin.mjs',
   'viewer-stage.mjs', 'transcripts.mjs', 'selection.mjs', 'admin-tools.mjs', 'automation.mjs',
   'minutes.html', 'minutes.mjs', 'polling.mjs', 'ai-tools.mjs', 'workspace.mjs', 'display.mjs',
   'JejuGothic-Regular.ttf', 'Pretendard-SemiBold.woff2', 'JejuGothic-OFL.txt', 'Pretendard-OFL.txt', 'speakers.mjs'].map(name => ['/' + name, new URL('../public/' + name, import.meta.url)]));
@@ -39,17 +43,23 @@ const json = (res, value, status = 200) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(value));
 };
 export function createService(context) {
+  assertSupportedRuntime();
   const { store, scheduler, inputs, config } = context;
   const security = new Security(config); const feed = new EventFeed(store, config);
   const registry = new BroadcastRegistry(store);
   const schedule = context.schedule ?? new CouncilSchedule();
   const minutes = new MinutesService({ registry, store, config });
-  const viewer = createViewer({ ...context, registry, schedule });
+  const viewer = createViewer({ ...context, registry, schedule, get cloudSync() { return cloudSync; } });
   const monitor = new BroadcastMonitor({ ...context, registry, minutes });
   const discovery = new BroadcastDiscovery({ ...context, registry, monitor, archive: new ArchiveEnricher({ registry }) });
   const cloudSync = new CloudPublisher({ ...context, registry, minutes, schedule });
   const correctionAI = new CorrectionService({ ...context, registry });
+  const speakerDirectory = context.speakerDirectory ?? new SpeakerDirectory({ file: config.speakerLabels ?? 'data/speaker-labels.json' });
+  correctionAI.peopleDirectory = speakerDirectory;
+  const liveCorrection = new LiveCorrection({ store, registry, ai: correctionAI, speakers: speakerDirectory });
+  scheduler.metrics.live_correction = liveCorrection.metrics;
   const review = new ReviewService({ store, registry, correctionAI });
+  const finalSpeakers = review.finalSpeakers = new FinalSpeakerReview({ registry, review, ai: correctionAI, directory: speakerDirectory });
   const audioReview = new AudioReview({ ...context, registry });
   const captureRecording = new CaptureRecording(context);
   const modelManager = new ModelManager(correctionAI);
@@ -87,7 +97,7 @@ export function createService(context) {
       if (url.pathname === '/api/admin/import' && req.method === 'POST') {
         json(res, await importAudio({ ...context, registry, minutes }, req, url), 202); return;
       }
-      if (await reviewRequest({ review, audioReview, registry, scheduler, store, correctionAI, modelManager }, req, res, url)) return;
+      if (await reviewRequest({ review, audioReview, registry, scheduler, store, correctionAI, modelManager, cloudSync }, req, res, url)) return;
       if (url.pathname.startsWith('/api/admin/ai')) {
         const broadcast = url.searchParams.get('broadcast');
         if (req.method === 'GET') {
@@ -181,7 +191,7 @@ export function createService(context) {
         if (previous?.broadcast_id) registry.suspend(previous.broadcast_id, true);
         monitor.invalidate(id); store.saveStream(stream); store.event('stream', viewerStream(stream)); json(res, stream, 201); return;
       }
-      const match = url.pathname.match(/^\/api\/admin\/streams\/(ch(?:[1-9]|1[0-2]))\/(start|stop|epoch|pcm|auto)$/);
+      const match = url.pathname.match(/^\/api\/admin\/streams\/(ch(?:[0-9]|1[0-2]))\/(start|stop|epoch|pcm|auto)$/);
       if (match) {
         const [, id, action] = match;
         const stream = store.streams().find(s => s.stream_id === id);
@@ -227,8 +237,8 @@ export function createService(context) {
     }
   });
   server.maxConnections = 400; server.requestTimeout = 15_000; server.headersTimeout = 10_000;
-  return { server, feed, viewerFeed: viewer.feed, monitor, discovery, schedule, registry, minutes, cloudSync, correctionAI, review, audioReview, modelManager, async close() {
-    await review.close(); await audioReview.close(); await modelManager.close();
+  return { server, feed, viewerFeed: viewer.feed, monitor, discovery, schedule, registry, minutes, cloudSync, correctionAI, liveCorrection, speakerDirectory, review, finalSpeakers, audioReview, modelManager, async close() {
+    await finalSpeakers.close(); await review.close(); await audioReview.close(); await modelManager.close();
     await discovery.close(); await monitor.close(); await correctionAI.close(); await cloudSync.close(); minutes.close();
     feed.close(); viewer.feed.close(); server.closeAllConnections();
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

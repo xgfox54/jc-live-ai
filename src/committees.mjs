@@ -1,15 +1,16 @@
-import { committees, committeeForChannel } from '../public/committees.mjs';
+import { committees, committeeForChannel, CHANNELS, GENERAL_CHANNEL } from '../public/committees.mjs';
 
 const normalize = value => String(value ?? '').replace(/[\s·.ㆍ]/g, '');
+// Official broadcasts without exactly one committee match (plenary sessions, joint meetings) go to channel 0.
 export function matchCommittee(record) {
   const exact = committees.find(c => normalize(c.name) === normalize(record.committee));
   if (exact) return exact;
   const matches = committees.filter(c => normalize(record.title).includes(normalize(c.name)));
-  return matches.length === 1 ? matches[0] : null;
+  return matches.length === 1 ? matches[0] : GENERAL_CHANNEL;
 }
 export function initializeCommitteeChannels(store) {
   const existing = new Map(store.streams().map(stream => [stream.stream_id, stream]));
-  for (const committee of committees) {
+  for (const committee of CHANNELS) {
     if (existing.has(committee.stream_id)) continue;
     const stream = { stream_id: committee.stream_id, name: committee.name, committee_id: committee.id,
       kind: 'pending', approved: false, auto_start: false, page_url: '', video_id: null };

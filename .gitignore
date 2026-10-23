@@ -19,3 +19,5 @@
 /web/public/
 /web/node_modules/
 __pycache__/
+/.omo/
+/.playwright-cli/

@@ -79,6 +79,14 @@ export class BroadcastDiscovery {
       if (existing) {
         if (existing.stream_id !== committee.stream_id) { this.registry.save({ ...record, queued: true, queue_reason: '같은 방송이 다른 위원회 채널에 등록되어 있습니다. 기존 등록을 확인해 주세요.' }); continue; }
         if (!existing.broadcast_id) this.store.saveStream({ ...existing, broadcast_id: record.id });
+        // The official page can replace its YouTube video (a removed or restarted stream); follow the current one when idle.
+        const id = existing.stream_id;
+        if (record.video_id && existing.video_id && record.video_id !== existing.video_id && existing.auto_discovered
+          && !this.monitor.active(id) && !this.monitor.pending.has(id)) {
+          const updated = { ...existing, broadcast_id: record.id, video_id: record.video_id, auto_completed_key: null,
+            ...(existing.kind === 'youtube' ? { page_url: 'https://www.youtube.com/watch?v=' + record.video_id } : {}) };
+          this.monitor.invalidate(id); this.store.saveStream(updated); this.store.event('stream', viewerStream(updated));
+        }
         this.registry.save({ ...record, stream_id: existing.stream_id, queued: false,
           suspended: existing.auto_start === false || record.suspended });
         continue;

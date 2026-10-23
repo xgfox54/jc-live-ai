@@ -14,7 +14,7 @@ export class AudioReview {
   jobs(id) { return this.store.db.prepare('SELECT document FROM audio_jobs ORDER BY rowid DESC').all().map(row => JSON.parse(row.document)).filter(job => !id || job.broadcast_id === id); }
   save(job) { this.store.db.prepare('INSERT INTO audio_jobs VALUES(?,?) ON CONFLICT(id) DO UPDATE SET document=excluded.document').run(job.id, JSON.stringify(job)); return job; }
   async recording(session) {
-    if (!session || !/^ch(?:[1-9]|1[0-2])$/.test(session.stream_id) || !/^[a-zA-Z0-9_-]{1,80}$/.test(session.session_id)) throw new HttpError(404, '원음 기록을 찾지 못했습니다.');
+    if (!session || !/^ch(?:[0-9]|1[0-2])$/.test(session.stream_id) || !/^[a-zA-Z0-9_-]{1,80}$/.test(session.session_id)) throw new HttpError(404, '원음 기록을 찾지 못했습니다.');
     const directory = resolve(this.config.recordings ?? 'data/recordings');
     const folder = resolve(directory, session.stream_id, session.session_id);
     try {

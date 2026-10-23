@@ -12,6 +12,9 @@ export class Store extends EventEmitter {
       CREATE TABLE IF NOT EXISTS segments(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, stream_id TEXT NOT NULL,
         version INTEGER NOT NULL, start_ms REAL NOT NULL, document TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS segment_session ON segments(session_id,start_ms);
+      CREATE INDEX IF NOT EXISTS segment_delivery ON segments(session_id,json_extract(document,'$.ai_corrected'),start_ms);
+      CREATE TABLE IF NOT EXISTS recognition_suppressed(id INTEGER PRIMARY KEY,session_id TEXT NOT NULL,
+        start_ms REAL NOT NULL,end_ms REAL NOT NULL,document TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, stream_id TEXT NOT NULL,
         kind TEXT NOT NULL, created_ms INTEGER NOT NULL, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, created_ms INTEGER NOT NULL, document TEXT NOT NULL);
@@ -27,6 +30,7 @@ export class Store extends EventEmitter {
           AND c.version<=json_extract(events.payload,'$.version') AND json_extract(c.document,'$.origin')='ai');`);
     this.db.exec("CREATE INDEX IF NOT EXISTS segment_published_stream ON segments(stream_id) WHERE json_extract(document,'$.ai_corrected')=1 "
       + "AND trim(coalesce(json_extract(document,'$.corrected_text'),''))<>'';");
+    this.db.exec("CREATE INDEX IF NOT EXISTS segment_live_preview ON segments(stream_id,json_extract(document,'$.preview_updated_ms')) WHERE json_extract(document,'$.live_preview')=1");
   }
   transaction(action) {
     this.db.exec('BEGIN IMMEDIATE');
@@ -93,7 +97,8 @@ export class Store extends EventEmitter {
       if (!row) throw new HttpError(404, 'Segment not found');
       const segment = JSON.parse(row.document);
       if (segment.version !== change.version) throw new HttpError(409, 'Version conflict');
-      const updated = { ...segment, corrected_text: change.text, ai_corrected: change.origin === 'ai' || segment.ai_corrected === true, version: segment.version + 1 };
+      const updated = { ...segment, corrected_text: change.text, ai_corrected: change.origin === 'ai' || segment.ai_corrected === true, version: segment.version + 1,
+        ...(segment.live_preview ? { preview_updated_ms: Date.now() } : {}) };
       this.db.prepare('INSERT INTO corrections(segment_id,version,document) VALUES(?,?,?)')
         .run(id, updated.version, JSON.stringify({ ...change, created_ms: Date.now() }));
       this.db.prepare('UPDATE segments SET version=?,document=? WHERE id=?').run(updated.version, JSON.stringify(updated), id);
@@ -151,7 +156,13 @@ export class Store extends EventEmitter {
       ORDER BY rowid DESC LIMIT ?`)
       .all(query.stream, query.before ?? Number.MAX_SAFE_INTEGER, query.session ?? '', query.session ?? '',
         ...(query.broadcast ? [query.broadcast] : []), query.q ?? '', query.q ?? '', query.q ?? '', query.limit ?? 100);
-    return { items: rows.map(r => JSON.parse(r.document)).reverse(), before: rows.at(-1)?.rowid ?? null };
+    return { items: rows.map(r => ({ ...JSON.parse(r.document), sequence: r.rowid })).reverse(), before: rows.at(-1)?.rowid ?? null };
+  }
+  liveSegments(stream, broadcast) {
+    return this.db.prepare(`SELECT rowid,document FROM segments WHERE stream_id=? AND json_extract(document,'$.live_preview')=1
+      ${broadcast ? 'AND session_id IN (SELECT session_id FROM broadcast_sessions WHERE broadcast_id=?)' : ''}
+      ORDER BY json_extract(document,'$.preview_updated_ms') DESC,rowid DESC LIMIT 200`)
+      .all(stream, ...(broadcast ? [broadcast] : [])).map(row => ({ ...JSON.parse(row.document), sequence: row.rowid }));
   }
   snapshot(ids, broadcasts = {}, published = false) {
     const pages = ids.map(stream => ({ stream, ...this.segments({ stream, broadcast: broadcasts[stream], published }) }));
