@@ -1,4 +1,4 @@
-import { finalSourceGuard, REVIEW_METHOD } from './final-speakers.mjs';
+import { finalSourceGuard, REVIEW_METHOD, PREVIOUS_METHODS } from './final-speakers.mjs';
 import { publicSpeech } from './silence-filter.mjs';
 import { createHash } from 'node:crypto';
 
@@ -96,7 +96,7 @@ export class BroadcastRegistry {
   finalSpeakers(id) {
     const value = this.reviewState('final-speakers:' + id);
     return value && ['complete', 'partial'].includes(value.phase)
-      && [REVIEW_METHOD, REVIEW_METHOD + '-revalidated'].includes(value.method)
+      && [REVIEW_METHOD, REVIEW_METHOD + '-revalidated', ...PREVIOUS_METHODS].includes(value.method)
       && value.source_guard === finalSourceGuard(this, id) ? value : null;
   }
   structuredCurrent(id, structured) {

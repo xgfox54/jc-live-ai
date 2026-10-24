@@ -20,7 +20,20 @@ export function peopleCandidates(record, directory) {
     .map(member => ({ name: member.name, role: 'member', title: member.role, source: 'committee-directory' }));
   const officials = [];
   const date = String(record.scheduled_at ?? '').slice(0, 10);
-  for (const meeting of [...(directory?.meetings ?? [])].sort((a, b) => String(b.date).localeCompare(String(a.date)))) {
+  // Plenary sessions are presided by the council 의장 or a 부의장, who sit on no standing committee.
+  // The latest official speaker records up to the meeting date give one 의장 and at most two 부의장.
+  const officers = new Map(); const officerLimit = { 의장: 1, 부의장: 2 };
+  const meetings = [...(directory?.meetings ?? [])].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  for (const meeting of committee?.members.length ? [] : meetings) {
+    if (!meeting.date || (date && meeting.date > date)) continue;
+    for (const label of meeting.labels ?? []) {
+      const match = label.match(/^(의장|부의장)\s+([가-힣]{2,4})$/);
+      if (!match || officers.has(match[2]) || [...officers.values()].filter(item => item.office === match[1]).length >= officerLimit[match[1]]) continue;
+      officers.set(match[2], { office: match[1], as_of: meeting.date,
+        source: 'https://record.council.jeju.kr/source/view/video.html?fidx=' + meeting.fidx + '&pos=1&angun=0' });
+    }
+  }
+  for (const meeting of meetings) {
     if (!meeting.date || (date && meeting.date > date)) continue;
     for (const label of meeting.labels ?? []) {
       const match = label.match(/^(.{2,35}(?:국장|실장|도지사|부지사|시장|부시장|본부장|원장))\s+([가-힣]{2,5})$/);
@@ -30,8 +43,10 @@ export function peopleCandidates(record, directory) {
     }
   }
   const names = new Map();
-  for (const person of [...members, ...officials, ...streamRecordPeople.names.map(name => ({ name, role: 'unknown', title: '', source: 'stream-record:' + streamRecordPeople.commit }))])
+  const officerPeople = [...officers].map(([name, item]) => ({ name, role: 'member', title: item.office, ...item }));
+  for (const person of [...members, ...officerPeople, ...officials, ...streamRecordPeople.names.map(name => ({ name, role: 'unknown', title: '', source: 'stream-record:' + streamRecordPeople.commit }))])
     if (!names.has(person.name)) names.set(person.name, person);
+    else if (person.office && names.get(person.name).role === 'member') names.set(person.name, { ...names.get(person.name), office: person.office, as_of: person.as_of });
   return [...names.values()].slice(0, 160);
 }
 export function peopleGlossary(record, directory) {

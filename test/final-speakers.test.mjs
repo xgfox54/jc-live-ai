@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/store.mjs';
 import { BroadcastRegistry } from '../src/broadcast-registry.mjs';
 import { ReviewService } from '../src/review.mjs';
-import { FinalSpeakerReview, identityAnchors, validateAssignments, finalReadiness, resolveName, SETTLE_MS } from '../src/final-speakers.mjs';
+import { FinalSpeakerReview, identityAnchors, validateAssignments, finalReadiness, resolveName, SETTLE_MS, candidatesFor, presidingOfficers } from '../src/final-speakers.mjs';
 import { peopleCandidates, streamRecordPeople } from '../src/people-reference.mjs';
 import { buildMinutes } from '../src/minutes.mjs';
 import { publicMinutes } from '../web/lib/model.mjs';
@@ -274,3 +274,48 @@ test('prefixed introductions do not license quoted mentions, injection, mixed sp
   const mixedAnchors = identityAnchors(mixed, roster, record);
   assert.equal(validateAssignments({ assignments: [answer('s0', mixedAnchors[0])] }, mixed, mixed, roster, mixedAnchors).s0, null);
 });
+
+test('plenary presiding officer needs the dated official roster and a session address; continuations stop at other speakers', () => {
+  const record = { stream_id: 'ch0', committee: '본회의', scheduled_at: '2026-10-23 14:00' };
+  const directory = { meetings: [{ fidx: 1, date: '2026-10-02', labels: ['의장 송영훈', '부의장 김승준', '부의장 김황국'] },
+    { fidx: 2, date: '2026-11-30', labels: ['의장 나중임'] }] };
+  const roster = peopleCandidates(record, directory);
+  assert.equal(roster.find(person => person.name === '송영훈').office, '의장');
+  assert.equal(roster.find(person => person.name === '김승준').office, '부의장');
+  assert.ok(!roster.some(person => person.name === '나중임'));
+  const rows = [row(0, '존경하는 송영훈 의장님, 선배·동료 의원 여러분!', 2), row(1, '안녕하십니까? 행정자치위원회 김태현 의원입니다.', 2),
+    row(2, '다음은 의사일정 제2항 검토 결과입니다.', 2), row(3, '다음은 의사일정 제3항을 상정합니다', 1), row(4, '제주특별자치도 조례안', 1),
+    row(5, '송영훈 의장님께 감사드립니다.', 3), row(6, '재석 44명 중 찬성 44명으로', 1),
+    row(7, '이남근 의원 나오셔서 보고해 주시기 바랍니다.', 1), row(8, '보고드리겠습니다.', 1),
+    { ...row(9, '다음은 의사일정 제4항', 1), session_id: 'two' }];
+  const anchors = identityAnchors(rows, roster, record);
+  assert.deepEqual(anchors.filter(anchor => anchor.kind === 'chair').map(anchor => [anchor.index, anchor.name]), [[3, '송영훈'], [6, '송영훈'], [7, '송영훈']]);
+  const names = index => candidatesFor(index, rows, anchors).map(candidate => candidate.name);
+  assert.deepEqual(names(4), ['송영훈']);
+  assert.ok(!names(5).includes('송영훈'));
+  assert.deepEqual(names(8), ['이남근']);
+  assert.deepEqual(names(0), ['김태현']);
+  assert.deepEqual(names(9), []);
+  const result = validateAssignments({ assignments: [{ id: 's4', name: '송영훈', evidence_id: 's3' }] }, [rows[4]], rows, roster, anchors);
+  assert.equal(result.s4.name, '송영훈');
+  const two = presidingOfficers([row(0, '송영훈 의장님'), row(1, '김승준 부의장님'), row(2, '송영훈 의장님')], roster);
+  assert.equal(two.size, 0);
+});
+
+test('introductions and invitations split across two groups are read together without moving names backwards', () => {
+  const record = { stream_id: 'ch0', committee: '본회의' };
+  const roster = peopleCandidates(record);
+  const rows = [row(0, '존경하는 의원 여러분, 안녕하십니까? 미래경제산업위원회 김황국', 4), row(1, '입니다. 지금부터 보고드리겠습니다.', 4),
+    row(2, '감사합니다.', 5), row(3, '이남근 위원입니다.', 6), row(4, '교육위원회 김혜지 의원', 7),
+    row(5, '발언대로 나오셔서 일괄하여 심사보고해 주시기 바랍니다.', 7), { ...row(6, '감사합니다.'), speaker_id: null, speaker_state: 'unknown' },
+    row(7, '보고드리겠습니다.', 8), row(8, '조례안 심사 결과입니다.', 8)];
+  const anchors = identityAnchors(rows, roster, record);
+  const self = anchors.filter(anchor => anchor.kind === 'self').map(anchor => [anchor.index, anchor.name]);
+  assert.deepEqual(self, [[0, '김황국'], [3, '이남근']]);
+  assert.deepEqual(anchors.filter(anchor => anchor.kind === 'floor').map(anchor => [anchor.index, anchor.name]), [[5, '김혜지']]);
+  assert.deepEqual(candidatesFor(1, rows, anchors).map(candidate => candidate.name), ['김황국']);
+  assert.deepEqual(candidatesFor(6, rows, anchors), []);
+  assert.deepEqual(candidatesFor(7, rows, anchors).map(candidate => candidate.name), ['김혜지']);
+  assert.deepEqual(candidatesFor(8, rows, anchors).map(candidate => candidate.name), ['김혜지']);
+});
+

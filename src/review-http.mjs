@@ -40,6 +40,7 @@ export async function reviewRequest(context, req, res, url) {
       case '/profiles': send(res, { items: correctionAI.profiles() }); return true;
       case '/participants': send(res, review.participants(id)); return true;
       case '/final-speakers': send(res, review.finalSpeakers.state(id)); return true;
+      case '/video-alignment': send(res, review.videoAlignment.state(id)); return true;
       case '/model-status': send(res, modelManager.status); return true;
       default: throw new HttpError(404, '작업 경로를 찾지 못했습니다.');
     }
@@ -57,6 +58,7 @@ export async function reviewRequest(context, req, res, url) {
     case '/speaker': send(res, store.speaker(text(value.segment_id, 80), value.version, value.speaker)); break;
     case '/participants': send(res, review.setParticipants(value.broadcast_id, value.names)); break;
     case '/final-speakers': send(res, review.finalSpeakers.start(value.broadcast_id), 202); break;
+    case '/video-alignment': send(res, review.videoAlignment.start(value.broadcast_id), 202); break;
     case '/pause-final-speakers': send(res, review.finalSpeakers.pause(value.broadcast_id)); break;
     case '/profile-save': send(res, correctionAI.saveProfile(text(value.name, 100))); break;
     case '/profile-use': send(res, correctionAI.useProfile(text(value.id, 100))); break;

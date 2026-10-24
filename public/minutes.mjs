@@ -20,9 +20,15 @@ function speakerBadge(item, names) {
 function quoteBlock(item, value, names) {
   const block = element('div', undefined, 'quote-block'); block.id = 'paragraph-' + item.segment_id;
   const label = element('p', undefined, 'quote-label');
-  label.append('[' + (value.committee || '세션 ' + item.session_number) + ' / 구간 ' + item.epoch + ' / ' + time(item.start_ms) + '~' + time(item.end_ms));
+  label.append('[' + (value.committee || '세션 ' + item.session_number) + ' / 구간 ' + item.epoch + ' / ' + (item.video_time ? '영상 ' : '') + time(item.start_ms) + '~' + time(item.end_ms));
   const badge = speakerBadge(item, names); if (badge) { label.append(' / '); label.append(badge); }
-  label.append(']'); block.append(label, element('p', item.text, 'quote-text')); return block;
+  label.append(']');
+  const video = value.video_alignment?.video_id;
+  if (item.video_time && /^[A-Za-z0-9_-]{11}$/.test(video ?? '')) {
+    const link = element('a', '영상에서 보기', 'video-link'); link.target = '_blank'; link.rel = 'noopener noreferrer';
+    link.href = 'https://www.youtube.com/watch?v=' + video + '&t=' + Math.floor(item.start_ms / 1000) + 's'; label.append(' ', link);
+  }
+  block.append(label, element('p', item.text, 'quote-text')); return block;
 }
 const roleText = entry => entry.speaker_role === 'member' ? ' 의원' : entry.speaker_role === 'official' ? ' · 공무원' : '';
 // Evidence buttons jump to the paragraph that contains the cited recognition segment.
@@ -126,7 +132,8 @@ function renderPoints(value) {
   panel.append(element('p', '시간순으로 묶은 AI 요약입니다. 각 항목의 근거 발언을 받아쓰기에서 확인할 수 있습니다.' + (value.summary?.updated_ms ? ' 갱신 ' + new Date(value.summary.updated_ms).toLocaleString('ko-KR') : ''), 'help'));
   for (const group of value.timeline) {
     const article = element('article', undefined, 'timeline-group');
-    article.append(element('p', (value.session_count > 1 ? '세션 ' + group.session_number + ' · ' : '') + time(group.start_ms), 'timeline-time'));
+    const videoClock = value.video_alignment?.sessions?.some(session => session.session_number === group.session_number);
+    article.append(element('p', (value.session_count > 1 && !videoClock ? '세션 ' + group.session_number + ' · ' : '') + (videoClock ? '영상 ' : '') + time(group.start_ms), 'timeline-time'));
     article.append(element('h4', group.title || '구간 ' + (group.group + 1) + ' 논의'));
     const list = element('ul', undefined, 'point-list');
     for (const item of group.items) list.append(factItem(item.text, item.segment_id ? [{ segment_id: item.segment_id, quote: item.quote }] : []));

@@ -61,7 +61,7 @@ const service = createService({ store, scheduler, inputs, config, configPath, sh
 let stopping = false;
 async function stop() {
   if (stopping) return; stopping = true;
-  await service.finalSpeakers.close(); await service.discovery.close(); await service.schedule.close(); await service.speakerDirectory.close(); await service.monitor.close(); await service.review.close(); await service.audioReview.close(); await service.modelManager.close(); await service.liveCorrection.close(); await service.correctionAI.close(); await inputs.close(); await scheduler.close();
+  await service.finalSpeakers.close(); await service.videoAlignment.close(); await service.discovery.close(); await service.schedule.close(); await service.speakerDirectory.close(); await service.monitor.close(); await service.review.close(); await service.audioReview.close(); await service.modelManager.close(); await service.liveCorrection.close(); await service.correctionAI.close(); await inputs.close(); await scheduler.close();
   service.minutes.flush(); await service.cloudSync.flush({ force: true });
   if (service.server.listening) await service.close(); else service.minutes.close(); store.close();
 }

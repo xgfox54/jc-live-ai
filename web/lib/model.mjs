@@ -111,6 +111,7 @@ const excerpt = value => {
     ...(s.segment_id ? { segment_id: identifier(s.segment_id), corrected: s.corrected === true } : {}),
     ...(Array.isArray(s.segment_ids) ? { segment_ids: list(s.segment_ids, 400, identifier) } : {}),
     speaker_key: optional(s.speaker_key, speakerKey), ...finalSpeakerFields(s),
+    ...(s.video_time === true ? { video_time: true } : {}),
     speaker_id: optional(s.speaker_id, value => { if (value < 1 || value > 8) fail(); return int(value); }), ...speakerFields(s) };
 };
 const speakerKey = value => typeof value === 'string' && /^[A-Za-z0-9-]{0,40}:[1-8]$/.test(value) ? value : fail();
@@ -176,6 +177,11 @@ export function publicMinutes(value) {
       return { phase: review.phase, assigned: int(review.assigned), unresolved: int(review.unresolved), updated_ms: int(review.updated_ms) };
     }),
     transcript: list(safe ? s.transcript : [], 60000, excerpt),
+    video_alignment: optional(safe ? s.video_alignment : null, value => {
+      const alignment = obj(value);
+      return { video_id: video(alignment.video_id), sessions: list(alignment.sessions, 20, item => {
+        const session = obj(item); return { session_number: int(session.session_number), offset_ms: num(session.offset_ms) }; }) };
+    }),
     gaps: list(s.gaps, 20000, value => {
       const g = obj(value); return { session_number: int(g.session_number), epoch: int(g.epoch),
         start_ms: optional(g.start_ms, num), end_ms: optional(g.end_ms, num),

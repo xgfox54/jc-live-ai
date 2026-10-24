@@ -82,6 +82,7 @@ button:hover{filter:brightness(.94)}button:disabled{opacity:.65;cursor:not-allow
 .speaker-label{display:inline-block;padding:0 8px;border-radius:999px;font-size:.8125rem;font-weight:700;line-height:1.6;color:var(--surface);background:var(--speaker-color,var(--muted))}
 .speaker-label-plain{color:var(--muted);background:var(--bg);border:1px solid var(--line)}
 .quote-block{margin:0 0 16px}.quote-label{margin:0 0 4px;font-size:var(--small);color:var(--muted);font-weight:700}
+.video-link{font-weight:400;white-space:nowrap}
 .quote-text{margin:0;line-height:1.85;white-space:pre-wrap;overflow-wrap:anywhere}
 .summary-list{padding-left:20px;line-height:1.8}.summary-list li{margin-bottom:8px}.summary-list .help{display:block;margin-top:2px}
 .speaker-section{margin:0 0 12px;padding:8px 16px;border:1px solid var(--line);border-radius:var(--radius)}.speaker-section summary{cursor:pointer;line-height:1.8}

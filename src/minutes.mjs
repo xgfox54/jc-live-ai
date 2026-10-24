@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync, renameSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { speakerText, speakerKey } from '../public/speakers.mjs';
 import { committeeForChannel } from '../public/committees.mjs';
+import { videoOffsets } from './video-alignment.mjs';
 
 const clean = value => String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
 const time = ms => { const seconds = Math.floor(ms / 1000); return [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60].map(n => String(n).padStart(2, '0')).join(':'); };
@@ -19,7 +20,7 @@ export function paragraphsOf(transcript) {
   return paragraphs;
 }
 export function minutesLabel(item, committee, participants = {}) {
-  return '[' + (committee || '세션 ' + item.session_number) + ' / 구간 ' + item.epoch + ' / ' + time(item.start_ms) + '~' + time(item.end_ms)
+  return '[' + (committee || '세션 ' + item.session_number) + ' / 구간 ' + item.epoch + ' / ' + (item.video_time ? '영상 ' : '') + time(item.start_ms) + '~' + time(item.end_ms)
     + (speakerText(item, participants) ? ' / ' + speakerText(item, participants) : '') + ']';
 }
 export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
@@ -37,6 +38,12 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
     speaker_key: speakerKey(segment),
     ...(segment.speaker_state ? { speaker_scope: segment.speaker_scope ?? null, speaker_state: segment.speaker_state,
       speaker_ids: [...new Set((segment.speaker_turns ?? []).filter(turn => turn.end_ms - turn.start_ms >= 200).map(turn => turn.speaker_id))] } : {}) }));
+  // Sessions matched against the official video audio are shown on the video's own clock.
+  const offsets = videoOffsets(extras.videoAlignment, sessions, segments);
+  segments.forEach((segment, index) => {
+    const offset = offsets.get(segment.session_id); if (offset === undefined) return;
+    const item = transcript[index]; item.start_ms += offset; item.end_ms += offset; item.video_time = true;
+  });
   for (const item of transcript) {
     if (!active) item.speaker_final = true;
     if (!finalReview) continue;
@@ -66,14 +73,18 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
   const sessionNumber = sessionId => sessions.findIndex(session => session.session_id === sessionId) + 1;
   // Time-ordered summary groups: one group per AI batch that produced grounded summary facts.
   const timeline = (summary?.groups ?? []).map(group => {
-    const starts = group.items.map(item => item.start_ms).filter(Number.isFinite);
+    const starts = group.items.map(item => item.start_ms + (offsets.get(item.session_id) ?? 0)).filter(Number.isFinite);
     return { group: group.group, title: clean(group.title), session_number: sessionNumber(group.items[0]?.session_id),
       start_ms: starts.length ? Math.min(...starts) : 0,
       items: group.items.map(item => ({ text: item.text, quote: item.quote, segment_id: item.segment_id ?? null })) };
   }).filter(group => group.items.length).sort((a, b) => a.session_number - b.session_number || a.start_ms - b.start_ms);
   const digest = summary?.digest ? { overview: summary.digest.overview, topics: summary.digest.topics } : null;
+  const timedSessions = sessions.filter(session => segments.some(segment => segment.session_id === session.session_id));
+  const allVideoTime = timedSessions.length > 0 && timedSessions.every(session => offsets.has(session.session_id));
   const warnings = ['AI 음성 전사에서 발언을 발췌한 검토용 회의록입니다. 발언자·참석자·정식 의결 결과는 원음과 공식 기록으로 확인해야 합니다.',
-    '시각은 수집 세션과 입력 구간별 경과 시간입니다. 방송 영상의 시각과 일치 여부는 확인되지 않았습니다.',
+    allVideoTime ? '시각은 공식 영상의 재생 위치입니다. 녹음 음성과 공식 영상 음성을 대조해 세션별로 맞췄습니다.'
+      : offsets.size ? '"영상"으로 표시한 시각은 공식 영상의 재생 위치이고, 나머지는 수집 세션별 경과 시간입니다.'
+        : '시각은 수집 세션과 입력 구간별 경과 시간입니다. 방송 영상의 시각과 일치 여부는 확인되지 않았습니다.',
     record.capture_from_start ? '방송 시작 부분부터 수집을 요청했습니다. 제공자의 다시보기·보관 구간에 따라 시작 부분이 누락될 수 있으며 전체 수록 여부는 확인되지 않았습니다.'
       : '수집 연결 이후의 음성으로 작성했습니다. 방송 시작부터 전체 수록했는지는 확인되지 않았습니다.'];
   if (gaps.length) warnings.push('음성·전사 누락 또는 입력 중단 기록 ' + gaps.length + '건이 있습니다. 원음 확인이 필요합니다.');
@@ -85,11 +96,16 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
     scheduled_at: clean(record.scheduled_at) || (started ? seoul(started) + ' (수집 시작 시각)' : ''), meeting_round: record.meeting_round ?? '', meeting_type: record.meeting_type ?? '',
     committee, agenda: record.agenda ?? '', status: active ? 'in_progress' : 'draft',
     method: 'extractive_transcript', updated_ms: Date.now(), segment_count: transcript.length,
+    video_alignment: offsets.size ? { video_id: extras.videoAlignment.video_id,
+      sessions: [...offsets].map(([sessionId, offset_ms]) => ({ session_number: sessionNumber(sessionId), offset_ms })) } : null,
     session_count: sessions.length, warnings, summary, digest, timeline, discussion: ranked, participants: participantList, paragraphs, transcript,
     final_speakers: finalReview ? { phase: finalReview.phase, assigned: finalReview.assigned, unresolved: finalReview.unresolved, updated_ms: finalReview.updated_ms }
       : { phase: active ? 'live' : 'pending', assigned: 0, unresolved: transcript.length, updated_ms: 0 },
-    gaps: gaps.map(gap => ({ session_number: sessions.findIndex(session => session.session_id === gap.session_id) + 1,
-      epoch: gap.timeline_epoch ?? 0, start_ms: gap.start_ms ?? null, end_ms: gap.end_ms ?? null, reason: gap.reason })) };
+    gaps: gaps.map(gap => {
+      const offset = (gap.timeline_epoch ?? 0) === 0 ? offsets.get(gap.session_id) ?? 0 : 0;
+      return { session_number: sessions.findIndex(session => session.session_id === gap.session_id) + 1, epoch: gap.timeline_epoch ?? 0,
+        start_ms: gap.start_ms == null ? null : gap.start_ms + offset, end_ms: gap.end_ms == null ? null : gap.end_ms + offset, reason: gap.reason };
+    }) };
   const quote = item => '**' + minutesLabel(item, committee, participants) + '**  \n' + clean(item.text);
   const role = entry => entry.speaker_role === 'member' ? ' 의원' : entry.speaker_role === 'official' ? ' (공무원)' : '';
   const fact = item => '- ' + clean(item.text) + (item.evidence?.length ? '\n  근거: ' + clean(item.evidence[0].quote) : item.quote ? '\n  근거: ' + clean(item.quote) : '');
@@ -141,7 +157,8 @@ export class MinutesService {
         const sessions = this.registry.sessions(id);
         if (!sessions.length) { this.dirty.delete(id); continue; }
         const value = buildMinutes(record, sessions, this.registry.segments(id), this.registry.gaps(id),
-          { participants: this.registry.participants(id), summary: this.registry.summary(id), finalSpeakers: this.registry.finalSpeakers(id) });
+          { participants: this.registry.participants(id), summary: this.registry.summary(id), finalSpeakers: this.registry.finalSpeakers(id),
+            videoAlignment: this.registry.reviewState('video-alignment:' + id) });
         this.registry.saveMinutes(value);
         const directory = resolve(this.config.minutesDirectory ?? 'data/minutes'); mkdirSync(directory, { recursive: true });
         for (const [extension, data] of [['md', value.markdown], ['json', JSON.stringify(value, null, 2)]]) {
