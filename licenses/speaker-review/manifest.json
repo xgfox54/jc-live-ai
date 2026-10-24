@@ -1,0 +1,27 @@
+{
+  "purpose": "Local, meeting-scoped post-meeting speaker review; not ASR",
+  "runtime": { "python": "3.14", "sherpa-onnx": "1.13.8", "numpy": "2.5.4", "provider": "cpu", "threads": 2 },
+  "models": [
+    {
+      "name": "pyannote segmentation 3.0 (sherpa ONNX export)",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+      "archive_sha256": "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488",
+      "sha256": "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
+      "target": "sherpa-onnx-pyannote-segmentation-3-0/model.onnx",
+      "license": "MIT", "notice": "PYANNOTE-LICENSE"
+    },
+    {
+      "name": "WeSpeaker English VoxCeleb ResNet34 (sherpa ONNX export)",
+      "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx",
+      "sha256": "5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94",
+      "target": "embedding.onnx",
+      "license": "Apache-2.0", "notice": "WESPEAKER-LICENSE",
+      "upstream": "https://github.com/wenet-e2e/wespeaker"
+    }
+  ],
+  "documentation": [
+    "https://github.com/k2-fsa/sherpa-onnx/blob/master/python-api-examples/offline-speaker-diarization.py",
+    "https://github.com/k2-fsa/sherpa-onnx/blob/master/python/tests/test_speaker_recognition.py"
+  ],
+  "korean_accuracy_benchmark": "not performed"
+}

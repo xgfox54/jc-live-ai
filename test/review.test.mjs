@@ -175,6 +175,38 @@ test('workspace APIs enforce administrator and origin checks; diagnostics exclud
   assert.equal((await fetch(base + endpoint, { headers: { Authorization: 'Bearer ' + f.config.adminToken } })).status, 200);
 });
 
+test('speaker review confirms and reverses public identities behind administrator authorization', async t => {
+  // Given: a corrected sentence in a meeting and an isolated HTTP server.
+  const f = fixture(t); f.add('회의 자료를 확인했습니다.'); f.publish();
+  const service = createService({ store: f.store, scheduler: f.scheduler, config: f.config, inputs: { stop: async () => {} } });
+  service.server.listen(0, '127.0.0.1'); await once(service.server, 'listening'); t.after(() => service.close());
+  const base = 'http://127.0.0.1:' + service.server.address().port;
+  const headers = { Authorization: 'Bearer ' + f.config.adminToken, Origin: base, 'Content-Type': 'application/json' };
+  const row = service.registry.publishedSegments(f.id)[0];
+  service.review.save('speaker-acoustics:' + f.id, { phase: 'complete', signature: 'voice-vector-marker',
+    private_marker: 'voice-vector-marker', features: [], missing: [], stats: { provider: 'cpu' } });
+  const input = { broadcast_id: f.id, version: 0, segment_id: row.segment_id, segment_version: row.version, name: '홍길동', role: 'member', mode: 'one' };
+  const post = (route, value, auth = headers) => fetch(base + '/api/admin/workspace/' + route, { method: 'POST', headers: auth, body: JSON.stringify(value) });
+  const stateURL = base + '/api/admin/workspace/speaker-review?broadcast=' + f.id;
+  assert.equal((await fetch(stateURL)).status, 401);
+  assert.equal((await fetch(stateURL, { headers: { Authorization: 'Bearer ' + f.config.viewerToken } })).status, 401);
+  assert.equal((await post('speaker-preview', input, { ...headers, Origin: 'https://evil.test' })).status, 403);
+  // When: an administrator previews and confirms the identity.
+  const preview = await (await post('speaker-preview', input)).json();
+  assert.equal((await post('speaker-confirm', { ...input, confirmation: preview.confirmation })).status, 200);
+  service.minutes.flush();
+  // Then: the viewer receives the name, never private voice features, and undo restores unknown.
+  const publicValue = await (await fetch(base + '/api/viewer/minutes/' + f.id)).json();
+  assert.equal(publicValue.transcript[0].speaker_name, '홍길동');
+  assert.equal(JSON.stringify(publicValue).includes('voice-vector-marker'), false);
+  assert.equal(service.registry.segments(f.id)[0].raw_text, row.raw_text);
+  assert.equal((await post('speaker-confirm', { ...input, confirmation: preview.confirmation })).status, 409);
+  assert.equal((await post('speaker-undo', { broadcast_id: f.id, version: 1 })).status, 200);
+  service.minutes.flush();
+  const restored = await (await fetch(base + '/api/viewer/minutes/' + f.id)).json();
+  assert.equal(restored.transcript[0].speaker_name, undefined);
+});
+
 test('provisional inference remains outside final storage and final speech replaces the preview', async t => {
   const f = fixture(t); f.config.chunkSeconds = 10; f.config.interim = true;
   let calls = 0; f.engine.transcribe = async () => ({ spans: [{ text: ++calls === 1 ? '처리 중인 미확정 문장' : '최종 확정 문장' }], inference_ms: 1 });

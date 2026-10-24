@@ -44,6 +44,10 @@ export function transcriptNodes(items, options = {}) {
       const play = document.createElement('button'); play.className = 'secondary'; play.textContent = '이 구간 원음 듣기';
       play.addEventListener('click', () => options.audio(item)); line.append(play);
     }
+    if (options.identity) {
+      const identify = document.createElement('button'); identify.className = 'secondary'; identify.textContent = '이 구간 발언자 확인';
+      identify.addEventListener('click', () => options.identity(item)); line.append(identify);
+    }
     if (options.speaker) {
       const label = document.createElement('label'); label.textContent = '참여자 번호';
       const select = document.createElement('select'); select.append(new Option('미지정', ''));

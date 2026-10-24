@@ -116,6 +116,24 @@ test('whole meeting auto review includes last batch and invalidates on edit; raw
   } finally { await f.close(); }
 });
 
+test('offline cluster collisions cannot replace independent text evidence for different people', async () => {
+  // Given: the streaming labels distinguish two speakers, while offline clustering merges them.
+  const f = fixture({ count: 2 });
+  try {
+    const source = f.registry.segments(f.id);
+    f.store.correct(source[0].segment_id, { version: source[0].version, text: '이경심입니다. 질의합니다.', origin: 'ai' });
+    f.store.correct(source[1].segment_id, { version: source[1].version, text: '정다운입니다. 답변합니다.', origin: 'ai' });
+    f.final.acoustics = { prepare: async () => ({ phase: 'complete', features: f.registry.publishedSegments(f.id).map(row => ({
+      segment_id: row.segment_id, cluster: 'one:voice-0', purity: 1, voiced_s: 6, mixed: false, vector: Array.from({ length: 256 }, (_, i) => +(i === 0)) })) }) };
+    // When: final review processes both text and offline features.
+    f.final.start(f.id); await f.final.pending;
+    // Then: the two self introductions retain different names despite the merged voice group.
+    const result = f.registry.finalSpeakers(f.id);
+    assert.deepEqual(source.map(row => result.assignments[row.segment_id]?.name), ['이경심', '정다운']);
+    assert.equal(result.voice_assigned, 0);
+  } finally { await f.close(); }
+});
+
 test('collection end, settle time, queue, live correction, busy work and manual mode are enforced; gaps do not block', async () => {
   const f = fixture({ count: 1 });
   try {

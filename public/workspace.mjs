@@ -1,4 +1,4 @@
-import { transcriptNodes } from './transcripts.mjs';
+import { transcriptNodes, formatElapsedTime } from './transcripts.mjs';
 
 const $ = selector => document.querySelector(selector);
 const element = (tag, value, className) => { const node = document.createElement(tag); node.textContent = value ?? ''; if (className) node.className = className; return node; };
@@ -22,6 +22,20 @@ export class Workspace {
       for (const input of $('#participant-rows').querySelectorAll('input[data-key]')) names[input.dataset.key] = input.value;
       this.action('/participants', { broadcast_id: this.id(), names }).then(() => this.participants().catch(error => message(error.message)));
     });
+    $('#speaker-review-refresh').addEventListener('click', () => this.loadSpeakers().catch(error => message(error.message)));
+    for (const selector of ['#speaker-review-query', '#speaker-review-unknown']) $(selector).addEventListener('input', () => this.filterSpeakers());
+    $('#speaker-review-form').addEventListener('submit', event => { event.preventDefault(); this.previewSpeakers().catch(error => message(error.message)); });
+    $('#speaker-review-confirm').addEventListener('click', () => this.confirmSpeakers().catch(error => message(error.message)));
+    $('#speaker-review-undo').addEventListener('click', async () => {
+      await this.action('/speaker-undo', { broadcast_id: this.id(), version: this.speakerView?.version }); await this.loadSpeakers();
+    });
+    $('#speaker-review-audio').addEventListener('click', () => {
+      const item = this.speakerView?.items.find(item => item.segment_id === $('#speaker-review-segment').value);
+      if (item) this.play(item).catch(error => message(error.message));
+    });
+    for (const selector of ['#speaker-review-segment', '#speaker-review-name', '#speaker-review-role', '#speaker-review-mode'])
+      $(selector).addEventListener('input', () => this.clearSpeakerPreview());
+    $('#speaker-roster-form').addEventListener('submit', event => { event.preventDefault(); this.saveRoster().catch(error => message(error.message)); });
     for (const kind of ['raw', 'reviewed', 'json']) $('#export-' + kind).addEventListener('click', () => this.download(kind).catch(error => message(error.message)));
     $('#diagnostics').addEventListener('click', async () => {
       try { const value = await this.json('/diagnostics'); $('#diagnostics-text').textContent = JSON.stringify(value, null, 2);
@@ -59,7 +73,7 @@ export class Workspace {
   }
   async select() {
     this.stopAudio(); this.before = null; $('#minutes-editor').value = ''; this.editVersion = null;
-    await this.search(); await this.status(); if (this.id()) await this.loadEditor();
+    await this.search(); await this.status(); if (this.id()) { await this.loadEditor(); await this.loadSpeakers(); }
   }
   async search(before) {
     if (!this.id()) { this.renderRows([]); return; }
@@ -71,8 +85,82 @@ export class Workspace {
   }
   renderRows(items) {
     this.items = items; $('#record-results').replaceChildren(transcriptNodes(items, { mode: $('#record-mode').value,
+      identity: item => this.openSpeaker(item).catch(error => this.message(error.message)),
       audio: item => this.play(item).catch(error => this.message(error.message)), speaker: (item, speaker) =>
         this.action('/speaker', { segment_id: item.segment_id, version: item.version, speaker }).then(() => this.search()).catch(error => this.message(error.message)) }));
+  }
+  clearSpeakerPreview() { this.speakerPreview = null; $('#speaker-review-preview-list').replaceChildren(); $('#speaker-review-confirm').disabled = true; }
+  async loadSpeakers() {
+    const id = this.id(); this.clearSpeakerPreview(); if (!id) return;
+    const [view, roster] = await Promise.all([this.json('/speaker-review?broadcast=' + id), this.json('/speaker-roster?broadcast=' + id)]);
+    if (id !== this.id()) return;
+    this.speakerView = view; this.rosterView = roster; this.filterSpeakers();
+    $('#speaker-review-status').textContent = '전체 ' + view.total + '구간 · 미확인 ' + view.unresolved + '구간 · 관리자 변경 ' + view.version + '회'
+      + (view.conflicts ? ' · 음성 분석과 문장 근거 불일치 ' + view.conflicts + '구간' : '')
+      + (view.acoustic ? ' · 원음 분석 ' + (view.acoustic.phase === 'complete' ? '완료' : '대기') + ' · 원음 미확보 ' + view.acoustic.missing + '세션' : ' · 종료 후 원음 분석 대기');
+    $('#speaker-review-undo').disabled = !view.version;
+    $('#speaker-review-people').replaceChildren(...view.candidates.map(person => new Option(person.name + ' ' + person.title, person.name)));
+    $('#speaker-roster').value = roster.people.map(p => [p.name, ({ member: '의원', official: '공무원', unknown: '기타' })[p.role], p.title, p.as_of, p.source].join(' | ')).join('\n');
+    $('#speaker-roster-status').textContent = '직접 확인한 참석자 ' + roster.people.length + '명';
+    $('#speaker-roster-candidates').replaceChildren(...view.candidates.map(person => element('li',
+      person.name + ' · ' + person.title + ' · ' + (person.attendance ? '해당 회의에서 확인' : '참고 후보') + (person.as_of ? ' · ' + person.as_of : ''))));
+  }
+  filterSpeakers() {
+    this.clearSpeakerPreview(); const select = $('#speaker-review-segment'); const selected = select.value;
+    const query = $('#speaker-review-query').value.trim();
+    const items = (this.speakerView?.items ?? []).filter(item => (!$('#speaker-review-unknown').checked || !item.identity)
+      && (!query || item.text.includes(query) || item.identity?.name.includes(query)));
+    select.replaceChildren(...items.slice(0, 300).map(item => new Option(formatElapsedTime(item.start_ms) + ' · '
+      + (item.identity?.name ?? '발언자 미확인') + (item.conflict_candidates?.length ? ' (원음 검토 필요)' : '') + ' · ' + item.text.slice(0, 80), item.segment_id)));
+    if (items.some(item => item.segment_id === selected)) select.value = selected;
+    if (items.length > 300) this.message('앞의 300구간을 표시합니다. 검색어로 범위를 좁혀 주세요.');
+  }
+  async openSpeaker(item) {
+    await this.loadSpeakers(); $('#speaker-review-unknown').checked = false; $('#speaker-review-query').value = item.corrected_text?.slice(0, 50) ?? '';
+    this.filterSpeakers(); $('#speaker-review-segment').value = item.segment_id;
+    $('#speaker-review-segment').focus(); $('#speaker-review-form').scrollIntoView({ block: 'center' });
+  }
+  speakerInput() {
+    const source = this.speakerView?.items.find(item => item.segment_id === $('#speaker-review-segment').value);
+    if (!source) throw new Error('확인할 발언 구간을 선택해 주세요.');
+    return { broadcast_id: this.id(), version: this.speakerView.version, analysis_version: this.speakerView.analysis_version,
+      segment_id: source.segment_id, segment_version: source.version, name: $('#speaker-review-name').value.trim() || null,
+      role: $('#speaker-review-role').value, mode: $('#speaker-review-mode').value };
+  }
+  async previewSpeakers() {
+    this.clearSpeakerPreview(); const input = this.speakerInput();
+    const preview = await (await this.api('/api/admin/workspace/speaker-preview', { method: 'POST', body: JSON.stringify(input) })).json();
+    if (input.broadcast_id !== this.id()) return;
+    if (JSON.stringify(input) !== JSON.stringify(this.speakerInput())) return;
+    this.speakerPreview = { input, preview };
+    for (const item of preview.items) {
+      const label = element('label', '', 'check'); const check = document.createElement('input'); check.type = 'checkbox'; check.checked = true;
+      check.dataset.segment = item.segment_id; if (item.segment_id === input.segment_id) check.disabled = true;
+      label.append(check, document.createTextNode(formatElapsedTime(item.start_ms) + ' · ' + item.text.slice(0, 160)));
+      $('#speaker-review-preview-list').append(label);
+    }
+    $('#speaker-review-confirm').disabled = false;
+    if (preview.limited) this.message('한 번에 최대 200구간까지 확인합니다. 저장 후 나머지 구간을 다시 확인해 주세요.');
+  }
+  async confirmSpeakers() {
+    if (!this.speakerPreview) return; const { input, preview: shown } = this.speakerPreview;
+    const selected = [...$('#speaker-review-preview-list').querySelectorAll('input:checked')].map(node => node.dataset.segment);
+    const value = { ...input, expected_segments: shown.items.filter(item => selected.includes(item.segment_id)).map(item => ({ segment_id: item.segment_id, version: item.version })),
+      ...(input.mode === 'similar' ? { mode: 'selected', segment_ids: selected } : {}) };
+    const preview = await (await this.api('/api/admin/workspace/speaker-preview', { method: 'POST', body: JSON.stringify(value) })).json();
+    if (input.broadcast_id !== this.id()) return;
+    await this.api('/api/admin/workspace/speaker-confirm', { method: 'POST', body: JSON.stringify({ ...value, confirmation: preview.confirmation }) });
+    await this.loadSpeakers(); await this.status(); this.message('확인한 발언자 이름을 저장했습니다.');
+  }
+  async saveRoster() {
+    const roles = { 의원: 'member', 공무원: 'official', 기타: 'unknown' };
+    const people = $('#speaker-roster').value.split('\n').filter(line => line.trim()).map(line => {
+      const parts = line.split('|').map(part => part.trim());
+      if (parts.length !== 5 || !roles[parts[1]]) throw new Error('각 줄에 이름 | 구분 | 직책 | 날짜 | 확인 근거를 입력해 주세요.');
+      return { name: parts[0], role: roles[parts[1]], title: parts[2], as_of: parts[3], source: parts[4] };
+    });
+    await this.api('/api/admin/workspace/speaker-roster', { method: 'POST', body: JSON.stringify({ broadcast_id: this.id(), version: this.rosterView.version, people }) });
+    await this.loadSpeakers(); this.message('회의 당시 참석자 명단을 저장했습니다. 전체 발언자 재검토에 반영합니다.');
   }
   async play(item) {
     this.stopAudio(); const epoch = this.epoch; const id = this.id();
@@ -112,6 +200,10 @@ export class Workspace {
       empty: '받아쓰기 없음', correcting: '문장 후보정 완료 대기', ready: '전체 발언자 검토 가능' };
     const finalPhases = { running: '발언자 검토 중', complete: '발언자 검토 완료', partial: '검토 완료·일부 발언자 미확인', failed: '검토 실패', interrupted: '검토 중단', paused: '검토 중지' };
     $('#final-speakers-status').textContent = (readiness[final?.readiness] ?? '기록을 선택해 주세요.')
+      + (final?.job?.stage === 'acoustics' && final.job.phase === 'running' ? ' · 종료 후 원음 재분석 중' : '')
+      + (final?.job?.acoustics?.phase === 'unconfigured' ? ' · 원음 분석 모델 미구성' : '')
+      + (final?.job?.acoustics?.phase === 'unavailable' ? ' · 분석할 저장 원음 없음' : '')
+      + (final?.job?.acoustics?.missing ? ' · 원음 미확보 ' + final.job.acoustics.missing + '세션' : '')
       + (final?.job ? ' · ' + finalPhases[final.job.phase] + ' · ' + final.job.completed + '/' + final.job.total + '묶음' : '')
       + (final?.result ? ' · 이름 확인 ' + final.result.assigned + '개 구간 · 미확인 ' + final.result.unresolved + '개 구간' : '');
     $('#final-speakers').disabled = final?.readiness !== 'ready' || final?.job?.phase === 'running';

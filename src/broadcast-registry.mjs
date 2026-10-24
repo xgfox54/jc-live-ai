@@ -1,4 +1,5 @@
 import { finalSourceGuard, REVIEW_METHOD, PREVIOUS_METHODS } from './final-speakers.mjs';
+import { decisionOverlay } from './speaker-decisions.mjs';
 import { publicSpeech } from './silence-filter.mjs';
 import { createHash } from 'node:crypto';
 
@@ -95,9 +96,16 @@ export class BroadcastRegistry {
   participants(id) { return this.reviewState('participants:' + id)?.names ?? {}; }
   finalSpeakers(id) {
     const value = this.reviewState('final-speakers:' + id);
-    return value && ['complete', 'partial'].includes(value.phase)
+    let current = value && ['complete', 'partial'].includes(value.phase)
       && [REVIEW_METHOD, REVIEW_METHOD + '-revalidated', ...PREVIOUS_METHODS].includes(value.method)
       && value.source_guard === finalSourceGuard(this, id) ? value : null;
+    const decisions = this.reviewState('speaker-decisions:' + id);
+    if (current?.text_assignments && current.decision_version !== (decisions?.version ?? 0)) {
+      const assigned = Object.values(current.text_assignments).filter(Boolean).length;
+      current = { ...current, assignments: current.text_assignments, assigned, unresolved: current.assigned + current.unresolved - assigned };
+    }
+    if (current) current = { ...current, review_decision_version: current.decision_version };
+    return decisionOverlay(current, decisions, this.publishedSegments(id));
   }
   structuredCurrent(id, structured) {
     if (!structured) return false;

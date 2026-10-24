@@ -132,7 +132,26 @@
 <h4>영상 종료 후 발언자 재검토</h4>
 <p class="help">자동 후보정을 켜면 회의 수집이 끝난 뒤 자동으로 실행합니다. 영상 끝 도달·방송 종료 확인 또는 마지막 입력 후 10분이 지나면 종료로 봅니다. AI 후보정이 끝난 공개 문장을 구간별로 검토해 확인된 이름으로 묶습니다. 미확인 구간은 임의로 이름을 지정하지 않습니다.</p>
 <div class="row"><button id="final-speakers" class="secondary">전체 발언자 재검토</button><button id="pause-final-speakers" class="secondary" disabled>발언자 검토 중지</button></div><p id="final-speakers-status" role="status" class="help"></p>
-<p class="help">실시간 분석 번호에 이름을 지정합니다. 종료 후 재검토 결과는 별도로 보존하며 발언 구간별 근거를 우선합니다. 원음으로 확인한 뒤 지정해 주세요.</p>
+<h4>발언자 원음 확인과 이름 지정</h4>
+<p class="help">종료 후 원음 전체를 CPU로 다시 분석합니다. 실시간 번호는 이름 연결 기준으로 사용하지 않습니다. 같은 목소리의 구간도 적용 목록과 원음을 확인한 뒤 저장해 주세요.</p>
+<button id="speaker-review-refresh" class="secondary">발언자 목록 새로고침</button><p id="speaker-review-status" class="help" role="status"></p>
+<form id="speaker-review-form" class="fields">
+<label>구간 검색<input id="speaker-review-query" type="search" maxlength="200" placeholder="발언 내용이나 확인된 이름"></label>
+<label class="check"><input id="speaker-review-unknown" type="checkbox" checked> 미확인 구간만 표시</label>
+<label>확인할 발언 구간<select id="speaker-review-segment"></select></label>
+<button id="speaker-review-audio" type="button" class="secondary">선택한 구간 원음 듣기</button>
+<label>확인한 이름<input id="speaker-review-name" list="speaker-review-people" maxlength="40" placeholder="미확인으로 지정하려면 비워 둡니다"></label><datalist id="speaker-review-people"></datalist>
+<label>발언자 구분<select id="speaker-review-role"><option value="member">의원</option><option value="official">공무원</option><option value="unknown">그 외 참석자</option></select></label>
+<label>적용 범위<select id="speaker-review-mode"><option value="one">선택한 구간만</option><option value="similar">같은 목소리의 구간 검토</option></select></label>
+<button id="speaker-review-preview" type="submit" class="secondary">적용할 구간 확인</button>
+</form>
+<div id="speaker-review-preview-list"></div>
+<div class="row"><button id="speaker-review-confirm" disabled>확인한 이름 저장</button><button id="speaker-review-undo" class="secondary" disabled>직전 이름 변경 되돌리기</button></div>
+<details><summary>회의 당시 참석자 명단과 근거</summary>
+<p class="help">공식 기록에서 회의 날짜와 회의명이 일치하는 발언자 명단을 우선합니다. 이전 회의·단어장의 이름은 참고 후보이며 참석 확인을 의미하지 않습니다. 아래에는 이 회의에서 직접 확인한 참석자만 입력합니다.</p>
+<form id="speaker-roster-form"><label>확인한 참석자 목록<textarea id="speaker-roster" rows="5" placeholder="이름 | 의원 또는 공무원 또는 기타 | 직책 | YYYY-MM-DD | 확인 자료 주소 또는 문서명"></textarea></label><button class="secondary">참석자 명단 저장</button></form>
+<p id="speaker-roster-status" class="help"></p><ul id="speaker-roster-candidates"></ul></details>
+<p class="help">아래는 기존 실시간 번호의 수동 이름 설정입니다. 한 번호에 여러 사람이 섞일 수 있으므로 종료한 회의는 위의 구간별 이름 지정을 이용해 주세요.</p>
 <form id="participant-form"><div id="participant-rows"></div><datalist id="participant-members"></datalist><button>참여자 이름 저장</button></form>
 <p id="participant-status" role="status" class="help"></p></section>
 <section class="surface"><h3>회의록 본문 직접 수정</h3><button id="minutes-edit" class="secondary">저장한 본문 불러오기</button><label>Markdown 본문<textarea id="minutes-editor" rows="16" maxlength="500000"></textarea></label><button id="minutes-save">본문 저장</button>

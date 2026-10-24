@@ -2,13 +2,17 @@ import { createHash } from 'node:crypto';
 import { HttpError } from './validate.mjs';
 import { peopleCandidates } from './people-reference.mjs';
 import { committees } from '../public/committees.mjs';
+import { acousticOverlay, voiceCandidates } from './speaker-acoustics.mjs';
+import { decisionOverlay } from './speaker-decisions.mjs';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const parse = value => JSON.parse(value.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''));
 export function finalSourceGuard(registry, id) {
   const record = registry.get(id);
-  return hash([registry.revision(id), registry.sessions(id).map(row => [row.session_id, row.state, row.input_end_reason, row.error, row.total_gap_s]),
-    registry.participants(id), record?.stream_id, record?.committee, record?.scheduled_at, registry.gaps(id).length]);
+  const source = [registry.revision(id), registry.sessions(id).map(row => [row.session_id, row.state, row.input_end_reason, row.error, row.total_gap_s]),
+    registry.participants(id), record?.stream_id, record?.committee, record?.scheduled_at, registry.gaps(id).length];
+  const roster = registry.reviewState?.('speaker-roster:' + id); if (roster?.version) source.push(roster.version);
+  return hash(source);
 }
 export function finalSourceHash(registry, id) {
   return hash([registry.segments(id).map(row => [row.segment_id, row.version, row.corrected_text, row.ai_corrected, row.speaker_id, row.speaker_scope, row.speaker_state]),
@@ -25,10 +29,10 @@ export const SETTLE_MS = 600_000;
 // v6: committee/party-prefixed introductions; unnamed presiding boundaries; mixed speech stays unresolved.
 // v7: plenary presiding officer addressed in the session; introductions and invitations split across two groups;
 //     the greeting just before an introduction; short presiding continuations under the same diarization number.
-export const REVIEW_METHOD = 'grounded-segment-review-v7';
+export const REVIEW_METHOD = 'grounded-segment-review-v9';
 // Results from these earlier rules stay public until the current rules have reviewed the meeting again.
-export const PREVIOUS_METHODS = ['grounded-segment-review-v6', 'grounded-segment-review-v6-revalidated'];
-const EXCHANGE_MS = { floor: 900_000, self: 300_000 };
+export const PREVIOUS_METHODS = ['grounded-segment-review-v7', 'grounded-segment-review-v7-revalidated', 'grounded-segment-review-v6', 'grounded-segment-review-v6-revalidated'];
+const EXCHANGE_MS = { floor: 900_000, self: 300_000, reply: 300_000 };
 export function finalReadiness(registry, id, ai = {}, now = Date.now()) {
   const sessions = registry.sessions(id);
   if (!sessions.length || sessions.some(row => !['stopped', 'interrupted'].includes(row.state) || row.queue_length > 0)) return 'transcribing';
@@ -101,7 +105,8 @@ const joinedText = (rows, index) => {
 export function identityAnchors(rows, people, record) {
   const committee = record && committees.find(item => item.stream_id === record.stream_id || item.name === record.committee);
   const chairNames = record ? committee?.members.filter(member => member.role === '위원장').map(member => member.name) ?? [] : null;
-  const anchors = []; const chairs = people.filter(person => person.role === 'member'
+  const datedChairs = people.filter(person => person.attendance && person.role === 'member' && person.title === '위원장');
+  const anchors = []; const chairs = datedChairs.length ? datedChairs : people.filter(person => person.role === 'member'
     && (chairNames ? chairNames.includes(person.name) : person.title === '위원장'));
   const officers = chairNames && !chairNames.length ? presidingOfficers(rows, people) : new Map();
   const add = (row, index, person, kind, quote) => {
@@ -138,6 +143,15 @@ export function identityAnchors(rows, people, record) {
       const person = resolveName(match[1], people); if (!person) continue;
       const at = match.index + match[0].length > text.length ? index + 1 : index;
       add(rows[at], at, person, 'floor', match[0]);
+    }
+    // Only explicit requests identify an answerer. A job title mentioned during a report does not.
+    for (const match of text.matchAll(/(?<![가-힣])([가-힣]{0,30}(?:국장|실장|과장|원장|본부장|시장|교육감))님?[^.!?]{0,50}(?:답변해\s*주시기|답변해\s*주세요|답변\s*부탁)/g)) {
+      const title = match[1];
+      const choices = people.filter(person => person.attendance && person.role === 'official' && person.title.endsWith(title));
+      const next = rows[index + 1];
+      if (choices.length === 1 && next && next.session_id === row.session_id && next.timeline_epoch === row.timeline_epoch
+        && next.start_ms - row.end_ms <= 15000 && dominantSpeaker(next) && dominantSpeaker(next) !== dominantSpeaker(row))
+        add(row, index, choices[0], 'reply', match[0]);
     }
     const presiding = text.match(PRESIDING); const officer = officers.get(row.session_id);
     const plenary = officer && !GREETING.test(text) ? text.match(PLENARY_PRESIDING) : null;
@@ -199,7 +213,7 @@ function eligibleAnchor(anchor, targetIndex, rows, anchors = []) {
     return Boolean(speaker) && dominantSpeaker(target) === speaker && target.speaker_scope === from.speaker_scope
       && GREETING.test(target.corrected_text) && from.start_ms - target.start_ms <= 15_000 && !anchors.some(other => other.index === targetIndex);
   }
-  const start = anchor.kind === 'floor' ? floorStart(anchor, rows) : anchor.index;
+  const start = ['floor', 'reply'].includes(anchor.kind) ? floorStart(anchor, rows) : anchor.index;
   const first = rows[start];
   if (!first || first.session_id !== from.session_id || first.timeline_epoch !== from.timeline_epoch
     || ['pending', 'multiple'].includes(first.speaker_state) || targetIndex < start
@@ -212,10 +226,10 @@ function eligibleAnchor(anchor, targetIndex, rows, anchors = []) {
 // An exchange ends at the next floor invitation or presiding phrase, or when another person introduces themselves
 // under the same diarization number (numbers are reused for different people within a meeting).
 function exchangeEnded(anchor, targetIndex, rows, anchors) {
-  const start = rows[anchor.kind === 'floor' ? floorStart(anchor, rows) : anchor.index];
+  const start = rows[['floor', 'reply'].includes(anchor.kind) ? floorStart(anchor, rows) : anchor.index];
   return anchors.some(other => other.name !== anchor.name && other.index > anchor.index && other.index <= targetIndex
     && rows[other.index].session_id === rows[targetIndex].session_id
-    && (other.kind === 'floor' || other.kind === 'chair' || other.kind === 'stop' || (['self', 'boundary'].includes(other.kind) && start && dominantSpeaker(rows[other.index]) === dominantSpeaker(start)
+    && (other.kind === 'floor' || other.kind === 'chair' || other.kind === 'stop' || anchor.kind === 'reply' && other.kind === 'reply' || (['self', 'boundary'].includes(other.kind) && start && dominantSpeaker(rows[other.index]) === dominantSpeaker(start)
       && rows[other.index].speaker_scope === start?.speaker_scope)));
 }
 export function validateAssignments(raw, batch, rows, people, anchors) {
@@ -234,7 +248,7 @@ export function validateAssignments(raw, batch, rows, people, anchors) {
     if (!person || !anchor) continue;
     if (anchor.kind !== 'chair' && exchangeEnded(anchor, index, rows, anchors)) continue;
     result[item.id] = { name: person.name, role: person.role, title: person.title,
-      key: 'person-' + hash(person.name).slice(0, 24) + ':1', evidence_id: anchor.id, quote: anchor.quote };
+      key: 'person-' + hash(person.name).slice(0, 24) + ':1', evidence_id: anchor.id, quote: anchor.quote, evidence_kind: anchor.kind };
   }
   return result;
 }
@@ -267,8 +281,8 @@ const instruction = '회의가 끝난 후 발언자를 확인합니다. 입력�
   + '출력은 {"assignments":[{"id":"구간 id","name":"후보 이름 또는 null","evidence_id":"후보 evidence_id 또는 null"}]} JSON만 작성합니다.';
 
 export class FinalSpeakerReview {
-  constructor({ registry, review, ai, directory }) {
-    Object.assign(this, { registry, review, ai, directory }); this.closed = false;
+  constructor({ registry, review, ai, directory, acoustics }) {
+    Object.assign(this, { registry, review, ai, directory, acoustics }); this.closed = false;
     for (const record of registry.list()) {
       const job = review.get('speaker-job:' + record.id);
       if (job?.phase === 'running') review.save('speaker-job:' + record.id, { ...job, phase: 'interrupted' });
@@ -293,7 +307,8 @@ export class FinalSpeakerReview {
     if (rows.length > 60000 || JSON.stringify(rows.map(row => row.corrected_text)).length > 8000000) throw new HttpError(400, '회의록 검토 한도를 초과했습니다. 기록을 나누어 주세요.');
     const source_hash = finalSourceHash(this.registry, id);
     const job = { phase: 'running', source_hash, source_guard: finalSourceGuard(this.registry, id), model: settings.model, method: REVIEW_METHOD,
-      completed: 0, skipped: 0, total: batches.length, started_ms: Date.now(), updated_ms: Date.now() };
+      completed: 0, skipped: 0, total: batches.length, decision_version: this.review.get('speaker-decisions:' + id)?.version ?? 0,
+      started_ms: Date.now(), updated_ms: Date.now() };
     this.review.save('speaker-job:' + id, job); this.ai.externalBusy = true; this.controller = new AbortController(); this.active = id; this.pauseRequested = false;
     this.pending = this.run(id, record, rows, batches, job, settings, this.controller.signal)
       .finally(() => { this.pending = null; this.active = null; this.ai.externalBusy = false; });
@@ -301,7 +316,18 @@ export class FinalSpeakerReview {
   }
   async run(id, record, rows, batches, job, settings, signal) {
     try {
-      const people = peopleCandidates(record, this.directory); const anchors = identityAnchors(rows, people, record); const assignments = {};
+      job.stage = 'acoustics'; this.review.save('speaker-job:' + id, job);
+      const acoustic = this.acoustics ? await this.acoustics.prepare(id, rows, job.source_hash, signal, value => {
+        job.acoustic_progress = value; job.updated_ms = Date.now(); this.review.save('speaker-job:' + id, job);
+      }) : { phase: 'unconfigured', features: [] };
+      job.acoustics = { phase: acoustic.phase, missing: acoustic.missing?.length ?? 0, stats: acoustic.stats }; job.stage = 'identity';
+      // Offline clusters may merge different people. Keep text evidence independent of those clusters.
+      const people = peopleCandidates(record, this.directory, this.review.get('speaker-roster:' + id)?.people);
+      const people_hash = hash(people);
+      const anchors = identityAnchors(rows, people, record); const assignments = {};
+      const previous = this.review.get('final-speakers:' + id);
+      const reusable = previous?.source_hash === job.source_hash && previous.source_guard === job.source_guard
+        ? previous.text_assignments ?? previous.assignments : {};
       for (const batch of batches) {
         signal.throwIfAborted();
         if (settings.provider !== 'proxy' && this.ai.busy?.()) throw new Error('새 방송 전사가 시작됐습니다.');
@@ -309,15 +335,22 @@ export class FinalSpeakerReview {
         const first = rows.indexOf(batch[0]); const last = first + batch.length;
         // Rules decide which person each group could be; groups without a candidate stay unresolved without a model call.
         const candidates = new Map(batch.map((row, offset) => [row.segment_id, candidatesFor(first + offset, rows, anchors)]));
-        const targets = batch.filter(row => candidates.get(row.segment_id).length);
+        let targets = batch.filter(row => candidates.get(row.segment_id).length);
         Object.assign(assignments, Object.fromEntries(batch.map(row => [row.segment_id, null])));
+        if (targets.length && reusable) {
+          const checked = validateAssignments({ assignments: targets.map(row => ({ id: row.segment_id,
+            name: reusable[row.segment_id]?.name ?? null, evidence_id: reusable[row.segment_id]?.evidence_id ?? null })) }, targets, rows, people, anchors);
+          Object.assign(assignments, checked); job.reused = (job.reused ?? 0) + Object.values(checked).filter(Boolean).length;
+          targets = targets.filter(row => !checked[row.segment_id]);
+        }
         if (!targets.length) { job.completed++; job.updated_ms = Date.now(); this.review.save('speaker-job:' + id, job); continue; }
+        const targetIds = new Set(targets.map(row => row.segment_id));
         const messages = [{ role: 'system', content: instruction }, { role: 'user', content: JSON.stringify({
           committee: record.committee,
           context: rows.slice(Math.max(0, first - 2), first).map(row => ({ id: row.segment_id, text: row.corrected_text })),
           next: rows.slice(last, last + 2).map(row => row.corrected_text),
           segments: batch.map(row => ({ id: row.segment_id, text: row.corrected_text,
-            ...(candidates.get(row.segment_id).length ? { candidates: candidates.get(row.segment_id) } : {}) })) }) }];
+            ...(targetIds.has(row.segment_id) ? { candidates: candidates.get(row.segment_id) } : {}) })) }) }];
         // One retry per batch; a batch that still fails stays unresolved so the rest of the meeting is reviewed.
         let reviewed = null;
         job.sent = (job.sent ?? 0) + 1;
@@ -333,9 +366,26 @@ export class FinalSpeakerReview {
       if (job.sent && job.skipped === job.sent) throw new Error('all batches failed');
       if (finalSourceGuard(this.registry, id) !== job.source_guard || finalSourceHash(this.registry, id) !== job.source_hash
         || finalReadiness(this.registry, id, this.ai) !== 'ready') throw new Error('검토 결과의 원본 버전이 변경됐습니다.');
+      if ((this.review.get('speaker-decisions:' + id)?.version ?? 0) !== job.decision_version) throw new Error('Administrator decisions changed');
+      const text_assignments = { ...assignments };
+      const decisions = this.review.get('speaker-decisions:' + id);
+      const enrolled = decisionOverlay({ assignments }, decisions, rows)?.assignments ?? assignments;
+      const blocked = new Set(Object.entries(decisions?.entries ?? {}).filter(([, item]) => item.identity === null).map(([key]) => key));
+      const voices = voiceCandidates(rows, acoustic.features, enrolled);
+      for (const [key, identity] of Object.entries(voices)) if (!assignments[key] && !blocked.has(key)) assignments[key] = identity;
+      const offlineRows = acousticOverlay(rows, acoustic.features);
+      const offlinePeople = structuredClone(people); const offlineAnchors = identityAnchors(offlineRows, offlinePeople, record);
+      // These disagreements are administrator review candidates, never replacement identities.
+      const acoustic_conflicts = offlineRows.flatMap((row, index) => {
+        const names = candidatesFor(index, offlineRows, offlineAnchors).map(candidate => candidate.name);
+        return names.some(name => assignments[row.segment_id] && assignments[row.segment_id].name !== name)
+          ? [{ segment_id: row.segment_id, current_name: assignments[row.segment_id].name, candidates: [...new Set(names)] }] : [];
+      });
       const assigned = Object.values(assignments).filter(Boolean).length;
       const result = { ...job, phase: assigned === rows.length ? 'complete' : 'partial', updated_ms: Date.now(),
-        assigned, unresolved: rows.length - assigned, assignments, people, method: REVIEW_METHOD };
+        assigned, unresolved: rows.length - assigned, assignments, text_assignments, voice_assigned: Object.keys(voices).filter(key => !text_assignments[key] && !blocked.has(key)).length,
+        people, people_hash, acoustic_conflicts, method: REVIEW_METHOD };
+      if (previous) this.review.save('final-speakers-history:' + id + ':' + job.started_ms, previous);
       this.review.save('final-speakers:' + id, result); this.review.save('speaker-job:' + id, { ...job, phase: result.phase, updated_ms: result.updated_ms });
       this.review.store.audit?.({ action: 'speakers.final-review', broadcast_id: id, assigned, unresolved: result.unresolved });
       this.review.store.emit('broadcast', id);
@@ -348,7 +398,10 @@ export class FinalSpeakerReview {
     if (this.closed || this.pending || this.ai.pending || this.ai.externalBusy || this.ai.config?.manualMode || !this.ai.settings().automatic) return;
     for (const record of this.registry.list()) {
       // Obsolete evidence methods are hidden by the registry until a current review replaces them.
-      if (record.test_run || finalReadiness(this.registry, record.id, this.ai) !== 'ready' || this.registry.finalSpeakers(record.id)?.method === REVIEW_METHOD) continue;
+      const final = this.registry.finalSpeakers(record.id);
+      if (record.test_run || finalReadiness(this.registry, record.id, this.ai) !== 'ready'
+        || final?.method === REVIEW_METHOD && final.review_decision_version === (this.review.get('speaker-decisions:' + record.id)?.version ?? 0)
+          && final.people_hash === hash(peopleCandidates(record, this.directory, this.review.get('speaker-roster:' + record.id)?.people))) continue;
       const job = this.review.get('speaker-job:' + record.id);
       // Paused jobs wait for the administrator; failed jobs retry at most every 30 minutes.
       if (job?.method === REVIEW_METHOD && job.source_guard === finalSourceGuard(this.registry, record.id)
