@@ -37,12 +37,14 @@ Vercel 공개 화면과 PC의 수집·전사 서버 연결 방법은 [Vercel 운
 
 ## 설치·실행
 
-현재 실행 기준은 Windows, Node.js 24.22.1 이상 25 미만, Vulkan 지원 GPU 환경. 전체 자동 테스트의 웹 SDK·패키징 검증에는 `npm ci --prefix web --ignore-scripts` 선행 필요. 실제 전사에는 모델·워커·FFmpeg·yt-dlp 별도 준비 필요.
+현재 실행 기준은 Windows, Node.js 24.22.1 이상 25 미만, Vulkan 지원 GPU 환경. 전체 자동 테스트에는 웹 SDK 설치(`npm ci --prefix web --ignore-scripts`)와 웹 배포본 생성(`npm run build:web`) 선행 필요. 웹 배포본 비교 시험이 생성된 `web/public` 파일을 읽음. 실제 전사에는 모델·워커·FFmpeg·yt-dlp 별도 준비 필요.
 
 ~~~powershell
 git clone https://github.com/xgfox54/jc-live-ai.git
 Set-Location jc-live-ai
 Copy-Item config.example.json config.local.json
+npm ci --prefix web --ignore-scripts
+npm run build:web
 npm test
 ~~~
 
@@ -96,7 +98,7 @@ node scripts/stop-live.mjs config.local.json
 npm test
 ~~~
 
-2026-11-13 기준 자동 테스트 366개 중 364개 통과, 2개 건너뜀(SenseVoice, 네이티브 모델 로더). 2026-10-20에는 실제 FFmpeg·GPU로 합성 음성 58.93초와 공식 YouTube 다시보기 35.01초의 저장·전사·회의록 생성 및 정상 종료 확인. 새 생방송의 실제 시작 순간은 검증 시점에 방송이 없어 미확인. 자세한 내용은 [자동 등록·회의록 검증](docs/AUTOMATION.md), [이전 작업 정리](docs/STATUS-2026-10-20.md), [기존 데스크톱 시험](TEST_RESULTS.md) 참조.
+2026-11-13 기준 자동 테스트 366개 중 364개 통과, 2개 건너뜀(SenseVoice, 네이티브 모델 로더). 실행 파일·모델이 없는 GitHub 새 clone에서는 위 설치 순서로 360개 통과, 6개 건너뜀(실제 디코더 시험 4개 추가). 2026-10-20에는 실제 FFmpeg·GPU로 합성 음성 58.93초와 공식 YouTube 다시보기 35.01초의 저장·전사·회의록 생성 및 정상 종료 확인. 새 생방송의 실제 시작 순간은 검증 시점에 방송이 없어 미확인. 자세한 내용은 [자동 등록·회의록 검증](docs/AUTOMATION.md), [이전 작업 정리](docs/STATUS-2026-10-20.md), [기존 데스크톱 시험](TEST_RESULTS.md) 참조.
 
 GitLab CI는 자동 테스트, SAST, 비밀정보 탐지 및 소스 압축파일 생성 구성. Runner와 검사 이미지에 접근 가능한 환경 필요. CI 압축파일은 실행 바이너리와 모델을 포함하지 않는 소스 배포본.
 
