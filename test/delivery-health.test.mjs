@@ -90,10 +90,11 @@ test('publication failure and recovery are derived from actual publisher attempt
   const delayed = deliveryHealth({ ...f, cloudSync: publisher }, ['ch1'], { now: f.now });
   assert.equal(delayed.health[0].stage, 'publication');
   assert.doesNotMatch(JSON.stringify(delayed), /PRIVATE_|endpoint|secret|error/);
-  broken = false; await publisher.flush();
+  broken = false; await publisher.flush(); assert.equal(sends, 1);
+  f.now += 2000; await publisher.flush();
   assert.equal(sends, 2);
   assert.equal(publicationHealth({ cloudSync: publisher }, f.now).status, 'published');
-  assert.equal(publicationHealth({ cloudSync: publisher }, f.now + 180001).status, 'delayed');
+  assert.equal(publicationHealth({ cloudSync: publisher }, f.now + 180001).status, 'published');
   await publisher.close();
 });
 
@@ -104,4 +105,22 @@ test('health only uses the selected current broadcast session', t => {
   const snapshot = viewerSnapshot({ ...f, registry: { forSession: () => 'old-broadcast' } }, ['ch1']);
   assert.equal(snapshot.health[0].status, 'waiting');
   assert.equal(snapshot.health[0].last_received_ms, null);
+});
+
+test('public latency covers the last ten minutes of first text and AI correction and reports audio backlog', t => {
+  const f = fixture(t);
+  const recent = f.row(f.now - 30000, '최근 발언입니다.', { latency_ms: 12000, audio_received_ms: f.now - 32000 });
+  f.row(f.now - 900000, '오래된 발언입니다.', { latency_ms: 90000, audio_received_ms: f.now - 901000 });
+  f.row(f.now - 20000, '두 번째 발언입니다.', { latency_ms: 18000, audio_received_ms: f.now - 21000 });
+  f.store.correct(recent.segment_id, { version: recent.version, origin: 'ai', text: '교정된 최근 발언입니다.' });
+  const corrected = f.store.db.prepare("SELECT json_extract(document,'$.created_ms') AS created_ms FROM corrections WHERE segment_id=?").get(recent.segment_id).created_ms;
+  f.state.audio_received_until = 250000; f.state.audio_processed_until = 100000;
+  const [health] = deliveryHealth(f, ['ch1'], { now: f.now }).health;
+  assert.deepEqual(health.latency.draft, { avg_ms: 15000, max_ms: 18000, count: 2 });
+  assert.equal(health.latency.corrected.avg_ms, 12000 + corrected - (f.now - 30000));
+  assert.equal(health.last_speech_ms, f.now - 21000);
+  assert.equal(health.backlog_ms, 150000);
+  f.state.state = 'stopped';
+  const [stopped] = deliveryHealth(f, ['ch1'], { now: f.now }).health;
+  assert.equal(stopped.latency, null); assert.equal(stopped.backlog_ms, null);
 });

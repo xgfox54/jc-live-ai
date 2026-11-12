@@ -4,8 +4,9 @@ import { randomUUID } from 'node:crypto';
 import { HttpError } from './validate.mjs';
 
 export class Store extends EventEmitter {
-  constructor(path) {
-    super(); this.setMaxListeners(0); this.db = new DatabaseSync(path);
+  constructor(path, { readOnly = false } = {}) {
+    super(); this.setMaxListeners(0); this.readOnly = readOnly; this.db = new DatabaseSync(path, { readOnly });
+    if (readOnly) { this.db.exec('PRAGMA busy_timeout=5000'); return; }
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS streams(id TEXT PRIMARY KEY, document TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, document TEXT NOT NULL);
@@ -174,5 +175,5 @@ export class Store extends EventEmitter {
       segments: pages.flatMap(page => page.items), gaps,
       before: Object.fromEntries(pages.map(page => [page.stream, page.before])) };
   }
-  close() { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); this.db.close(); }
+  close() { if (!this.readOnly) this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); this.db.close(); }
 }

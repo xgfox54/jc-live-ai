@@ -80,6 +80,11 @@ test('number check accepts spelling variants of one amount and still flags chang
   assert.equal(correctionIssue('712만원으로', '712명으로'), 'numbers');
   assert.equal(correctionIssue('9억 원', '8억 원'), 'numbers');
   assert.equal(correctionIssue('그 이거는 우리', '이것은'), null);
+  // 제주 4.3 is read "사삼" and written 4·3 or 4.3; a misheard "4.3 영령" arrives as 4.300.
+  for (const [source, candidate] of [['제주 사삼 교육팀', '제주 4.3 교육팀'], ['제주 4.300에 대한', '제주 4·3 영령에 대한'],
+    ['제주4·3 희생자', '제주 4.3 희생자'], ['3.1절', '3·1절']])
+    assert.equal(correctionIssue(source, candidate), null, source);
+  assert.equal(correctionIssue('제주 사삼 희생자', '제주 5.3 희생자'), 'numbers'); assert.equal(correctionIssue('4·3', '4.4'), 'numbers');
 });
 
 test('next channel diarization runs while the single Whisper slot is occupied', async () => {

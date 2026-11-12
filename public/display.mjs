@@ -5,4 +5,7 @@ for (const size of sizes) select.append(new Option(size + '%', size));
 try { select.value = sizes.includes(localStorage.getItem('jc-display-size')) ? localStorage.getItem('jc-display-size') : '100'; } catch { select.value = '100'; }
 const apply = () => { document.documentElement.style.fontSize = select.value + '%'; };
 apply(); select.addEventListener('change', () => { apply(); try { localStorage.setItem('jc-display-size', select.value); } catch {} });
-label.append(select); document.querySelector('header').append(label);
+label.append(select);
+// Pages with a right-hand header group keep the size control in it, before the engine status.
+const end = document.querySelector('header .header-end');
+if (end) end.prepend(label); else document.querySelector('header').append(label);

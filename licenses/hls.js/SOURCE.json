@@ -1,0 +1,9 @@
+{
+  "package": "hls.js",
+  "version": "1.7.4",
+  "file": "dist/hls.light.min.mjs",
+  "registry_integrity": "sha512-3GlxGdPvT2YHvQYOt+yOzT/DEior/qJVNIylHA77kgeoBTdQQqi70GwefNEUmHQeNGyjC8U62+bruqW/Tpm+tg==",
+  "file_sha256": "8f19a53e63e4e6db913e032e613d99831706c9e38c85c708b35fa0058a25ca97",
+  "license": "Apache-2.0",
+  "note": "sourceMappingURL comment removed; code unchanged"
+}

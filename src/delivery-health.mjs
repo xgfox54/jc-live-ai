@@ -2,10 +2,13 @@ import { publicSpeech } from './silence-filter.mjs';
 
 const ACTIVE = new Set(['running', 'draining', 'degraded', 'reconnecting']);
 const LIMIT = 256;
+export const LATENCY_WINDOW_MS = 600_000;
 const stamp = value => Number.isFinite(value) && value >= 0 ? value : null;
 const age = (now, value) => value === null ? null : Math.max(0, now - value);
 const positive = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
 const latest = values => values.filter(value => value !== null).reduce((a, b) => Math.max(a ?? 0, b), null);
+const summarize = values => values.length ? { avg_ms: Math.round(values.reduce((sum, value) => sum + value, 0) / values.length),
+  max_ms: Math.round(Math.max(...values)), count: values.length } : null;
 
 export function publicationHealth(context, now = Date.now()) {
   const publisher = context.cloudSync ?? (typeof context.view === 'function' && context.known instanceof Map ? context : null);
@@ -14,7 +17,8 @@ export function publicationHealth(context, now = Date.now()) {
   const phase = view.live_phase ?? view.phase;
   const stale_after_ms = Math.max(120000, positive(publisher?.settings?.interval_ms, 60000) * 3);
   const delayed = ['blocked', 'retry'].includes(phase)
-    || (view.enabled && last_published_ms !== null && now - last_published_ms > stale_after_ms);
+    || (view.enabled && (view.content_driven !== true || view.live_pending === true)
+      && last_published_ms !== null && now - last_published_ms > stale_after_ms);
   return { status: delayed ? 'delayed' : !view.enabled ? 'disabled'
     : ['waiting', 'publishing', 'published'].includes(phase) ? phase : 'waiting',
   last_published_ms, stale_after_ms };
@@ -33,6 +37,26 @@ function segmentHealth(store, sessionId) {
     FROM corrections WHERE segment_id=? AND json_extract(document,'$.origin')='ai' ORDER BY id DESC LIMIT 1`);
   return { pending, limited: pendingRows.length > LIMIT,
     last_corrected_ms: latest(corrected.map(row => stamp(correctedAt.get(row.id)?.created_ms))) };
+}
+
+// Time from the start of a recognized audio chunk to its first text and to its first AI correction, over the newest
+// 40 rows of the session. Only numeric timing fields are read; text never leaves this function.
+function recentLatency(store, sessionId, now) {
+  const rows = store.db.prepare(`SELECT id, json_extract(document,'$.latency_ms') AS latency_ms,
+    json_extract(document,'$.ready_ms') AS ready_ms, json_extract(document,'$.audio_received_ms') AS received_ms
+    FROM segments WHERE rowid IN (SELECT rowid FROM segments WHERE session_id=? ORDER BY rowid DESC LIMIT 40) ORDER BY rowid DESC`).all(sessionId);
+  const created = new Map(rows.length ? store.db.prepare(`SELECT segment_id, min(json_extract(document,'$.created_ms')) AS created_ms
+    FROM corrections WHERE segment_id IN (${rows.map(() => '?').join(',')}) AND json_extract(document,'$.origin')='ai'
+    GROUP BY segment_id`).all(...rows.map(row => row.id)).map(row => [row.segment_id, row.created_ms]) : []);
+  const draft = []; const corrected = [];
+  for (const row of rows) {
+    const latency = stamp(row.latency_ms); const ready = stamp(row.ready_ms); const fixed = stamp(created.get(row.id));
+    if (latency === null || ready === null) continue;
+    if (now - ready <= LATENCY_WINDOW_MS) draft.push(latency);
+    if (fixed !== null && fixed >= ready && now - fixed <= LATENCY_WINDOW_MS) corrected.push(latency + fixed - ready);
+  }
+  return { latency: draft.length || corrected.length ? { window_ms: LATENCY_WINDOW_MS, draft: summarize(draft), corrected: summarize(corrected) } : null,
+    last_speech_ms: stamp(rows[0]?.received_ms) };
 }
 
 export function deliveryHealth(context, ids, { now = Date.now(), states, admin = false } = {}) {
@@ -64,6 +88,8 @@ export function deliveryHealth(context, ids, { now = Date.now(), states, admin =
       || (processingAge !== null && processingAge > processLimit)));
     const correctionDelayed = facts.pending.length > 0 && pendingAge !== null && pendingAge > correctionLimit;
     const silent = active && last_processed_ms !== null && state?.last_processing_result === 'silent';
+    const timing = active && state.session_id ? recentLatency(store, state.session_id, now) : { latency: null, last_speech_ms: null };
+    const backlog_ms = active ? Math.max(0, Math.round((state.audio_received_until ?? 0) - (state.audio_processed_until ?? 0))) : null;
     const stages = {
       ingestion: inputDelayed ? 'delayed' : !active ? 'stopped' : last_received_ms === null ? 'waiting' : 'ready',
       transcription: transcriptionDelayed ? 'delayed' : !active ? 'stopped' : silent && !queued ? 'silent' : queued ? 'processing' : last_processed_ms === null ? 'waiting' : 'ready',
@@ -87,6 +113,7 @@ export function deliveryHealth(context, ids, { now = Date.now(), states, admin =
       : status === 'ready' ? '최근 음성 처리를 마쳤습니다. 새 발언을 수신하면 표시합니다.'
       : '음성 수신을 기다리고 있습니다. 방송 시작 여부를 확인해 주세요.';
     return { stream_id, status, stage, message, last_received_ms, last_processed_ms, last_corrected_ms, stages,
+      latency: timing.latency, last_speech_ms: timing.last_speech_ms, backlog_ms,
       ...(admin ? { pending_corrections: facts.pending.length, pending_count_limited: facts.limited,
         oldest_pending_age_ms: pendingAge, queue_length: queueLength, inflight,
         alerts: Object.entries(stages).filter(([, value]) => value === 'delayed').map(([name]) => name) } : {}) };

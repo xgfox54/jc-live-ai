@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
-import { FileInputs } from '../src/files.mjs';
+import { FileInputs, resumeStart } from '../src/files.mjs';
 
 test('real decoder distinguishes EOF, duration limit, live disconnection and manual stop', { skip: !existsSync('bin/ffmpeg.exe') }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'jc-eof-')); const pcm = join(dir, 'sample.pcm'); writeFileSync(pcm, Buffer.alloc(64000));
@@ -17,6 +17,10 @@ test('real decoder distinguishes EOF, duration limit, live disconnection and man
     assert.equal(reason, 'duration_limit');
     inputs.endProbe = async () => ({ phase: 'live', key: 'youtube:abcdefghijk' });
     await inputs.start({ stream_id: 'ch2', kind: 'youtube' }, pcm, false, { local: true, raw: true }); assert.equal(reason, 'end_unverified');
+    assert.equal(state.input_end_live, true);
+    inputs.endProbe = async () => { throw new Error('Expected one supported official council player'); };
+    await inputs.start({ stream_id: 'ch2', kind: 'youtube' }, pcm, false, { local: true, raw: true }); assert.equal(reason, 'end_unverified');
+    assert.equal(state.input_end_live, false);
     inputs.endProbe = async () => ({ phase: 'ended', key: 'youtube:abcdefghijk' });
     await inputs.start({ stream_id: 'ch2', kind: 'youtube' }, pcm, false, { local: true, raw: true }); assert.equal(reason, 'eof');
     const task = inputs.start({ stream_id: 'ch2', kind: 'file' }, pcm, true, { local: true, raw: true, loop: true });
@@ -26,4 +30,15 @@ test('real decoder distinguishes EOF, duration limit, live disconnection and man
     await new Promise(resolve => setTimeout(resolve, 100)); await inputs.stop('ch2', 'eof'); await ended;
     assert.equal(reason, 'eof');
   } finally { await inputs.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+test('a resumed collection starts just before the resume point by the live playlist clock', () => {
+  const start = Date.parse('2026-11-05T01:00:00.000Z');
+  const playlist = ['#EXTM3U', '#EXT-X-MEDIA-SEQUENCE:7', '#EXT-X-PROGRAM-DATE-TIME:2026-11-05T01:00:00.000Z',
+    ...Array.from({ length: 12 }, (_, i) => ['#EXTINF:5.0,', 'segment' + i]).flat()].join('\n');
+  assert.deepEqual(resumeStart(playlist, start + 42_000), { index: -9, from_ms: start + 15_000 });
+  // A stalled playlist starts at its newest segment instead of reading the received audio again.
+  assert.deepEqual(resumeStart(playlist, start + 3_600_000), { index: -1, from_ms: start + 55_000 });
+  // A break longer than the playlist starts at its oldest segment; without date markers the clock estimate is used.
+  assert.deepEqual(resumeStart(playlist, start - 3_600_000), { index: -12, from_ms: start });
+  assert.deepEqual(resumeStart('#EXTM3U\n#EXTINF:5.0,\nsegment', 1_000_000, 1_012_000), { index: -4, from_ms: 992_000 });
 });

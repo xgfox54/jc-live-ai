@@ -8,10 +8,16 @@ import { proxyBase, sealCredential, openCredential } from './ai-proxy.mjs';
 // Adapted from StreamRecord transcript-correction.ts; see STREAMRECORD-PORT.md.
 // Phrases Whisper emits over silence or music; the patterns live in silence-filter.mjs.
 export const hallucination = (text, evidence = null) => nonSpeech(text, evidence);
+// 제주 4.3 is read "사삼" and also written "4·3"; "4.300" (a misheard "4.3 영령") already equals 4.3 below. A candidate
+// passes when its amounts match either as written or with these spellings unified, so nothing that passed before is held.
+const spelled = text => text.replace(/(\d)\s*[·ㆍ・∙]\s*(?=\d)/g, '$1.').replace(/(?:(?<![가-힣])|(?<=제주\s*))사삼/g, '4.3');
+function numbersChanged(source, candidate) {
+  const left = amounts(candidate);
+  for (const value of amounts(source)) { const index = left.indexOf(value); if (index < 0) return true; left.splice(index, 1); }
+  return left.length > 0 && !HANGUL_NUMBER.test(source);
+}
 export function correctionIssue(source, candidate) {
-  const before = amounts(source); const after = amounts(candidate); const left = [...after];
-  for (const value of before) { const index = left.indexOf(value); if (index < 0) return 'numbers'; left.splice(index, 1); }
-  if (left.length && !HANGUL_NUMBER.test(source)) return 'numbers';
+  if (numbersChanged(source, candidate) && numbersChanged(spelled(source), spelled(candidate))) return 'numbers';
   const trimmed = source.trim();
   return (trimmed.length >= 12 && candidate.length < trimmed.length * .4) || candidate.length > source.length * 2.5 + 40 ? 'length' : null;
 }

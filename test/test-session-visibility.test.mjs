@@ -87,6 +87,22 @@ test('public snapshot works without broadcast registry tables', t => {
   assert.equal(snapshot.states[0].session_id, 'actual');
 });
 
+test('hidden recess loops do not push earlier sentences out of the public page', t => {
+  const f = fixture(t); f.session('actual'); const spoken = f.segment('actual');
+  const loop = '감사합니다. 감사합니다. 감사합니다. 감사합니다. 감사합니다.';
+  for (let i = 0; i < 120; i++) {
+    const row = f.store.segment({ stream_id: 'ch1', session_id: 'actual', start_ms: 0, end_ms: 5000, raw_text: loop,
+      live_preview: true, preview_updated_ms: Date.now() });
+    f.store.correct(row.segment_id, { version: 1, origin: 'ai', text: loop });
+  }
+  const recent = f.store.segment({ stream_id: 'ch1', session_id: 'actual', start_ms: 0, end_ms: 5000, raw_text: loop,
+    live_preview: true, preview_updated_ms: Date.now(), audio_received_ms: Date.now() });
+  const snapshot = viewerSnapshot(f, ['ch1']);
+  assert.deepEqual(snapshot.segments.map(row => row.segment_id), [spoken.segment_id]);
+  // Only a recent removal is sent; old ones would fill the viewer's 200-row window.
+  assert.deepEqual(snapshot.live_segments.map(row => [row.segment_id, row.display_state]),
+    [[recent.segment_id, 'removed'], [spoken.segment_id, 'corrected']]);
+});
 test('pending manifest includes drafts beyond the live window and excludes corrected and test rows', t => {
   const f = fixture(t, 'broadcast'); f.session('actual');
   const drafts = Array.from({ length: 202 }, () => f.segment('actual', false));

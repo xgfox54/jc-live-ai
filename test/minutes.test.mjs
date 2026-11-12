@@ -91,3 +91,33 @@ test('council archive parser and enricher fill meeting information for recording
     assert.deepEqual(await enricher.run(), []);
   } finally { store.close(); }
 });
+test('replay lookup reads the official replay from the detail page or the archive list and ignores live playlists', async () => {
+  const replay = name => 'https://vod.council.jeju.kr/vod/_definst_//2026/455/' + name + '/playlist.m3u8';
+  const detail = seq => 'https://www.council.jeju.kr/broadcast/broad.do?act=view&seq=' + seq;
+  const page = (time, media) => '<ul><li><b>일시 : </b>' + time + '</li><li><b>회차 : </b>제455회(2차)</li></ul><video><source src="' + media + '" type="application/x-mpegURL" /></video>';
+  const pages = { 'https://www.council.jeju.kr/broadcast/broad.do': '<table><tr><td>1</td><td>13대</td><td>2026-10-23</td><td>455회</td><td>임시회</td><td>2차</td><td>본회의</td>'
+      + '<td><a href="/broadcast/broad.do?act=view&amp;seq=10041">방송보기</a></td><td></td></tr></table>',
+    [detail(10035)]: page('2026-10-21 10:00', replay('20261021_2_hang')), [detail(10041)]: page('2026-10-23 14:00', replay('20261023_2_bon')),
+    [detail(10050)]: page('2026-10-21 10:00', 'https://vod.council.jeju.kr/live/XHC011/playlist.m3u8') };
+  const store = new Store(':memory:'); const registry = new BroadcastRegistry(store);
+  try {
+    const add = (committee, source, stream_id, session_id, started, state = 'stopped') => {
+      const record = registry.upsert({ kind: 'council', title: committee, committee, meeting_round: '제455회(2차)', page_url: source, sources: [source] });
+      registry.attach({ stream_id, broadcast_id: record.id }, { session_id });
+      store.saveSession({ stream_id, session_id, state, started_ms: Date.parse(started) }); return record.id;
+    };
+    const committee = add('행정자치위원회', detail(10035), 'ch2', 'a', '2026-10-21T01:00:00Z');
+    const plenary = add('본회의', 'https://www.council.jeju.kr/broadcast/schedule.do?act=view&seq=7046', 'ch0', 'b', '2026-10-23T05:01:00Z');
+    const live = add('기획', detail(10050), 'ch1', 'c', '2026-10-21T01:00:00Z');
+    const running = add('교육위원회', 'https://www.council.jeju.kr/broadcast/schedule.do?act=view&seq=7050', 'ch8', 'd', '2026-10-24T01:00:00Z', 'running');
+    const requested = [];
+    const enricher = new ArchiveEnricher({ registry, now: () => Date.parse('2026-10-24T03:00:00Z'),
+      fetchHtml: async url => { requested.push(url); return pages[url] ?? '<table></table>'; } });
+    assert.deepEqual((await enricher.run()).sort(), [committee, plenary].sort());
+    assert.equal(registry.get(committee).replay_url, replay('20261021_2_hang')); assert.equal(registry.get(committee).replay_page, detail(10035));
+    assert.equal(registry.get(plenary).replay_url, replay('20261023_2_bon')); assert.ok(registry.get(plenary).sources.includes(detail(10041)));
+    assert.equal(registry.get(live).replay_url, undefined); assert.ok(registry.get(live).replay_checked_ms > 0);
+    assert.equal(registry.get(running).replay_checked_ms, undefined);
+    requested.length = 0; assert.deepEqual(await enricher.run(), []); assert.deepEqual(requested, []);
+  } finally { store.close(); }
+});

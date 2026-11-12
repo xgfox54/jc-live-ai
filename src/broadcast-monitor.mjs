@@ -4,6 +4,11 @@ import { HttpError } from './validate.mjs';
 
 export const supportsAutoStart = stream => ['youtube', 'council'].includes(stream.kind);
 export const autoEnabled = stream => stream.approved && supportsAutoStart(stream) && stream.auto_start !== false;
+// Broadcast time reached by a collection. A resumed collection reads its backlog faster than real time, so its receive
+// clock runs ahead of the broadcast until it catches up; the read start plus the audio received is the earlier bound.
+export const receivedUntil = session => !Number.isFinite(session?.last_receive_ms) ? null
+  : Number.isFinite(session.content_from_ms) ? Math.min(session.last_receive_ms, session.content_from_ms + (session.total_received_s ?? 0) * 1000)
+  : session.last_receive_ms;
 
 export class BroadcastMonitor {
   constructor(context) {
@@ -27,11 +32,17 @@ export class BroadcastMonitor {
   invalidate(id) {
     this.pending.get(id)?.controller.abort(); this.status.delete(id);
   }
+  // Earlier collections of the same meeting (an input break or an engine restart) are continued after the audio they received.
+  recordedUntil(stream) {
+    if (!this.registry || !stream.broadcast_id) return Number.isFinite(stream.resume_after_ms) ? stream.resume_after_ms : null;
+    const reached = this.registry.sessions(stream.broadcast_id).map(receivedUntil).filter(Number.isFinite);
+    return reached.length ? Math.max(...reached) : null;
+  }
   setEnabled(stream, enabled) {
     if (typeof enabled !== 'boolean') throw new HttpError(400, '자동 감지 설정값을 확인해 주세요.');
     if (enabled && !supportsAutoStart(stream)) throw new HttpError(400, '주소 방식의 방송만 자동 감지를 지원합니다.');
     this.invalidate(stream.stream_id);
-    const saved = { ...stream, auto_start: enabled, auto_completed_key: null, beginning_fallback: enabled ? false : stream.beginning_fallback ?? false };
+    const saved = { ...stream, auto_start: enabled, auto_completed_key: null, beginning_fallback: enabled ? false : stream.beginning_fallback ?? false, resume_after_ms: null };
     if (stream.broadcast_id && this.registry) {
       this.registry.suspend(stream.broadcast_id, !enabled);
       if (enabled) { const record = this.registry.get(stream.broadcast_id); if (record) this.registry.save({ ...record, completed: false }); }
@@ -55,9 +66,10 @@ export class BroadcastMonitor {
   async inspect(stream, signal) {
     const id = stream.stream_id; const previous = this.status.get(id);
     this.status.set(id, { ...previous, phase: 'checking' });
+    let unreachable = false;
     try {
       if (!this.scheduler.engine.ready || !this.scheduler.accepting) throw new Error('전사 엔진 준비 후 다시 확인합니다.');
-      const result = await this.probe(stream, signal);
+      const result = await this.probe(stream, signal).catch(error => { unreachable = true; throw error; });
       const current = this.store.streams().find(item => item.stream_id === id);
       if (this.closed || signal.aborted || !current || JSON.stringify(current) !== JSON.stringify(stream) || !autoEnabled(current)) return;
       let phase = result.phase;
@@ -72,6 +84,16 @@ export class BroadcastMonitor {
           const source = { ...result.source, auto_start: true };
           if (source.video_id !== stream.video_id || source.media_url !== stream.media_url) {
             this.store.saveStream(source); this.store.event('stream', viewerStream(source));
+          }
+          // Reading from the start again would collect the meeting twice, and the live edge would skip the break.
+          const videoMs = await this.handoff?.resume(source);
+          if (signal.aborted || this.closed) return;
+          if (Number.isFinite(videoMs)) source.resume_video_ms = videoMs;
+          const recorded = this.handoff?.settings ? null : this.recordedUntil(current);
+          if ((current.resume_after_ms ?? null) !== recorded || (recorded !== null && !current.beginning_fallback)) {
+            const resume = recorded === null ? { resume_after_ms: null } : { beginning_fallback: true, resume_after_ms: recorded };
+            Object.assign(source, resume);
+            this.store.saveStream({ ...this.store.streams().find(item => item.stream_id === id), ...resume });
           }
           this.begin(source, { automatic: true, key: result.key }); phase = 'collecting';
         }
@@ -89,7 +111,18 @@ export class BroadcastMonitor {
       const failures = (previous?.failures ?? 0) + 1;
       this.status.set(id, { phase: 'retry', error: error.message, failures,
         checked_ms: this.now(), next_check_ms: this.now() + Math.min(300000, this.interval * 2 ** Math.min(failures - 1, 4)) });
+      if (unreachable) this.endUnreachable(stream);
     }
+  }
+  // The official page drops its player when a meeting ends, so a broadcast that cannot be checked ten minutes after the
+  // meeting's last received audio has ended; its channel is then free for the committee's next broadcast.
+  // The stream stays enabled, and collection starts again if the same broadcast is found live.
+  endUnreachable(stream) {
+    const current = this.store.streams().find(item => item.stream_id === stream.stream_id);
+    if (!current?.broadcast_id || !this.registry || this.active(stream.stream_id)) return;
+    const record = this.registry.get(current.broadcast_id); const reached = this.recordedUntil(current);
+    if (!record || record.completed || reached === null || this.now() - reached < 600_000) return;
+    this.registry.save({ ...record, completed: true, phase: 'ended' });
   }
   begin(stream, options = {}) {
     if (this.active(stream.stream_id)) throw new HttpError(409, '이미 수집 중입니다.');
@@ -119,22 +152,37 @@ export class BroadcastMonitor {
       if (!current || !autoEnabled(current) || current.page_url !== stream.page_url) return;
       const channel = this.scheduler.channels.get(stream.stream_id);
       if (channel?.session_id !== state.session_id) return;
+      // An input cut off while audio was still arriving, with the end check still finding the broadcast live (an encoder
+      // break), reconnects. One that waited minutes without audio (a stalled broadcast) or whose end could not be checked
+      // (2026-11-05 18:57: the official page had dropped its player after adjournment) completes as before.
+      const cutOff = channel.input_end_reason === 'end_unverified' && channel.input_end_live === true
+        && this.now() - channel.last_receive_ms < 120_000;
       if (channel.recording_failed) {
         this.setEnabled(current, false);
         this.status.set(stream.stream_id, { phase: 'blocked', error: '원음 저장에 실패했거나 저장 한도에 도달했습니다. 저장 공간과 한도를 확인한 뒤 자동 감지를 다시 켜 주세요.' });
-      } else if (!channel.error) {
+      } else if (!channel.error && !cutOff) {
         if (stream.broadcast_id && this.registry) {
           const record = this.registry.get(stream.broadcast_id);
           if (record) this.registry.save({ ...record, completed: true, phase: 'ended' });
         }
-        this.store.saveStream({ ...current, auto_completed_key: options.key });
+        this.store.saveStream({ ...current, auto_completed_key: options.key, resume_after_ms: null });
         this.status.set(stream.stream_id, { phase: 'completed', checked_ms: this.now(), next_check_ms: this.now() + this.interval });
+      } else if (!channel.error) {
+        // Reconnect after the received audio; restarting a from-start capture would collect the meeting twice.
+        this.store.saveStream({ ...current, beginning_fallback: true, resume_after_ms: receivedUntil(channel) ?? current.resume_after_ms ?? null });
+        this.status.set(stream.stream_id, { phase: 'retry', error: '방송 수신이 끊겨 이어서 다시 연결합니다.', failures: 0,
+          checked_ms: this.now(), next_check_ms: this.now() + 5000 });
       } else {
+        const updates = {};
         if (stream.capture_from_start && !stream.beginning_fallback && channel.input_failed) {
-          this.store.saveStream({ ...current, beginning_fallback: true });
+          updates.beginning_fallback = true;
           this.store.event('gap', { stream_id: stream.stream_id, session_id: state.session_id,
             reason: 'beginning_collection_failed', extent: 'unknown' });
         }
+        // A resumed collection keeps its resume point current so the next reconnection does not read received audio again.
+        const reached = receivedUntil(channel);
+        if (current.resume_after_ms && reached !== null) updates.resume_after_ms = reached;
+        if (Object.keys(updates).length) this.store.saveStream({ ...current, ...updates });
         const failures = (this.status.get(stream.stream_id)?.failures ?? 0) + 1;
         this.status.set(stream.stream_id, { phase: 'retry', error: '수집 연결이 끊겼습니다. 방송 상태 확인 후 다시 연결합니다.', failures,
           checked_ms: this.now(), next_check_ms: this.now() + Math.min(300000, this.interval * 2 ** Math.min(failures - 1, 4)) });

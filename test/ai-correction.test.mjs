@@ -42,6 +42,7 @@ test('all eleven original field packs fit correction context, prioritize custom 
   const result = glossaryText(['welfare', 'budget'], '사업명, 사업명, 추가어');
   assert.ok(result.text.startsWith('사업명, 추가어, ')); assert.ok(result.omitted > 0);
   assert.match(result.text, /체납률/); assert.match(result.text, /통합돌봄/);
+  assert.match(glossaryText(['council', 'jeju'], '').text, /제주 4\.3/);
   assert.throws(() => glossaryText(['missing'], ''));
   assert.throws(() => glossaryText(['welfare', 'welfare'], ''));
 });

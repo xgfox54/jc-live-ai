@@ -90,6 +90,26 @@ test('live discovery can replace an inactive automatic scheduled slot while keep
   assert.ok(f.store.streams().some(item => item.video_id === candidate(9).video_id));
   assert.equal(f.registry.get(old).queued, true);
 });
+test('a finished meeting keeps its channel when a new broadcast takes the slot', async t => {
+  const f = fixture(t); f.items([candidate(1)]); await f.discovery.scan();
+  const slot = f.store.streams()[0]; const old = slot.broadcast_id;
+  f.registry.save({ ...f.registry.get(old), phase: 'ended', completed: false });
+  f.items([candidate(9)]); await f.discovery.scan();
+  assert.notEqual(f.store.streams().find(item => item.stream_id === slot.stream_id).broadcast_id, old);
+  assert.equal(f.registry.get(old).stream_id, slot.stream_id); assert.notEqual(f.registry.get(old).queued, true);
+});
+test('a manual address with detection turned off yields its committee channel to a new official broadcast', async t => {
+  const f = fixture(t); const manual = 'x'.repeat(11);
+  f.store.saveStream({ stream_id: 'ch1', name: committees[0].name, committee_id: committees[0].id, kind: 'youtube', video_id: manual,
+    page_url: 'https://www.youtube.com/watch?v=' + manual, approved: true, approval_note: 'test', prompt: '', auto_start: true });
+  f.items([candidate(1)]); await f.discovery.scan();
+  const waiting = f.registry.list().find(item => item.video_id === candidate(1).video_id);
+  assert.equal(waiting.queued, true); assert.equal(f.store.streams()[0].video_id, manual);
+  f.store.saveStream({ ...f.store.streams()[0], auto_start: false }); await f.discovery.scan();
+  const slot = f.store.streams().find(item => item.stream_id === 'ch1');
+  assert.equal(slot.broadcast_id, waiting.id); assert.equal(slot.capture_from_start, true); assert.equal(slot.auto_discovered, true);
+  assert.equal(f.registry.get(waiting.id).queued, false); assert.equal(f.registry.get(waiting.id).stream_id, 'ch1');
+});
 test('disabling discovery rejects late scans and the setting persists in SQLite', async t => {
   const f = fixture(t); let finish; f.discovery.scanSources = () => new Promise(resolve => { finish = resolve; });
   const pending = f.discovery.scan(); f.discovery.setEnabled(false); finish([candidate(1)]); await pending;

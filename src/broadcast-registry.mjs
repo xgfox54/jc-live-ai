@@ -1,11 +1,12 @@
 import { finalSourceGuard, REVIEW_METHOD, PREVIOUS_METHODS } from './final-speakers.mjs';
 import { decisionOverlay } from './speaker-decisions.mjs';
-import { publicSpeech } from './silence-filter.mjs';
+import { publicSpeech, publicText } from './silence-filter.mjs';
 import { createHash } from 'node:crypto';
 
 export class BroadcastRegistry {
   constructor(store) {
     this.store = store; this.db = store.db;
+    if (store.readOnly) return;
     this.db.exec('CREATE TABLE IF NOT EXISTS broadcasts(id TEXT PRIMARY KEY, document TEXT NOT NULL);'
       + 'CREATE TABLE IF NOT EXISTS broadcast_sessions(session_id TEXT PRIMARY KEY, broadcast_id TEXT NOT NULL);'
       + 'CREATE TABLE IF NOT EXISTS automation_settings(id TEXT PRIMARY KEY, document TEXT NOT NULL);'
@@ -88,7 +89,11 @@ export class BroadcastRegistry {
     return this.db.prepare("SELECT count(*) AS total,coalesce(sum(s.version),0) AS version_sum FROM segments s JOIN broadcast_sessions b ON b.session_id=s.session_id "
       + "WHERE b.broadcast_id=? AND json_extract(s.document,'$.ai_corrected')=1 AND trim(coalesce(json_extract(s.document,'$.corrected_text'),''))<>''").get(id);
   }
-  publishedSegments(id) { return this.segments(id).filter(row => row.ai_corrected === true && typeof row.corrected_text === 'string' && row.corrected_text.trim() && publicSpeech(row)); }
+  // Public rows lose phrases Whisper invented after the speech ("…상정합니다. MBC 뉴스 김성현입니다.") and write 제주 4.3 as 4.3.
+  publishedSegments(id) {
+    return this.segments(id).filter(row => row.ai_corrected === true && typeof row.corrected_text === 'string' && row.corrected_text.trim() && publicSpeech(row))
+      .map(row => ({ ...row, corrected_text: publicText(row.corrected_text) }));
+  }
   reviewState(key) {
     if (!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='review_state'").get()) return null;
     const row = this.db.prepare('SELECT document FROM review_state WHERE id=?').get(key); return row ? JSON.parse(row.document) : null;

@@ -3,9 +3,13 @@ import { HttpError, identifier, integer } from './validate.mjs';
 import { minutesRequest } from './minutes-http.mjs';
 import { CHANNEL_IDS } from '../public/committees.mjs';
 import { viewerMinutesRegistry } from './viewer-minutes.mjs';
-import { publicSpeech } from './silence-filter.mjs';
+import { publicSpeech, suspectText, publicText } from './silence-filter.mjs';
 import { deliveryHealth } from './delivery-health.mjs';
 import { selectSnapshotText, snapshotEtag, matchesEtag } from '../web/lib/snapshot-selection.mjs';
+
+// 'running' while this process's transcription worker accepts audio. The read-only viewer process has no engine,
+// and a stopping or restarting worker is not ready, so both report 'stopped'.
+export const engineStatus = scheduler => scheduler.accepting === true && scheduler.engine?.ready === true ? 'running' : 'stopped';
 
 function publicBroadcastFilter(store, sessionExpression) {
   const tables = store.db.prepare("SELECT count(*) AS total FROM sqlite_master WHERE type='table' AND name IN ('broadcasts','broadcast_sessions')").get();
@@ -27,7 +31,8 @@ function publicSegments(store, query) {
   while (items.length < limit) {
     const remaining = limit - items.length;
     const page = store.segments({ ...query, before, limit: remaining });
-    items = [...page.items.filter(row => publicSession(store, row)), ...items];
+    // Rows hidden as silence artifacts do not fill the page, so a long recess cannot push earlier sentences out of it.
+    items = [...page.items.filter(row => publicSession(store, row) && publicSpeech(row)), ...items];
     before = page.before;
     if (page.items.length < remaining) break;
   }
@@ -66,12 +71,15 @@ export function viewerGap(gap) {
   const { stream_id, session_id, timeline_epoch, start_ms, end_ms } = gap;
   return { stream_id, session_id, timeline_epoch, start_ms, end_ms };
 }
+function displayTimes(segment) {
+  return Number.isFinite(segment.video_offset_ms) ? { start_ms: segment.start_ms + segment.video_offset_ms, end_ms: segment.end_ms + segment.video_offset_ms } : {};
+}
 export function viewerSegment(segment) {
   if (segment.ai_corrected !== true || typeof segment.corrected_text !== 'string' || !segment.corrected_text.trim()) return null;
   if (!publicSpeech(segment)) return null;
   const { stream_id, session_id, timeline_epoch, segment_id, start_ms, end_ms,
     corrected_text, version, speaker_id } = segment;
-  return { stream_id, session_id, timeline_epoch, segment_id, start_ms, end_ms, text: corrected_text,
+  return { stream_id, session_id, timeline_epoch, segment_id, start_ms, end_ms, ...displayTimes(segment), text: publicText(corrected_text),
     sequence: Number.isSafeInteger(segment.sequence) && segment.sequence > 0 ? segment.sequence : null,
     audio_received_ms: Number.isSafeInteger(segment.audio_received_ms) && segment.audio_received_ms > 0 ? segment.audio_received_ms : null,
     ai_corrected: true, version, speaker_id: speaker_id ?? null,
@@ -82,12 +90,14 @@ export function viewerLiveSegment(segment) {
   if (segment.live_preview !== true) return null;
   const corrected = viewerSegment(segment);
   if (corrected) return { ...corrected, display_state: 'corrected' };
-  const draft = segment.ai_corrected !== true && typeof segment.raw_text === 'string' && segment.raw_text.trim()
+  // A phrase Whisper also produces over silence ("감사합니다.", "MBC 뉴스 …입니다") is shown only after the speaker check.
+  const waiting = segment.speaker_state === 'pending' && suspectText(segment.raw_text);
+  const draft = !waiting && segment.ai_corrected !== true && typeof segment.raw_text === 'string' && segment.raw_text.trim()
     && publicSpeech({ ...segment, corrected_text: null });
   const { stream_id, session_id, segment_id, timeline_epoch = 0, start_ms, end_ms, version } = segment;
-  return { stream_id, session_id, segment_id, timeline_epoch, start_ms, end_ms, version,
+  return { stream_id, session_id, segment_id, timeline_epoch, start_ms, end_ms, ...displayTimes(segment), version,
     sequence: segment.sequence ?? null, audio_received_ms: segment.audio_received_ms ?? null,
-    text: draft ? segment.raw_text.trim().slice(0, 5000) : '', ai_corrected: false,
+    text: draft ? publicText(segment.raw_text).slice(0, 5000) : '', ai_corrected: false,
     display_state: draft ? 'draft' : 'removed', speaker_id: segment.speaker_id ?? null };
 }
 function viewerEvent(event, context) {
@@ -95,6 +105,7 @@ function viewerEvent(event, context) {
   if (!publicSession(store, event.payload)) return null;
   let payload = {};
   switch (event.kind) {
+    case 'delivery-health': return event;
     case 'stream': payload = viewerStream(event.payload); break;
     case 'session': case 'status': payload = viewerState(event.payload); break;
     case 'gap': payload = viewerGap(event.payload); break;
@@ -119,8 +130,11 @@ export function viewerSnapshot(context, ids) {
   const pages = ids.map(stream => ({ stream, ...publicSegments(store, { stream, broadcast: broadcasts[stream], published: true }) }));
   const states = [...new Map([...store.states(), ...scheduler.states()].map(s => [s.stream_id, s])).values()];
   const currentStates = states.filter(s => ids.includes(s.stream_id) && belongs(s));
-  return { ...snapshot, publication_policy: 'ai-corrected-v1', schedule: context.schedule?.view() ?? null,
-    live_policy: 'whisper-draft-v1', live_segments: ids.flatMap(id => publicLiveSegments(store, id, broadcasts[id]).filter(belongs).map(viewerLiveSegment).filter(Boolean)),
+  // A removal only matters to a viewer that may still show that draft. Old removals (a long recess of hidden filler
+  // loops) would fill the viewer's 200-row window and push the earlier sentences out of it.
+  const recent = item => item.display_state !== 'removed' || Date.now() - (item.audio_received_ms ?? 0) < 600_000;
+  return { ...snapshot, publication_policy: 'ai-corrected-v1', schedule: context.schedule?.view() ?? null, engine: engineStatus(scheduler),
+    live_policy: 'whisper-draft-v1', live_segments: ids.flatMap(id => publicLiveSegments(store, id, broadcasts[id]).filter(belongs).map(viewerLiveSegment).filter(item => item && recent(item))),
     live_pending: ids.map(id => pendingManifest(store, id, broadcasts[id])),
     ...deliveryHealth(context, ids, { states: currentStates }),
     streams: snapshot.streams.map(viewerStream), segments: pages.flatMap(page => page.items).map(viewerSegment).filter(Boolean),
@@ -129,9 +143,20 @@ export function viewerSnapshot(context, ids) {
 }
 export function createViewer(context) {
   const { store, scheduler, config } = context;
-  const feed = new EventFeed(store, { ...config, project: event => viewerEvent(event, context) });
+  const feed = new EventFeed(store, { ...config, project: event => viewerEvent(event, context),
+    ...(config.pushDeliveryHealth ? { heartbeatMs: 5000,
+      heartbeatPayload: () => {
+        const broadcasts = new Map(store.streams().map(stream => [stream.stream_id, stream.broadcast_id]));
+        const states = [...new Map([...store.states(), ...scheduler.states()].map(s => [s.stream_id, s])).values()]
+          .filter(s => publicSession(store, s) && (!broadcasts.get(s.stream_id)
+            || context.registry?.forSession(s.session_id) === broadcasts.get(s.stream_id)));
+        return { health: deliveryHealth(context, CHANNEL_IDS, { states }).health, engine: engineStatus(scheduler) };
+      } } : {}) });
   const publicRegistry = context.registry && viewerMinutesRegistry(context.registry);
-  const routes = new Set(['/api/viewer/snapshot', '/api/viewer/segments', '/api/viewer/events', '/api/viewer/schedule']);
+  const snapshotCache = new Map();
+  let snapshotBytes = 0;
+  const evict = key => { snapshotBytes -= snapshotCache.get(key)?.bytes ?? 0; snapshotCache.delete(key); };
+  const routes = new Set(['/api/viewer/snapshot', '/api/viewer/segments', '/api/viewer/events', '/api/viewer/schedule', '/api/viewer/status']);
   return {
     feed,
     handle(req, res, url) {
@@ -141,6 +166,10 @@ export function createViewer(context) {
       if (url.pathname === '/api/viewer/schedule') {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(context.schedule?.view() ?? null)); return;
+      }
+      if (url.pathname === '/api/viewer/status') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ engine: engineStatus(scheduler) })); return;
       }
       const ids = (url.searchParams.get('streams') ?? CHANNEL_IDS.join(','))
         .split(',').filter(Boolean).map(identifier);
@@ -152,6 +181,7 @@ export function createViewer(context) {
       let result;
       const broadcasts = Object.fromEntries(store.streams().filter(stream => stream.broadcast_id).map(stream => [stream.stream_id, stream.broadcast_id]));
       if (url.pathname === '/api/viewer/segments') {
+        if (!CHANNEL_IDS.includes(url.searchParams.get('stream'))) throw new HttpError(400, 'Invalid channel');
         const broadcast = url.searchParams.get('broadcast');
         if (broadcast && broadcast !== broadcasts[url.searchParams.get('stream')]) throw new HttpError(409, '방송이 변경되었습니다. 다시 선택해 주세요.');
         const q = url.searchParams.get('q') ?? '';
@@ -166,8 +196,23 @@ export function createViewer(context) {
       } else {
         const texts = (url.searchParams.get('text_streams') ?? ids.join(',')).split(',').filter(Boolean).map(identifier);
         if (texts.length > CHANNEL_IDS.length || texts.some(id => !CHANNEL_IDS.includes(id))) throw new HttpError(400, 'Invalid channels');
-        result = selectSnapshotText(viewerSnapshot(context, ids), texts.filter(id => ids.includes(id)));
-        const text = JSON.stringify(result); const etag = snapshotEtag(text);
+        const key = JSON.stringify([[...new Set(ids)].sort(), [...new Set(texts)].sort()]); const now = Date.now();
+        const cached = snapshotCache.get(key);
+        let text; let etag;
+        if (cached && now - cached.time < (config.snapshotCacheMs ?? 0)) ({ text, etag } = cached);
+        else {
+          result = selectSnapshotText(viewerSnapshot(context, ids), texts.filter(id => ids.includes(id)));
+          text = JSON.stringify(result); etag = snapshotEtag(text);
+          if (config.snapshotCacheMs) {
+            for (const [oldKey, value] of snapshotCache) if (now - value.time >= config.snapshotCacheMs) evict(oldKey);
+            evict(key);
+            const bytes = Buffer.byteLength(text);
+            if (bytes <= 1_048_576) {
+              while (snapshotCache.size >= 128 || snapshotBytes + bytes > 8_388_608) evict(snapshotCache.keys().next().value);
+              snapshotCache.set(key, { text, etag, time: now, bytes }); snapshotBytes += bytes;
+            }
+          }
+        }
         if (matchesEtag(req.headers['if-none-match'], etag)) { res.writeHead(304, { ETag: etag }); res.end(); return; }
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ETag: etag }); res.end(text); return;
       }

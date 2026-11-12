@@ -13,7 +13,7 @@ export class AudioTimeline {
         || fields.rate !== '16000' || fields.channels !== '1' || fields.fmt !== 's16') { this.invalid = true; continue; }
       this.frames++;
       const last = this.spans.at(-1);
-      if (last && pts === last.source_pts + last.samples) last.samples += count;
+      if (last && Math.abs(pts - last.source_pts - last.samples) <= 1) last.samples += count;
       else if (this.spans.length < 4096) this.spans.push({ pcm_sample: this.samples, source_pts: pts, samples: count, source_epoch: this.spans.length });
       else this.invalid = true;
       this.samples += count;

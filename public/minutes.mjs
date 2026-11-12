@@ -1,8 +1,10 @@
 import './display.mjs';
 import { retryWithJitter } from './polling.mjs';
 import { speakerText, speakerColor, speakerKey } from './speakers.mjs';
+import { newestMeetingsFirst, engineFromStatus, showEngineStatus } from './client-state.mjs';
+import { createLiveTransport } from './live-transport.mjs';
 const $ = selector => document.querySelector(selector);
-let selected = ''; let request = 0; let view = 'chapter'; let current = null;
+let selected = ''; let request = 0; let view = 'chapter'; let current = null; let replay = null;
 const element = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 const time = ms => { const s = Math.floor(ms / 1000); return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(n => String(n).padStart(2, '0')).join(':'); };
 const wide = window.matchMedia('(min-width: 1280px)');
@@ -17,6 +19,11 @@ function speakerBadge(item, names) {
   if (color) badge.style.setProperty('--speaker-color', color); else badge.classList.add('speaker-label-plain');
   return badge;
 }
+// The official council replay (다시보기) playlist of a meeting, or null.
+function replayUrl(value) {
+  try { const url = new URL(value?.replay?.media_url ?? ''); return url.protocol === 'https:' && url.hostname === 'vod.council.jeju.kr' ? url.href : null; }
+  catch { return null; }
+}
 function quoteBlock(item, value, names) {
   const block = element('div', undefined, 'quote-block'); block.id = 'paragraph-' + item.segment_id;
   const label = element('p', undefined, 'quote-label');
@@ -24,11 +31,52 @@ function quoteBlock(item, value, names) {
   const badge = speakerBadge(item, names); if (badge) { label.append(' / '); label.append(badge); }
   label.append(']');
   const video = value.video_alignment?.video_id;
-  if (item.video_time && /^[A-Za-z0-9_-]{11}$/.test(video ?? '')) {
+  if (item.video_time && replayUrl(value)) {
+    const button = element('button', '이 시점 영상 보기', 'evidence'); button.type = 'button';
+    button.setAttribute('aria-label', '이 시점 영상 보기, 영상 ' + time(item.start_ms));
+    button.addEventListener('click', () => playReplay(value, item.start_ms / 1000)); label.append(' ', button);
+  } else if (item.video_time && /^[A-Za-z0-9_-]{11}$/.test(video ?? '')) {
     const link = element('a', '영상에서 보기', 'video-link'); link.target = '_blank'; link.rel = 'noopener noreferrer';
     link.href = 'https://www.youtube.com/watch?v=' + video + '&t=' + Math.floor(item.start_ms / 1000) + 's'; label.append(' ', link);
   }
   block.append(label, element('p', item.text, 'quote-text')); return block;
+}
+function stopReplay() {
+  replay?.hls?.destroy(); replay = null;
+  const video = $('#replay-video'); video.pause(); video.removeAttribute('src'); video.load();
+  $('#replay').hidden = true; $('#replay-status').replaceChildren();
+}
+function replayFailed(value, message) {
+  replay?.hls?.destroy(); if (replay) { replay.hls = null; replay.ready = false; }
+  const status = $('#replay-status'); status.replaceChildren(message);
+  let page = null;
+  try { const url = new URL(value.replay?.page_url ?? ''); if (url.protocol === 'https:' && url.hostname === 'www.council.jeju.kr') page = url.href; } catch { /* no page link */ }
+  if (page) { const link = element('a', '의회 다시보기 페이지에서 보기'); link.href = page; link.target = '_blank'; link.rel = 'noopener noreferrer'; status.append(' ', link); }
+}
+// Plays the official replay from a minutes time inside the page. hls.js loads on first use; browsers without it play HLS natively.
+async function playReplay(value, seconds) {
+  const url = replayUrl(value); if (!url) return;
+  const video = $('#replay-video'); const status = $('#replay-status');
+  if (!wide.matches) selectView('transcript');
+  $('#replay').hidden = false;
+  const play = state => video.play().catch(() => { if (replay === state) status.textContent = '재생 버튼을 눌러 영상을 시작해 주세요.'; });
+  if (replay?.url === url && replay.ready) { video.currentTime = seconds; play(replay); return; }
+  replay?.hls?.destroy(); const state = replay = { url, hls: null, ready: false };
+  status.textContent = '공식 다시보기 영상을 불러오는 중입니다.';
+  try {
+    const { default: Hls } = await import('/hls.light.min.mjs');
+    if (replay !== state) return;
+    if (Hls.isSupported()) {
+      const hls = state.hls = new Hls({ enableWorker: false, startPosition: seconds });
+      hls.on(Hls.Events.MANIFEST_PARSED, () => { if (replay !== state) return; state.ready = true; status.textContent = ''; play(state); });
+      hls.on(Hls.Events.ERROR, (event, data) => { if (data.fatal && replay === state) replayFailed(value, '영상을 불러오지 못했습니다.'); });
+      hls.loadSource(url); hls.attachMedia(video);
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.addEventListener('loadedmetadata', () => { if (replay !== state) return; state.ready = true; video.currentTime = seconds; status.textContent = ''; }, { once: true });
+      video.addEventListener('error', () => { if (replay === state) replayFailed(value, '영상을 불러오지 못했습니다.'); }, { once: true });
+      video.src = url; play(state);
+    } else replayFailed(value, '이 브라우저에서는 영상을 재생할 수 없습니다.');
+  } catch { if (replay === state) replayFailed(value, '영상을 불러오지 못했습니다.'); }
 }
 const roleText = entry => entry.speaker_role === 'member' ? ' 의원' : entry.speaker_role === 'official' ? ' · 공무원' : '';
 // Evidence buttons jump to the paragraph that contains the cited recognition segment.
@@ -132,7 +180,8 @@ function renderPoints(value) {
   panel.append(element('p', '시간순으로 묶은 AI 요약입니다. 각 항목의 근거 발언을 받아쓰기에서 확인할 수 있습니다.' + (value.summary?.updated_ms ? ' 갱신 ' + new Date(value.summary.updated_ms).toLocaleString('ko-KR') : ''), 'help'));
   for (const group of value.timeline) {
     const article = element('article', undefined, 'timeline-group');
-    const videoClock = value.video_alignment?.sessions?.some(session => session.session_number === group.session_number);
+    const videoClock = typeof group.video_time === 'boolean' ? group.video_time
+      : (value.replay ?? value.video_alignment)?.sessions?.some(session => session.session_number === group.session_number);
     article.append(element('p', (value.session_count > 1 && !videoClock ? '세션 ' + group.session_number + ' · ' : '') + (videoClock ? '영상 ' : '') + time(group.start_ms), 'timeline-time'));
     article.append(element('h4', group.title || '구간 ' + (group.group + 1) + ' 논의'));
     const list = element('ul', undefined, 'point-list');
@@ -165,6 +214,8 @@ function filterTranscript() {
 }
 function selectView(next) {
   view = next;
+  // On narrow screens the replay lives in the transcript view; it is paused when that view is hidden.
+  if (next !== 'transcript' && !wide.matches) $('#replay-video').pause();
   for (const tab of document.querySelectorAll('#minutes-tabs [role=tab]')) {
     const active = tab.dataset.view === next; tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1;
   }
@@ -174,6 +225,7 @@ function selectView(next) {
 }
 function render(value) {
   current = value;
+  if (replay && replay.url !== replayUrl(value)) stopReplay();
   if (value.publication_policy !== 'ai-corrected-v1' || !Array.isArray(value.transcript) || value.transcript.some(item => item.ai_corrected !== true)) {
     $('#minutes-head').replaceChildren(element('h2', '회의록 준비 중'), element('p', 'AI 후보정이 완료된 공개 자료를 기다립니다.'));
     $('#minutes-tabs').hidden = true; $('#minutes-body').hidden = true; return;
@@ -194,7 +246,7 @@ async function select(id) {
 async function refresh() {
   $('#reload').disabled = true;
   try {
-    const { items } = await get('/api/viewer/minutes'); const list = $('#minutes-list'); list.replaceChildren();
+    const items = newestMeetingsFirst((await get('/api/viewer/minutes')).items); const list = $('#minutes-list'); list.replaceChildren();
     if (!items.length) list.append(element('p', '작성된 회의록이 없습니다.', 'help'));
     for (const item of items) {
       const button = element('button', undefined, 'secondary minutes-item'); button.dataset.minutes = item.id;
@@ -210,6 +262,19 @@ async function refresh() {
   finally { $('#reload').disabled = false; }
 }
 $('#reload').addEventListener('click', refresh); refresh();
+// The engine indicator is checked when the page opens and when it becomes visible again, at most once a minute.
+const liveTransport = createLiveTransport(); let engineChecked = -Infinity;
+async function checkEngine() {
+  if (document.visibilityState === 'hidden' || Date.now() - engineChecked < 60_000) return;
+  engineChecked = Date.now();
+  try {
+    const response = await liveTransport.fetch('/api/status', { signal: AbortSignal.timeout(10_000) });
+    showEngineStatus($('#engine-status'), response.ok ? (await response.json()).engine : engineFromStatus(response.status));
+  } catch {
+    // A failure of the viewer's own connection says nothing about the engine, so the last state stays.
+  }
+}
+document.addEventListener('visibilitychange', checkEngine); checkEngine();
 for (const tab of document.querySelectorAll('#minutes-tabs [role=tab]')) tab.addEventListener('click', () => selectView(tab.dataset.view));
 $('#minutes-tabs').addEventListener('keydown', event => {
   const tabs = [...document.querySelectorAll('#minutes-tabs [role=tab]')]; const index = tabs.findIndex(tab => tab.dataset.view === view);
@@ -217,3 +282,4 @@ $('#minutes-tabs').addEventListener('keydown', event => {
   event.preventDefault(); const tab = tabs[(next + tabs.length) % tabs.length]; selectView(tab.dataset.view); tab.focus();
 });
 $('#transcript-speaker').addEventListener('change', filterTranscript); $('#transcript-search').addEventListener('input', filterTranscript);
+$('#replay-close').addEventListener('click', stopReplay);

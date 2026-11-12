@@ -1,7 +1,10 @@
 import { OfficialPlayer } from './player.mjs';
 import { transcriptNodes } from './transcripts.mjs';
 import { committeeMembers } from './committee-members.mjs';
-import { viewerHealthMessage, TranscriptHistory, mergeTranscriptItems } from './client-state.mjs';
+import { viewerHealthMessage, TranscriptHistory, mergeTranscriptItems, deliveryMetricsText, meetingStateText, meetingPause, publicItem } from './client-state.mjs';
+import { speakerText } from './speakers.mjs';
+
+const BIG_SIZES = ['small', 'medium', 'large'];
 
 export class ViewerStage {
   constructor(options) {
@@ -10,7 +13,7 @@ export class ViewerStage {
     this.element = document.createElement('article'); this.element.className = 'watch-panel';
     this.element.dataset.stream = this.stream.stream_id;
     this.element.innerHTML = '<div class="panel-heading"><h2></h2><div class="row"><button class="secondary sound">소리 켜기</button>'
-      + '<button class="secondary fullscreen">전체 화면</button><button class="secondary close">닫기</button></div></div>'
+      + '<button class="secondary big-open">크게 보기</button><button class="secondary close">닫기</button></div></div>'
       + '<div class="video-frame"></div><div class="video-info"><p role="status"></p><a target="_blank" rel="noopener noreferrer">공식 영상 열기</a></div>'
       + '<div class="transcript-controls"><h3>회의록 받아쓰기</h3><label>문장 검색<input type="search" maxlength="200" placeholder="후보정문 검색"></label>'
       + '<button class="secondary search-all">전체 기록 검색</button>'
@@ -18,9 +21,14 @@ export class ViewerStage {
       + '<p class="transcription-progress" role="status" hidden>받아쓰기 처리중<span class="processing-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span></p>'
       + '<p class="gap-note" hidden>음성이 누락된 구간이 있습니다. 원음과 함께 확인해 주세요.</p>'
       + '<p class="help delivery-health" role="status" hidden></p>'
+      + '<p class="help delivery-metrics" hidden></p>'
       + '<p class="help transcript-clock-note">영상 시간은 수집 구간 기준이며, 재연결하면 0부터 시작합니다. 실제 영상 재생 위치와 다를 수 있습니다.</p>'
       + '<div class="panel-footer row"><button class="secondary history">이전 기록 불러오기</button><span class="help history-status" role="status"></span></div>'
-      + '<div class="transcript" tabindex="0"></div><div class="panel-footer"><button class="secondary latest">최신 문장 보기</button></div>';
+      + '<div class="transcript" tabindex="0"></div><div class="panel-footer"><button class="secondary latest">최신 문장 보기</button></div>'
+      + '<section class="big-captions" aria-label="큰 자막" hidden><div class="big-toolbar"><div class="big-sizes" role="group" aria-label="자막 글자 크기">'
+      + '<button type="button" class="secondary" data-size="small">작게</button><button type="button" class="secondary" data-size="medium">보통</button>'
+      + '<button type="button" class="secondary" data-size="large">크게</button></div><button type="button" class="secondary big-close">작게 보기</button></div>'
+      + '<div class="big-previous"></div><div class="big-current"><p class="big-meta"></p><p class="big-text"></p></div><p class="big-status"></p></section>';
     const layout = document.createElement('div'); layout.className = 'watch-layout';
     const content = document.createElement('div'); content.className = 'watch-content';
     while (this.element.children.length > 1) content.append(this.element.children[1]);
@@ -30,12 +38,22 @@ export class ViewerStage {
     this.transcript = find('.transcript'); this.search = find('input[type=search]'); this.follow = find('input[type=checkbox]');
     this.soundButton = find('.sound'); this.historyButton = find('.history');
     this.historyStatus = find('.history-status');
+    // The progress line is repeated after the newest sentence, where the next sentence will appear.
+    this.progress = find('.transcription-progress'); this.tailProgress = this.progress.cloneNode(true);
+    this.tailProgress.removeAttribute('role'); this.tailProgress.setAttribute('aria-hidden', 'true');
     find('.search-all').addEventListener('click', () => this.searchAll().catch(error => options.message(error.message)));
     this.player = new OfficialPlayer(this.video, value => { this.note.textContent = value; }, { viewer: true, muted: true });
     find('.close').addEventListener('click', options.close);
-    find('.fullscreen').addEventListener('click', async () => {
-      try { await this.video.requestFullscreen(); } catch { options.message('전체 화면을 열지 못했습니다. 영상 플레이어의 전체 화면 버튼을 이용해 주세요.'); }
-    });
+    this.bigButton = find('.big-open'); this.big = find('.big-captions');
+    this.bigButton.addEventListener('click', () => this.openBig());
+    find('.big-close').addEventListener('click', () => this.closeBig());
+    for (const button of this.big.querySelectorAll('[data-size]')) button.addEventListener('click', () => this.setBigSize(button.dataset.size));
+    let size = null; try { size = localStorage.getItem('jc-big-caption-size'); } catch { /* Storage may be blocked; use the default size. */ }
+    this.setBigSize(BIG_SIZES.includes(size) ? size : 'medium', false);
+    // Leaving browser full screen (Esc) also leaves the large caption view; Esc closes the overlay where full screen is unavailable.
+    this.onFullscreen = () => { if (this.bigFullscreen && document.fullscreenElement !== this.element) this.closeBig(); };
+    this.onKey = event => { if (event.key === 'Escape' && !this.big.hidden) this.closeBig(); };
+    document.addEventListener('fullscreenchange', this.onFullscreen); document.addEventListener('keydown', this.onKey);
     this.soundButton.addEventListener('click', () => { if (this.muted) options.sound(); this.setMuted(!this.muted); });
     this.search.addEventListener('input', () => { this.searchEpoch = (this.searchEpoch ?? 0) + 1; this.searchResults = null; this.render(); });
     this.search.addEventListener('keydown', event => { if (event.key === 'Enter') this.searchAll().catch(error => options.message(error.message)); });
@@ -44,9 +62,14 @@ export class ViewerStage {
     this.transcript.addEventListener('scroll', () => {
       const top = this.transcript.scrollTop;
       const upward = top < (this.lastScrollTop ?? 0) - 1;
+      const below = this.transcript.scrollHeight - this.transcript.clientHeight - top;
       this.lastScrollTop = top;
-      if (upward) this.follow.checked = false;
-      if (upward && top <= 64) this.loadHistory();
+      // Moving up to read earlier sentences pauses following; scrolling back down to the newest sentence resumes it.
+      // A position that stays at the bottom while the content shrinks (font load, wider panel) is not a user scroll.
+      const reading = upward && below > 2;
+      if (reading) this.follow.checked = false;
+      else if (!upward && below <= 40 && !this.searchResults) this.follow.checked = true;
+      if (reading && top <= 64) this.loadHistory();
     });
     find('.latest').addEventListener('click', () => {
       this.searchEpoch = (this.searchEpoch ?? 0) + 1; this.searchResults = null; this.search.value = '';
@@ -91,17 +114,64 @@ export class ViewerStage {
       if (!cached && item.display_state === 'draft' && this.follow.checked && Date.now() - item.audio_received_ms < 120000) this.typeDraft(node, item);
       this.nodeCache.set(item.segment_id, { item, node }); return node;
     });
-    if (nodes.length) this.transcript.replaceChildren(...nodes);
+    if (nodes.length) this.transcript.replaceChildren(...nodes, this.tailProgress);
     else this.transcript.replaceChildren(transcriptNodes([], { publicOnly: true,
-      empty: query ? '검색한 문장이 없습니다.' : '방송 음성을 기다립니다.' }));
+      empty: query ? '검색한 문장이 없습니다.' : '방송 음성을 기다립니다.' }), this.tailProgress);
     for (const item of items) if (['removed', 'reconciling'].includes(item.display_state)) { this.cancelTyping(item.segment_id); this.nodeCache.delete(item.segment_id); }
     const restored = anchor?.id ? this.transcript.querySelector('#' + CSS.escape(anchor.id)) : null;
     this.transcript.scrollTop = this.follow.checked ? this.transcript.scrollHeight
       : restored ? this.transcript.scrollTop + restored.getBoundingClientRect().top - edge - offset : top;
     this.lastScrollTop = this.transcript.scrollTop;
+    this.markTarget();
     this.renderHistoryStatus();
     this.element.querySelector('.gap-note').hidden = !this.options.state.gaps.has(this.stream.stream_id);
     this.reconcileDrafts();
+    this.renderBig();
+  }
+  async openBig() {
+    if (!this.big.hidden) return;
+    this.element.classList.add('big-view'); this.big.hidden = false; document.documentElement.classList.add('has-big-view');
+    this.renderBig(); this.big.querySelector('.big-close').focus();
+    this.bigFullscreen = false;
+    try { await this.element.requestFullscreen(); this.bigFullscreen = !this.big.hidden; } catch { /* iPhone and embedded views keep the fixed overlay. */ }
+  }
+  closeBig({ restoreFocus = true } = {}) {
+    if (this.big.hidden) return;
+    this.element.classList.remove('big-view'); this.big.hidden = true;
+    if (!document.querySelector('.watch-panel.big-view')) document.documentElement.classList.remove('has-big-view');
+    const fullscreen = this.bigFullscreen; this.bigFullscreen = false;
+    if (fullscreen && document.fullscreenElement === this.element) document.exitFullscreen().catch(() => {});
+    if (restoreFocus) this.bigButton.focus();
+  }
+  setBigSize(size, save = true) {
+    this.element.dataset.bigSize = size;
+    for (const button of this.big.querySelectorAll('[data-size]')) button.setAttribute('aria-pressed', String(button.dataset.size === size));
+    if (save) try { localStorage.setItem('jc-big-caption-size', size); } catch { /* The size still applies for this visit. */ }
+  }
+  renderBig() {
+    if (this.big.hidden) return;
+    const items = this.history.items.filter(publicItem); const current = items.at(-1);
+    this.big.querySelector('.big-previous').replaceChildren(...items.slice(-3, -1).map(item => {
+      const line = document.createElement('p'); line.textContent = item.text; return line;
+    }));
+    const speaker = current ? speakerText(current) : '';
+    this.big.querySelector('.big-meta').textContent = current ? ['지금 발언', speaker, current.display_state === 'draft' ? '1차 받아쓰기' : ''].filter(Boolean).join(' · ') : '';
+    this.big.querySelector('.big-text').textContent = current?.text ?? '발언이 시작되면 이곳에 큰 글씨로 표시합니다.';
+    this.big.querySelector('.big-status').textContent = this.element.querySelector('.delivery-health').textContent;
+  }
+  // Rendering can replace sentence nodes while the snapshot and history load, so the alert's mark is re-applied until it expires.
+  markTarget() {
+    const active = this.target && Date.now() < this.target.until;
+    for (const node of this.transcript.querySelectorAll('.segment.is-target')) if (!active || node.id !== 'segment-' + this.target.id) node.classList.remove('is-target');
+    if (active) this.transcript.querySelector('#segment-' + CSS.escape(this.target.id))?.classList.add('is-target');
+  }
+  // Opens the newest copy of a sentence from a keyword alert; the snapshot may still be loading for a newly selected channel.
+  reveal(segmentId, attempt = 0) {
+    const node = this.transcript.querySelector('#segment-' + CSS.escape(segmentId));
+    if (!node) { if (attempt < 5 && !this.disposed) setTimeout(() => this.reveal(segmentId, attempt + 1), 1000); return; }
+    this.target = { id: segmentId, until: Date.now() + 4000 }; this.markTarget();
+    this.follow.checked = false; node.scrollIntoView({ block: 'center' });
+    setTimeout(() => { if (!this.disposed) this.markTarget(); }, 4100);
   }
   async reconcileDrafts() {
     if (this.disposed || this.reconcileRequest || Date.now() < (this.reconcileAfter ?? 0)) return;
@@ -168,13 +238,20 @@ export class ViewerStage {
   renderHealth() {
     const note = this.element.querySelector('.delivery-health');
     const health = this.options.state.health.get(this.stream.stream_id);
-    note.textContent = viewerHealthMessage(health);
-    note.hidden = !note.textContent;
+    // During a recess or after adjournment the engine keeps decoding room sound, but nothing is being written down.
+    // The note then drops the "transcribing" and "no speech detected" sentences and keeps warnings.
+    const pause = meetingPause(this.history.items);
     const pending = this.history.items.some(item => item.display_state === 'draft');
-    if (pending && health?.status === 'ready') note.textContent = '1차 받아쓰기를 표시합니다. AI 후보정이 끝나면 자동으로 바뀝니다.';
-    const busy = health?.stages?.transcription === 'processing' || health?.stages?.correction === 'processing'
-      || (pending && !['delayed', 'correction_delayed'].includes(health?.status));
-    this.element.querySelector('.transcription-progress').hidden = !busy;
+    const status = pause && ['processing', 'silent'].includes(health?.status) ? '' : viewerHealthMessage(health);
+    note.textContent = [status, meetingStateText(health, pause)].filter(Boolean).join(' ');
+    if (!pause && pending && health?.status === 'ready') note.textContent = '1차 받아쓰기를 표시합니다. AI 후보정이 끝나면 자동으로 바뀝니다.';
+    note.hidden = !note.textContent;
+    const metrics = this.element.querySelector('.delivery-metrics');
+    metrics.textContent = deliveryMetricsText(health); metrics.hidden = !metrics.textContent;
+    const busy = !pause && (health?.stages?.transcription === 'processing' || health?.stages?.correction === 'processing'
+      || (pending && !['delayed', 'correction_delayed'].includes(health?.status)));
+    this.progress.hidden = !busy;
+    this.tailProgress.hidden = !busy || Boolean(this.searchResults || this.search.value.trim());
   }
   cancelTyping(id) {
     const frame = this.typing.get(id); if (frame !== undefined) cancelAnimationFrame(frame); this.typing.delete(id);
@@ -210,6 +287,7 @@ export class ViewerStage {
       if (this.searchRequest === controller) { this.searchRequest = null; if (!this.disposed) this.renderHistoryStatus(); }
     }
   }
-  dispose() { this.disposed = true; this.searchEpoch++; this.request?.abort(); this.searchRequest?.abort(); this.reconcileRequest?.abort();
+  dispose() { this.closeBig({ restoreFocus: false }); document.removeEventListener('fullscreenchange', this.onFullscreen); document.removeEventListener('keydown', this.onKey);
+    this.disposed = true; this.searchEpoch++; this.request?.abort(); this.searchRequest?.abort(); this.reconcileRequest?.abort();
     for (const frame of this.typing.values()) cancelAnimationFrame(frame); this.typing.clear(); this.player.dispose(); this.element.remove(); }
 }

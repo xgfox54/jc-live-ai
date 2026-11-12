@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jc-live",
+  "account_id": "7fe8630934c19c9a7fe5721d83a3f74b",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "keep_vars": true,
+  "preview_urls": false,
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "jc-live-archives",
+    "database_id": "6be1b904-ebcd-4a89-8978-15fe762e51f9",
+    "migrations_dir": "migrations"
+  }],
+  "vars": {
+    "JC_ALLOWED_ORIGINS": "[\"https://jc-live.xgfox54.workers.dev\",\"https://jc-live-ykh1.vercel.app\"]"
+  },
+  "vpc_services": [{ "binding": "DESKTOP_LIVE", "service_id": "01a172fd-0426-75d2-99f7-b1bd186a2ef7" }],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"],
+    "not_found_handling": "404-page"
+  },
+  "observability": { "enabled": false }
+}

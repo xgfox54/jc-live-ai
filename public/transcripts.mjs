@@ -32,9 +32,12 @@ export function transcriptNodes(items, options = {}) {
     if (draft) line.classList.add('segment-draft');
     line.id = 'segment-' + item.segment_id;
     const time = document.createElement('small');
-    time.textContent = (options.publicOnly ? '수신 ' + formatReceivedTime(item.audio_received_ms) + ' · 영상 시간 ' : '')
-      + formatElapsedTime(item.start_ms) + ' ~ ' + formatElapsedTime(item.end_ms)
-      + ' · ' + (options.publicOnly ? draft ? '1차 받아쓰기 · 후보정 대기' : 'AI 후보정' : item.corrected_text == null ? 'AI 초안' : '검토문') + (speakerText(item) ? ' · ' + speakerText(item) : '');
+    // A green dot (style.css) marks sentences already replaced by their AI-corrected text.
+    const state = document.createElement('span');
+    state.textContent = options.publicOnly ? draft ? '1차 받아쓰기 · 후보정 대기' : 'AI 후보정' : item.corrected_text == null ? 'AI 초안' : '검토문';
+    if (options.publicOnly && !draft) state.className = 'correction-done';
+    time.append((options.publicOnly ? '수신 ' + formatReceivedTime(item.audio_received_ms) + ' · 영상 시간 ' : '')
+      + formatElapsedTime(item.start_ms) + ' ~ ' + formatElapsedTime(item.end_ms) + ' · ', state, ...(speakerText(item) ? [' · ' + speakerText(item)] : []));
     const text = document.createElement('span'); text.textContent = options.publicOnly ? item.text : options.mode === 'raw' ? item.raw_text : item.corrected_text ?? item.raw_text; line.append(time, text);
     if (!options.publicOnly && options.mode === 'both' && item.corrected_text != null) {
       const raw = document.createElement('p'); raw.className = 'help'; raw.textContent = '원문: ' + item.raw_text; line.append(raw);

@@ -24,9 +24,80 @@ export function publicationConnectionMessage(delivery, publication, received, no
   const published = delivery?.published_ms;
   const threshold = Number.isFinite(publication?.stale_after_ms) && publication.stale_after_ms > 0 ? publication.stale_after_ms : 120_000;
   if (!Number.isFinite(published) || published <= 0) return '게시 시각을 확인할 수 없습니다';
+  if (publication?.content_driven === true && publication.active === false)
+    return '저장된 자료 · 최근 변경 ' + new Date(published).toLocaleTimeString('ko-KR');
   if (now - published > threshold) return '새 자료 게시가 지연되고 있습니다 · 최근 갱신 ' + new Date(published).toLocaleTimeString('ko-KR');
   return '최근 갱신 ' + new Date(published).toLocaleTimeString('ko-KR');
 }
+
+// Header indicator of the desktop transcription engine. Values other than 'running' and 'stopped'
+// (an older desktop, or a published snapshot without the field) hide it.
+const ENGINE_VIEWS = new Map([
+  ['running', { label: '정상', title: '실시간 받아쓰기가 정상 작동 중입니다.' }],
+  ['stopped', { label: '일시중단', title: '실시간 받아쓰기가 일시 중단되었습니다. 저장된 회의록은 계속 볼 수 있습니다.' }],
+]);
+// The live proxy answers 502-504 when the desktop or its tunnel cannot be reached.
+export const engineFromStatus = status => [502, 503, 504].includes(status) ? 'stopped' : null;
+export function showEngineStatus(element, value) {
+  const view = ENGINE_VIEWS.get(value);
+  element.hidden = !view; if (!view) return;
+  element.dataset.engine = value; element.title = view.title;
+  element.querySelector('.engine-label').textContent = view.label;
+}
+
+export function durationText(milliseconds) {
+  const total = Math.max(0, Math.round(milliseconds / 1000));
+  if (total < 60) return total + '초';
+  const minutes = Math.floor(total / 60); const seconds = total % 60;
+  if (minutes < 60) return minutes + '분' + (seconds ? ' ' + seconds + '초' : '');
+  return Math.floor(minutes / 60) + '시간' + (minutes % 60 ? ' ' + (minutes % 60) + '분' : '');
+}
+
+// Measured from the start of each recognized audio chunk, so it covers the wait a viewer actually sees.
+export function deliveryMetricsText(health) {
+  const parts = [];
+  for (const [label, value] of [['1차 받아쓰기', health?.latency?.draft], ['AI 후보정', health?.latency?.corrected]])
+    if (value) parts.push(label + ' 평균 ' + durationText(value.avg_ms) + ', 최대 ' + durationText(value.max_ms));
+  return parts.length ? '발언 후 표시까지 걸린 시간(최근 10분) · ' + parts.join(' · ') : '';
+}
+
+const RECESS = /정회(?:를|함을)?\s*선포/;
+const ADJOURN = /산회(?:를|함을)?\s*선포/;
+// Courtesy replies never resume a meeting, and neither does a remark received within a minute of the declaration
+// (2026-10-23: "산회를 선포합니다." was followed five seconds later by "수고하셨습니다. 시간 너무 길어.").
+const COURTESY = /^(?:\s*(?:감사합니다|고맙습니다|수고하셨습니다|수고 많으셨습니다|네|예)[.,!?…~\s]*)+$/;
+const TRAILING_MS = 60_000;
+export const publicItem = item => (item.ai_corrected === true || item.display_state === 'draft') && Boolean(item.text?.trim());
+// 'recess' or 'adjourned' while a chair's 정회·산회 declaration is still the newest speech of the broadcast, otherwise null.
+// Six newer sentences mean the meeting went on, whatever their timing.
+export function meetingPause(items) {
+  const after = [];
+  for (let index = items.length - 1; index >= 0 && after.length < 6; index--) {
+    const item = items[index];
+    if (!publicItem(item) || COURTESY.test(item.text)) continue;
+    const pause = ADJOURN.test(item.text) ? 'adjourned' : RECESS.test(item.text) ? 'recess' : null;
+    if (pause) return after.every(next => next.audio_received_ms - item.audio_received_ms <= TRAILING_MS) ? pause : null;
+    after.push(item);
+  }
+  return null;
+}
+export function meetingStateText(health, pause, now = Date.now()) {
+  if (!health || health.status === 'stopped' || health.stages?.ingestion === 'stopped') return '';
+  if (health.backlog_ms >= 60_000) return '받아쓰기가 방송보다 약 ' + durationText(health.backlog_ms) + ' 늦습니다. 받은 순서대로 처리하고 있습니다.';
+  if (pause === 'adjourned') return '산회가 선포되었습니다.';
+  if (pause === 'recess') return '정회가 선포된 뒤 새 발언이 없습니다.';
+  const last = health.last_speech_ms;
+  if (Number.isFinite(last) && now - last >= 60_000 && ['silent', 'ready', 'waiting'].includes(health.status))
+    return '마지막 발언은 ' + durationText(now - last) + ' 전에 받았습니다. 새 발언을 기다립니다.';
+  return '';
+}
+// Minutes list: newest meeting first by its scheduled date, or the collection start of a broadcast without a schedule.
+// Entries without a readable date go last; equal dates keep the server order.
+const meetingDate = item => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2}))?/.exec(item.scheduled_at ?? '');
+  return match ? Date.UTC(match[1], match[2] - 1, match[3], match[4] ?? 0, match[5] ?? 0) : -Infinity;
+};
+export const newestMeetingsFirst = items => [...items].sort((a, b) => (meetingDate(b) - meetingDate(a)) || 0);
 
 export function mergeTranscriptItems(current, incoming, prepend = false) {
   const values = new Map();
@@ -88,6 +159,7 @@ export class TranscriptState {
     for (const old of channel.slice(0, Math.max(0, channel.length - 200))) this.segments.delete(old.segment_id);
   }
   apply(event) {
+    if (event.kind === 'delivery-health') { this.updateHealth(event.payload); return true; }
     if (event.event_id <= this.cursor) return false;
     switch (event.kind) {
       case 'segment': case 'live-segment': this.put(event.payload); this.partials.delete(event.payload.stream_id); this.livePending.delete(event.payload.stream_id); break;

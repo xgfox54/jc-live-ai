@@ -2,7 +2,8 @@
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>JC-LIVE · 회의록</title><link rel="stylesheet" href="/style.css">
 <link rel="icon" type="image/png" sizes="1254x1254" href="/icon-192.png?v=e16bba8a"><script type="module" src="/minutes.mjs"></script></head>
-<body><header><a class="brand" href="/" aria-label="JC-LIVE"><img src="/logo-jc-live.png?v=2caf416b" width="182" height="44" alt="JC-LIVE"></a><a href="/">방송 시청</a></header>
+<body><header><a class="brand" href="/" aria-label="JC-LIVE"><img src="/logo-jc-live.png?v=2caf416b" width="182" height="44" alt="JC-LIVE"></a><a href="/">방송 시청</a>
+<div class="header-end"><span id="engine-status" class="engine-status" role="status" hidden><span class="visually-hidden">실시간 받아쓰기 </span><span class="engine-label"></span><span class="engine-dot" aria-hidden="true"></span></span></div></header>
 <main><div class="intro"><div><p class="eyebrow">회의록</p><h1>방송별 회의록을 확인합니다</h1>
 <p>실시간 회의록은 AI가 작성한 초안입니다. 이름, 장소 등 고유명사와 숫자는 틀릴 수 있으니 원본 영상 다시보기로 확인해주세요</p></div><button id="reload" class="secondary">새로고침</button></div>
 <p class="service-disclaimer">※ JC-LIVE는 의회에서 공식 제공하는 서비스가 아닙니다. 비공식 서비스인 점 참고바랍니다.</p>
@@ -22,6 +23,11 @@
 <div id="panel-points" class="minutes-panel" role="tabpanel" aria-labelledby="tab-points" tabindex="0" hidden></div>
 </div>
 <section id="panel-transcript" class="transcript-pane" aria-labelledby="transcript-heading">
+<section id="replay" class="replay" aria-labelledby="replay-heading" hidden>
+<div class="replay-head"><h3 id="replay-heading">의회 공식 다시보기</h3><button type="button" id="replay-close" class="secondary">영상 닫기</button></div>
+<video id="replay-video" controls playsinline preload="none"></video>
+<p id="replay-status" class="help" role="status"></p>
+</section>
 <div class="transcript-head"><h3 id="transcript-heading">받아쓰기</h3>
 <div class="transcript-filters"><label>발언자<select id="transcript-speaker"><option value="">전체</option></select></label>
 <label>검색<input id="transcript-search" type="search" placeholder="발언 내용" autocomplete="off"></label></div></div>

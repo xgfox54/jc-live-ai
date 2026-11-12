@@ -24,18 +24,25 @@ test('invalid transcript times remain unknown rather than becoming zero', () => 
 
 test('viewer and admin transcript ranges retain text, source times and audio callbacks', t => {
   const previous = globalThis.document;
-  const node = tag => ({ tag, children: [], listeners: {}, append(...children) { this.children.push(...children); },
-    addEventListener(name, callback) { this.listeners[name] = callback; } });
+  const node = tag => ({ tag, children: [], listeners: {}, className: '', classList: { add() {} }, append(...children) { this.children.push(...children); },
+    get textContent() { return this.text ?? this.children.map(child => typeof child === 'string' ? child : child.textContent).join(''); },
+    set textContent(value) { this.text = value; }, addEventListener(name, callback) { this.listeners[name] = callback; } });
   globalThis.document = { createElement: node, createDocumentFragment: () => node('fragment') };
   t.after(() => { if (previous === undefined) delete globalThis.document; else globalThis.document = previous; });
   const item = Object.freeze({ segment_id: 'time-example', start_ms: 4118400, end_ms: 4123999,
     ai_corrected: true, text: '공개 검토문', raw_text: '원문', corrected_text: '관리자 검토문' });
   const viewer = transcriptNodes([item], { publicOnly: true }).children[0];
   assert.equal(viewer.children[0].textContent, '수신 시각 미확인 · 영상 시간 01시간 08분 38초 ~ 01시간 08분 43초 · AI 후보정');
+  // The green dot belongs to the AI-corrected label only, never to a first draft.
+  assert.equal(viewer.children[0].children[1].className, 'correction-done');
+  const draft = transcriptNodes([{ ...item, ai_corrected: false, display_state: 'draft' }], { publicOnly: true, livePreview: true }).children[0];
+  assert.equal(draft.children[0].textContent, '수신 시각 미확인 · 영상 시간 01시간 08분 38초 ~ 01시간 08분 43초 · 1차 받아쓰기 · 후보정 대기');
+  assert.equal(draft.children[0].children[1].className, '');
   assert.equal(viewer.children[1].textContent, item.text);
   let played;
   const admin = transcriptNodes([item], { mode: 'both', audio: value => { played = value; } }).children[0];
   assert.equal(admin.children[0].textContent, '01시간 08분 38초 ~ 01시간 08분 43초 · 검토문');
+  assert.equal(admin.children[0].children[1].className, '');
   assert.equal(admin.children[1].textContent, item.corrected_text);
   assert.equal(admin.children[2].textContent, '원문: 원문');
   admin.children[3].listeners.click();

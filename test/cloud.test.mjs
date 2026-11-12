@@ -24,9 +24,10 @@ class MemoryStorage {
     this.rows.set(path, { value: structuredClone(value), etag: String(++this.writes) });
   }
 }
-function fixture(t) {
+function fixture(t, { desktop = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'jc-cloud-'));
   const config = { adminToken: 'a'.repeat(64), viewerToken: 'b'.repeat(64), minutesDirectory: join(dir, 'minutes') };
+  if (desktop) config.desktopLive = { enabled: true };
   const store = new Store(':memory:'); const registry = new BroadcastRegistry(store);
   const minutes = new MinutesService({ store, registry, config });
   const storage = new MemoryStorage(); let now = Date.now(); let broken = false;
@@ -74,6 +75,18 @@ test('cloud publication requires a dedicated key, rejects foreign origins, inval
   assert.equal((await send({ ...data, snapshot: { ...data.snapshot, event_id: 1 } })).status, 409);
   assert.equal((await viewerRequest(new Request(endpoint, { method: 'POST' }), { storage })).status, 405);
 });
+
+test('reserved final archive is published before a deferred live archive and its index still updates', async t => {
+  const f = fixture(t); const ended = f.attach(1); f.segments(1, 0, 1);
+  f.store.saveSession({ session_id: 'session1', stream_id: 'ch1', state: 'stopped' });
+  const active = f.attach(2); f.segments(2, 0, 1);
+  f.publisher.control.settings.budget = { period_id: 'verified', advanced_limit: 100, advanced_used: 85, reserved_final: 5, enforce: true };
+  f.publisher.control.change(state => { state.budget_period = 'verified'; });
+  await f.publisher.flushArchive();
+  assert.ok(f.storage.rows.has('minutes/' + ended.id + '.json'));
+  assert.equal(f.storage.rows.has('minutes/' + active.id + '.json'), false);
+  assert.deepEqual(f.storage.rows.get('site.json').value.minutes_index.map(row => row.id), [ended.id]);
+});
 test('local transcripts publish to read-only cloud views with complete pagination, minutes exports and retained broadcast history', async t => {
   const f = fixture(t); const first = f.attach(1); f.segments(1, 0, 130);
   await f.publisher.flush(); assert.equal(f.publisher.view().phase, 'published');
@@ -117,7 +130,8 @@ test('failed cloud delivery keeps local writing available and retries without ex
   await f.publisher.flush(); assert.equal(f.publisher.view().phase, 'retry');
   assert.doesNotMatch(JSON.stringify(f.publisher.view()), /private-|cccccccc/);
   f.segments(1, 2, 1); f.minutes.flush(); assert.equal(f.registry.minutes(record.id).segment_count, 3);
-  f.broken(false); f.tick(); await f.publisher.flush(); assert.equal(f.publisher.view().phase, 'published');
+  f.broken(false); f.tick(); await f.publisher.flush();
+  f.tick(); await f.publisher.flush(); assert.equal(f.publisher.view().phase, 'published');
   assert.equal((await (await f.read('minutes/' + record.id)).json()).segment_count, 3);
 });
 
@@ -142,6 +156,7 @@ test('archive errors leave live drafts available and retry the unacknowledged ar
     assert.equal(f.publisher.known.has(record.id), false);
     assert.doesNotMatch(JSON.stringify(f.publisher.view()), /private-|cccccccc/);
     broken = false; f.tick(); await f.publisher.flush();
+  f.tick(); await f.publisher.flush();
     assert.equal(f.publisher.view().phase, 'published');
     assert.equal((await (await f.read('minutes/' + record.id)).json()).segment_count, 1);
     assert.equal(f.publisher.known.get(record.id).summary.id, record.id);
@@ -172,6 +187,7 @@ test('a pending archive does not hold later live snapshots or start duplicate ar
     assert.equal((await (await f.read('snapshot')).json()).live_segments[0].segment_id, draft.segment_id);
     assert.equal(archiveCalls, 1);
   } finally { release(); await first; }
+  f.tick(); await f.publisher.flush();
   assert.equal(f.publisher.view().phase, 'published');
   assert.equal((await (await f.read('minutes/' + record.id)).json()).segment_count, 1);
   assert.equal((await (await f.read('minutes')).json()).items[0].id, record.id);
@@ -193,6 +209,7 @@ test('snapshot retries preserve acknowledged archives and close aborts both publ
   assert.equal(f.publisher.known.has('site'), false);
   assert.equal(f.publisher.known.has(record.id), true);
   broken = false; f.tick(); await f.publisher.flush();
+  f.tick(); await f.publisher.flush();
   assert.equal(f.publisher.view().phase, 'published'); assert.equal(archives, 1);
 
   const signals = [];
@@ -207,14 +224,14 @@ test('snapshot retries preserve acknowledged archives and close aborts both publ
   assert.equal(f.publisher.pending, null); assert.equal(f.publisher.archivePending, null);
 });
 
-test('unchanged snapshots refresh the publication timestamp at the normal interval', async t => {
+test('unchanged snapshots retain the content publication timestamp at the normal interval', async t => {
   const f = fixture(t); await f.publisher.flush();
-  const writes = f.storage.writes;
+  const writes = f.storage.writes; const published = f.publisher.view().published_ms;
   await f.publisher.flush(); assert.equal(f.storage.writes, writes);
   f.tick(); await f.publisher.flush();
-  assert.equal(f.storage.writes, writes + 1);
-  assert.equal((await (await f.read('snapshot')).json()).delivery.published_ms, f.now());
-  assert.equal(f.publisher.view().published_ms, f.now());
+  assert.equal(f.storage.writes, writes);
+  assert.equal((await (await f.read('snapshot')).json()).delivery.published_ms, published);
+  assert.equal(f.publisher.view().published_ms, published);
 });
 test('new Whisper drafts reach cloud snapshots promptly and are replaced without publishing raw archive history', async t => {
   const f = fixture(t); f.attach(1); f.publisher.start(); await f.publisher.flush(); f.tick();
@@ -299,4 +316,34 @@ test('compressed publication rejects malformed or unsupported compression after 
   assert.equal((await send(Buffer.from('bad-gzip'))).status, 400);
   assert.equal((await send(gzipSync('{}'), 'br')).status, 415);
   assert.equal((await send(gzipSync('{}'), 'gzip', 'wrong')).status, 401);
+});
+
+test('desktop mode publishes no live text and retains completed archives across final corrections', async t => {
+  const f = fixture(t, { desktop: true }); const record = f.attach(1); f.segments(1, 0, 2);
+  await f.publisher.flush(); const initialWrites = f.storage.writes;
+  assert.equal(initialWrites, 1); assert.equal(f.storage.rows.get('site.json').value.snapshot.segments.length, 0);
+  f.segments(1, 2, 2); f.tick(); await f.publisher.flush({ force: true });
+  assert.equal(f.storage.writes, initialWrites); assert.equal(f.storage.rows.has('minutes/' + record.id + '.json'), false);
+  f.store.saveSession({ session_id: 'session1', stream_id: 'ch1', state: 'stopped', input_end_reason: 'eof', queue_length: 0 });
+  f.publisher.getCorrectionAI = () => ({ liveCorrectionBusy: () => true });
+  await f.publisher.flush(); assert.equal(f.storage.writes, initialWrites);
+  f.publisher.getCorrectionAI = () => ({}); f.tick(); await f.publisher.flush();
+  const archived = f.storage.rows.get('minutes/' + record.id + '.json').value;
+  assert.equal(archived.document.segment_count, 4);
+  assert.equal(f.storage.rows.get('site.json').value.minutes_index.length, 1);
+  const saved = f.storage.writes; await f.publisher.flush(); assert.equal(f.storage.writes, saved);
+  const row = f.registry.segments(record.id)[0]; f.store.correct(row.segment_id, { version: row.version, origin: 'ai', text: '최종 확인된 발언입니다.' });
+  for (let n = 0; n < 6; n++) f.tick(); await f.publisher.flush();
+  assert.equal(f.storage.rows.get('minutes/' + record.id + '.json').value.segments[0].text, '최종 확인된 발언입니다.');
+  assert.doesNotMatch(JSON.stringify([...f.storage.rows.values()]), /비공개 원문|raw_text|private-/);
+});
+
+test('desktop mode preserves an unconfirmed old live outbox and blocks automatic migration', async t => {
+  const f = fixture(t); f.attach(1); f.segments(1, 0, 1); f.broken(true); await f.publisher.flush();
+  const pending = structuredClone(f.publisher.control.outbox('site'));
+  await f.publisher.close(); f.config.desktopLive = { enabled: true }; f.broken(false); f.tick();
+  const next = new CloudPublisher(f); t.after(() => next.close());
+  await next.flush({ force: true });
+  assert.equal(next.view().mode_transition_blocked, true); assert.equal(f.storage.writes, 0);
+  assert.deepEqual(next.control.outbox('site'), pending);
 });

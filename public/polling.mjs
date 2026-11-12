@@ -17,12 +17,16 @@ export async function retryWithJitter(task, { signal, attempts = 4, baseMs = 100
   }
 }
 
-export async function pollSnapshots({ refresh, signal, interval, connection, timeoutMs = 15000 }) {
+export async function pollSnapshots({ refresh, signal, interval, connection, timeoutMs = 15000,
+  hidden = () => false, idle = () => false, sleep = pause, random = Math.random, maxInterval = 60000 }) {
+  let failures = 0;
   while (!signal.aborted) {
     // Random spread (±20%) keeps many viewers from refreshing in the same second.
-    const wait = Math.round(interval * (0.8 + Math.random() * 0.4));
-    await pause(wait, signal);
+    const base = Math.min(maxInterval, interval * 2 ** Math.min(failures, 4));
+    const wait = Math.round(Math.max(base, hidden() ? 60000 : idle() ? 15000 : 0) * (0.8 + random() * 0.4));
+    await sleep(wait, signal);
     if (signal.aborted) return;
+    if (hidden()) continue;
     const request = new AbortController();
     let timer;
     let abort;
@@ -33,8 +37,9 @@ export async function pollSnapshots({ refresh, signal, interval, connection, tim
         timer = setTimeout(() => { request.abort(); reject(new Error('Snapshot request timed out')); }, timeoutMs);
       });
       await Promise.race([refresh({ signal: request.signal }), interrupted]);
+      failures = 0;
       if (!signal.aborted) connection(true);
-    } catch { if (!signal.aborted) connection(false); }
+    } catch { failures++; if (!signal.aborted) connection(false); }
     finally { clearTimeout(timer); signal.removeEventListener('abort', abort); }
   }
 }

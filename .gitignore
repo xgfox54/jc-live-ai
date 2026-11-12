@@ -21,3 +21,8 @@
 __pycache__/
 /.omo/
 /.playwright-cli/
+/cloudflare/.wrangler/
+/cloudflare/public/
+/cloudflare/node_modules/
+/cloudflare/.dev.vars*
+/scripts/standby/*.exe

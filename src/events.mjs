@@ -4,11 +4,15 @@ export class EventFeed {
     this.maxClients = options.maxClients ?? 350;
     this.maxBytes = options.maxBytes ?? 262144;
     this.project = options.project ?? (event => event);
+    this.heartbeatPayload = options.heartbeatPayload;
     this.metrics = { sent: 0, bytes: 0, slow_disconnects: 0, high_water_bytes: 0, peak_clients: 0 };
-    store.on('event', () => { for (const client of this.clients) this.schedule(client); });
+    this.onEvent = () => { for (const client of this.clients) this.schedule(client); };
+    store.on('event', this.onEvent);
     this.heartbeat = setInterval(() => {
-      for (const client of this.clients) if (!client.waiting) this.send(client, { kind: 'heartbeat', event_id: client.cursor, payload: {} });
-    }, 10_000);
+      const payload = this.clients.size && this.heartbeatPayload ? this.heartbeatPayload() : null;
+      for (const client of this.clients) if (!client.waiting) this.send(client, {
+        kind: payload ? 'delivery-health' : 'heartbeat', event_id: client.cursor, payload: payload ?? {} });
+    }, options.heartbeatMs ?? 10_000);
     this.heartbeat.unref();
   }
   schedule(client) {
@@ -63,6 +67,7 @@ export class EventFeed {
     req.on('close', () => { clearTimeout(client.timer); this.clients.delete(client); });
   }
   close() {
+    this.store.off('event', this.onEvent);
     clearInterval(this.heartbeat);
     for (const client of this.clients) { clearTimeout(client.timer); client.res.end(); }
     this.clients.clear();

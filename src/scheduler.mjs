@@ -2,14 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { HttpError } from './validate.mjs';
 import { RecoveryQueue } from './recovery-queue.mjs';
 import { Segmenter } from './segmenter.mjs';
-import { nonSpeech } from './silence-filter.mjs';
+import { nonSpeech, stripInvented } from './silence-filter.mjs';
 import { speechActivity } from './speech-activity.mjs';
 
 export class Scheduler {
   constructor(store, engine, config) {
     this.store = store; this.engine = engine; this.config = config;
     this.channels = new Map(); this.last = -1; this.busy = false; this.active = 0; this.accepting = true;
-    this.metrics = { jobs: 0, silence: 0, gaps: 0, errors: 0, unique_audio_s: 0, inferred_audio_s: 0 };
+    this.metrics = { jobs: 0, silence: 0, near_silence: 0, gaps: 0, errors: 0, unique_audio_s: 0, inferred_audio_s: 0 };
     this.samples = []; this.started_ms = Date.now(); this.finishes = new Set();
     this.recognizing = 0; this.recognitionWaiters = [];
     this.recovery = new RecoveryQueue(store); this.closed = false;
@@ -49,6 +49,7 @@ export class Scheduler {
       started_ms: c.started_ms, ended_ms: c.ended_ms ?? null, input_end_reason: c.input_end_reason ?? null,
       audio_received_until: c.audio_received_until, audio_processed_until: c.audio_processed_until,
       last_speech_segment_end: c.last_speech_segment_end, last_receive_ms: c.last_receive_ms,
+      video_offset_ms: c.video_offset_ms ?? null, video_id: c.video_id ?? null, content_from_ms: c.content_from_ms ?? null,
       queue_length: c.queue.length, queue_audio_s: c.queue.reduce((sum, j) => sum + j.unique_s, 0),
       queue_oldest_ms: c.queue[0] ? Date.now() - c.queue[0].received_ms : 0,
       input_stale: c.state === 'running' && Date.now() - (c.last_receive_ms ?? c.started_ms) > 10_000,
@@ -204,8 +205,9 @@ export class Scheduler {
           }
           const diarizationElapsed = Date.now() - diarizationStarted;
           const speakers = job.diarization_result;
-          const activity = this.config.speechGate === true || this.config.silenceRms > 0
-            ? speechActivity(job.pcm, speakers, job) : { state: 'unknown', method: 'disabled' };
+          const gate = this.config.speechGate === true || this.config.silenceRms > 0;
+          const acoustic_activity = gate && this.vad ? await this.vad.process(job) : undefined;
+          const activity = gate ? speechActivity(job.pcm, speakers, { ...job, acoustic_activity }) : { state: 'unknown', method: 'disabled' };
           const silent = activity.state === 'silence';
           const alternativeTask = Object.hasOwn(job, 'alt_result') ? Promise.resolve(job.alt_result)
             : !job.partial && !silent && this.alt ? this.alt.transcribe(job) : Promise.resolve(null);
@@ -230,6 +232,7 @@ export class Scheduler {
           this.metrics.jobs++; this.metrics.unique_audio_s += job.unique_s;
           this.metrics.inferred_audio_s += silent ? 0 : job.unique_s;
           if (silent) this.metrics.silence++;
+          if (activity.method === 'near-silence') this.metrics.near_silence++;
           c.total_processed_s += job.unique_s;
           if (job.epoch === c.timeline_epoch) c.audio_processed_until = job.end_ms;
           let main_text = result.spans.map(s => s.text).join('').trim();
@@ -239,11 +242,16 @@ export class Scheduler {
               .run(job.session_id, job.start_ms, job.end_ms, JSON.stringify({ raw_text: main_text, alt_text, evidence }));
           if (nonSpeech(main_text, evidence)) { main_text = ''; this.metrics.silence_artifacts = (this.metrics.silence_artifacts ?? 0) + 1; }
           if (nonSpeech(alt_text, evidence)) alt_text = '';
+          // Music under real speech makes Whisper append invented phrases ("…부르겠습니다. 찬송가 2장"). They are cut out
+          // and the recognized text is kept with the segment.
+          const recognized_text = main_text; main_text = stripInvented(main_text); alt_text = stripInvented(alt_text);
           const raw_text = main_text || (alt_text.length >= 2 ? alt_text : '');
           if (c.partial && c.partial.timeline_epoch === job.epoch && c.partial.start_ms <= job.start_ms) c.partial = null;
-          if (raw_text) {
+          if (raw_text && !(Number.isFinite(c.resume_floor_ms) && Number.isFinite(c.video_offset_ms) && job.end_ms + c.video_offset_ms <= c.resume_floor_ms)) {
             this.store.segment({ stream_id: c.stream_id, session_id: c.session_id,
               timeline_epoch: job.epoch, start_ms: job.start_ms, end_ms: job.end_ms, raw_text,
+              video_offset_ms: c.video_offset_ms ?? null, video_id: c.video_id ?? null,
+              ...(main_text !== recognized_text ? { recognized_text } : {}),
               ...(alt ? { alt_text, alt_ms: alt.inference_ms, raw_source: main_text ? 'main' : 'alt' } : {}),
               live_preview: Boolean(main_text), preview_updated_ms: Date.now(),
               ready_ms: Date.now(), audio_received_ms: job.received_ms, timestamp_quality: 'chunk-envelope',
@@ -277,7 +285,7 @@ export class Scheduler {
     const deadline = Date.now() + 95_000;
     while ((this.busy || this.finishes.size) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
     this.closed = true; clearTimeout(this.wakeTimer);
-    await this.diarizer?.close(); await this.alt?.stop(); await this.engine.stop();
+    await this.diarizer?.close(); await this.alt?.stop(); await this.vad?.stop(); await this.engine.stop();
   }
   async background(job) {
     if (!this.accepting || !this.engine.ready || this.busy || this.states().some(state => ['running', 'draining', 'degraded', 'reconnecting'].includes(state.state)))

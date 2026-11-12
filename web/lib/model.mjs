@@ -1,5 +1,5 @@
 export class CloudError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, code, retryAfter) { super(message); this.status = status; this.code = code; this.retryAfter = retryAfter; }
 }
 const fail = () => { throw new CloudError(400, 'Invalid public data'); };
 const obj = value => value && typeof value === 'object' && !Array.isArray(value) ? value : fail();
@@ -20,6 +20,18 @@ const source = value => {
   return url.href;
 };
 const video = value => typeof value === 'string' && /^[A-Za-z0-9_-]{11}$/.test(value) ? value : fail();
+// Official council replay playlists only (the same rule as src/council.mjs councilReplay).
+const replayUrl = value => {
+  let url;
+  try { url = new URL(str(value, 1000)); } catch { fail(); }
+  if (url.protocol !== 'https:' || url.hostname !== 'vod.council.jeju.kr' || url.port || url.username || url.password || url.search || url.hash
+    || !/^\/vod\/_definst_\/\/?\d{4}\/\d{1,4}\/[A-Za-z0-9_-]+\/playlist\.m3u8$/.test(url.pathname)) fail();
+  return url.href;
+};
+// A replay that covers only the meeting can start after the recording, so its offset may be negative.
+const alignedSessions = value => list(value, 20, item => {
+  const session = obj(item); const offset = session.offset_ms;
+  return { session_number: int(session.session_number), offset_ms: Number.isFinite(offset) && Math.abs(offset) <= 1e10 ? offset : fail() }; });
 export function publicStream(value) {
   const s = obj(value);
   return { stream_id: channelId(s.stream_id), name: str(s.name, 300), page_url: s.page_url ? source(s.page_url) : '',
@@ -92,8 +104,10 @@ const choice = (value, values) => values.includes(value) ? value : fail();
 function publicPublication(value) {
   const s = obj(value);
   return { status: choice(s.status, ['disabled', 'waiting', 'publishing', 'published', 'delayed']),
+    ...(s.content_driven === true ? { content_driven: true, active: typeof s.active === 'boolean' ? s.active : fail() } : {}),
     last_published_ms: optional(s.last_published_ms, num), stale_after_ms: num(s.stale_after_ms, 10800000) };
 }
+const latencySummary = value => { const s = obj(value); return { avg_ms: num(s.avg_ms), max_ms: num(s.max_ms), count: int(s.count) }; };
 function publicHealth(value) {
   const s = obj(value); const stages = obj(s.stages);
   return { stream_id: channelId(s.stream_id),
@@ -101,6 +115,9 @@ function publicHealth(value) {
     stage: optional(s.stage, value => choice(value, ['ingestion', 'transcription', 'correction', 'publication'])),
     last_received_ms: optional(s.last_received_ms, num), last_processed_ms: optional(s.last_processed_ms, num),
     last_corrected_ms: optional(s.last_corrected_ms, num),
+    latency: optional(s.latency, value => { const latency = obj(value);
+      return { window_ms: int(latency.window_ms), draft: optional(latency.draft, latencySummary), corrected: optional(latency.corrected, latencySummary) }; }),
+    last_speech_ms: optional(s.last_speech_ms, num), backlog_ms: optional(s.backlog_ms, num),
     stages: Object.fromEntries(['ingestion', 'transcription', 'correction', 'publication'].map(key =>
       [key, choice(stages[key], ['disabled', 'waiting', 'publishing', 'published', 'delayed', 'ready', 'stopped', 'silent', 'processing'])])) };
 }
@@ -140,6 +157,7 @@ const publicDigest = value => {
 const timelineGroup = value => {
   const g = obj(value);
   return { group: int(g.group), title: str(g.title ?? '', 100), session_number: int(g.session_number), start_ms: num(g.start_ms),
+    ...(typeof g.video_time === 'boolean' ? { video_time: g.video_time } : {}),
     items: list(g.items, 100, value => { const item = obj(value); return { text: str(item.text, 2000), quote: str(item.quote, 2000), segment_id: optional(item.segment_id, identifier) }; }) };
 };
 export function minutesSummary(value) {
@@ -178,9 +196,11 @@ export function publicMinutes(value) {
     }),
     transcript: list(safe ? s.transcript : [], 60000, excerpt),
     video_alignment: optional(safe ? s.video_alignment : null, value => {
-      const alignment = obj(value);
-      return { video_id: video(alignment.video_id), sessions: list(alignment.sessions, 20, item => {
-        const session = obj(item); return { session_number: int(session.session_number), offset_ms: num(session.offset_ms) }; }) };
+      const alignment = obj(value); return { video_id: video(alignment.video_id), sessions: alignedSessions(alignment.sessions) };
+    }),
+    replay: optional(safe ? s.replay : null, value => {
+      const replay = obj(value);
+      return { media_url: replayUrl(replay.media_url), page_url: optional(replay.page_url, source), sessions: alignedSessions(replay.sessions) };
     }),
     gaps: list(s.gaps, 20000, value => {
       const g = obj(value); return { session_number: int(g.session_number), epoch: int(g.epoch),
@@ -190,9 +210,17 @@ export function publicMinutes(value) {
 }
 export function publicUpdate(value) {
   const s = obj(value); const published_ms = int(s.published_ms);
-  if (s.kind === 'snapshot') return { kind: s.kind, published_ms, publication_policy: 'ai-corrected-v1', snapshot: publicSnapshot(s.snapshot),
+  const envelope = s.publication === undefined ? {} : publicationEnvelope(s);
+  if (s.kind === 'snapshot') return { kind: s.kind, published_ms, ...envelope, publication_policy: 'ai-corrected-v1', snapshot: publicSnapshot(s.snapshot),
     minutes_index: list(s.minutes_index, 20000, minutesSummary) };
-  if (s.kind === 'minutes') return { kind: s.kind, published_ms, publication_policy: 'ai-corrected-v1', document: publicMinutes(s.document),
+  if (s.kind === 'minutes') return { kind: s.kind, published_ms, ...envelope, publication_policy: 'ai-corrected-v1', document: publicMinutes(s.document),
     segments: publishedSegments(s.segments, 60000) };
   fail();
+}
+function publicationEnvelope(s) {
+  const p = obj(s.publication);
+  const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value) ? value.toLowerCase() : fail();
+  if (int(p.revision) < 1) fail();
+  return { sent_ms: int(s.sent_ms), publication: { publisher_id: uuid(p.publisher_id), revision: p.revision,
+    request_id: uuid(p.request_id), content_hash: broadcastId(p.content_hash) } };
 }

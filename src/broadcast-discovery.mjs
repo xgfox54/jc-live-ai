@@ -94,13 +94,19 @@ export class BroadcastDiscovery {
       const id = committee.stream_id;
       const previous = streams.find(item => item.stream_id === id);
       const archived = previous?.broadcast_id && this.registry.get(previous.broadcast_id);
-      const free = !previous || previous.kind === 'pending' || (previous.auto_discovered && archived
-        && (archived.completed || archived.suspended || ['ended', 'offline'].includes(archived.phase)
-          || (record.phase === 'live' && archived.phase === 'waiting')));
+      const finished = archived && (archived.completed || archived.suspended || ['ended', 'offline'].includes(archived.phase));
+      // A manual address whose automatic detection was turned off (stopped by an administrator or a test) does not
+      // reserve the committee channel; only a manual address still waiting for its own broadcast does.
+      const idleManual = previous && !previous.auto_discovered && ['youtube', 'council'].includes(previous.kind)
+        && previous.auto_start === false && (!archived || finished);
+      const free = !previous || previous.kind === 'pending' || idleManual
+        || (previous.auto_discovered && archived && (finished || (record.phase === 'live' && archived.phase === 'waiting')));
       if (!free || this.monitor.active(id) || this.monitor.pending.has(id)) {
         this.registry.save({ ...record, queued: true, queue_reason: '해당 위원회 채널을 사용 중입니다. 기존 수집 종료 후 다시 확인합니다.' }); continue;
       }
-      if (archived && !archived.completed) this.registry.save({ ...archived, queued: true, stream_id: null });
+      // A displaced schedule waits for another slot. A finished or stopped meeting keeps its channel: its minutes label and
+      // the speaker review source check depend on it, so clearing it would withdraw the reviewed speaker names.
+      if (archived && !finished) this.registry.save({ ...archived, queued: true, stream_id: null });
       this.monitor.invalidate(id);
       const stream = { stream_id: id, name: committee.name, committee_id: committee.id, page_url: record.page_url, video_id: record.video_id ?? null,
         kind: record.kind, approved: true, approval_note: '사용자가 승인한 제주특별자치도의회 공식 방송 자동 수집',

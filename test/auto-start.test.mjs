@@ -8,7 +8,7 @@ import { youtubePhase, hlsSnapshot, createLiveProbe } from '../src/live-probe.mj
 
 const stream = { stream_id: 'ch1', kind: 'youtube', name: 'Automatic test', approved: true,
   page_url: 'https://www.youtube.com/watch?v=abcdefghijk', video_id: 'abcdefghijk', auto_start: true };
-function fixture(t, probe) {
+function fixture(t, probe, registry) {
   const store = new Store(':memory:'); store.saveStream(stream);
   const config = { chunkSeconds: 5, queueChunks: 4, silenceRms: 0, recordAudio: false };
   const engine = { ready: true, metadata: {}, stop: async () => {},
@@ -24,7 +24,7 @@ function fixture(t, probe) {
     async stop(id, reason) { runs.get(id)?.(reason); await immediate(); }
   };
   let now = Date.now();
-  const monitor = new BroadcastMonitor({ store, scheduler, config, inputs, probe, now: () => now });
+  const monitor = new BroadcastMonitor({ store, scheduler, config, inputs, probe, now: () => now, registry });
   t.after(async () => { await monitor.close(); for (const id of runs.keys()) await inputs.stop(id); await scheduler.close(); store.close(); });
   return { store, scheduler, config, inputs, monitor, sources, advance: () => { now += 300000; } };
 }
@@ -88,6 +88,58 @@ test('completed video remains suppressed after monitor recreation but can be exp
   await replacement.tick(); assert.equal(f.sources.length, 1);
   replacement.setEnabled(f.store.streams()[0], true);
   await replacement.tick(); assert.equal(f.sources.length, 2);
+});
+test('an input cut off while the broadcast is still live reconnects after the received audio; a stalled one completes', async t => {
+  const f = fixture(t, async current => ({ phase: 'live', source: current, key: 'youtube:abcdefghijk' }));
+  f.store.saveStream({ ...stream, capture_from_start: true }); await f.monitor.tick();
+  const received = Date.now(); f.scheduler.channel('ch1').last_receive_ms = received;
+  f.scheduler.channel('ch1').input_end_live = true;
+  await f.inputs.stop('ch1', 'end_unverified'); await immediate();
+  const saved = f.store.streams()[0];
+  assert.equal(saved.auto_completed_key ?? null, null); assert.equal(saved.beginning_fallback, true); assert.equal(saved.resume_after_ms, received);
+  assert.equal(f.monitor.states()[0].phase, 'retry');
+  f.advance(); await f.monitor.tick();
+  assert.equal(f.sources.length, 2); assert.equal(f.sources[1].beginning_fallback, true); assert.equal(f.sources[1].resume_after_ms, received);
+  // The reconnected collector then waits minutes without new audio: the broadcast stalled, so the meeting completes.
+  f.scheduler.channel('ch1').last_receive_ms = Date.now() - 600_000;
+  f.scheduler.channel('ch1').input_end_live = true;
+  await f.inputs.stop('ch1', 'end_unverified'); await immediate();
+  assert.equal(f.monitor.states()[0].phase, 'completed'); assert.equal(f.store.streams()[0].auto_completed_key, 'youtube:abcdefghijk');
+});
+test('an input whose end could not be checked completes instead of reconnecting', async t => {
+  // 2026-11-05 18:57: after adjournment the official page no longer offered the player, so the end check failed.
+  const f = fixture(t, async current => ({ phase: 'live', source: current, key: 'youtube:abcdefghijk' }));
+  f.store.saveStream({ ...stream, capture_from_start: true }); await f.monitor.tick();
+  f.scheduler.channel('ch1').last_receive_ms = Date.now(); f.scheduler.channel('ch1').input_end_live = false;
+  await f.inputs.stop('ch1', 'end_unverified'); await immediate();
+  assert.equal(f.monitor.states()[0].phase, 'completed'); assert.equal(f.store.streams()[0].auto_completed_key, 'youtube:abcdefghijk');
+  f.advance(); await f.monitor.tick(); assert.equal(f.sources.length, 1);
+});
+test('a meeting whose broadcast cannot be reached ten minutes after its last audio is ended once', async t => {
+  const saved = []; const start = Date.now();
+  const registry = { get: () => saved.at(-1) ?? { id: 'b1', phase: 'live', completed: false },
+    save: value => { saved.push(value); return value; }, sessions: () => [{ last_receive_ms: start - 300_000 }] };
+  const f = fixture(t, async () => { throw new Error('Expected one supported official council player'); }, registry);
+  f.store.saveStream({ ...stream, broadcast_id: 'b1' });
+  await f.monitor.tick(); assert.equal(saved.length, 0);
+  f.advance(); await f.monitor.tick();
+  assert.deepEqual(saved, [{ id: 'b1', phase: 'ended', completed: true }]);
+  assert.equal(f.monitor.states()[0].phase, 'retry'); assert.equal(f.store.streams()[0].auto_start, true);
+  f.advance(); await f.monitor.tick(); assert.equal(saved.length, 1);
+});
+test('a restarted collector continues after the audio already received for the meeting', async t => {
+  // The earlier session was still reading its backlog: its receive clock (2_000_000) ran ahead of the broadcast (1_300_000).
+  const registry = { get: () => null, sessions: id => id === 'b1'
+    ? [{ last_receive_ms: 2_000_000, content_from_ms: 1_000_000, total_received_s: 300 }, { last_receive_ms: null }] : [] };
+  const live = async current => ({ phase: 'live', source: current, key: 'youtube:abcdefghijk' });
+  const f = fixture(t, live, registry);
+  f.store.saveStream({ ...stream, broadcast_id: 'b1', capture_from_start: true, resume_after_ms: 5_000_000 }); await f.monitor.tick();
+  assert.equal(f.sources[0].beginning_fallback, true); assert.equal(f.sources[0].resume_after_ms, 1_300_000);
+  assert.equal(f.store.streams()[0].resume_after_ms, 1_300_000);
+  // A new meeting on the channel starts from its beginning; a resume point left from another meeting is cleared.
+  const g = fixture(t, live, registry);
+  g.store.saveStream({ ...stream, broadcast_id: 'b2', capture_from_start: true, resume_after_ms: 5_000_000 }); await g.monitor.tick();
+  assert.equal(g.sources[0].beginning_fallback ?? false, false); assert.equal(g.sources[0].resume_after_ms, null);
 });
 test('recording quota or write failure disables automatic retries', async t => {
   const f = fixture(t, async () => result('live'));

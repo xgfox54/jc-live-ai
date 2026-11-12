@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync, renameSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { speakerText, speakerKey } from '../public/speakers.mjs';
 import { committeeForChannel } from '../public/committees.mjs';
-import { videoOffsets } from './video-alignment.mjs';
+import { videoOffsets, videoShift } from './video-alignment.mjs';
 
 const clean = value => String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
 const time = ms => { const seconds = Math.floor(ms / 1000); return [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60].map(n => String(n).padStart(2, '0')).join(':'); };
@@ -40,8 +40,9 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
       speaker_ids: [...new Set((segment.speaker_turns ?? []).filter(turn => turn.end_ms - turn.start_ms >= 200).map(turn => turn.speaker_id))] } : {}) }));
   // Sessions matched against the official video audio are shown on the video's own clock.
   const offsets = videoOffsets(extras.videoAlignment, sessions, segments);
+  const shiftOf = (sessionId, start_ms, end_ms) => { const entry = offsets.get(sessionId); return entry ? videoShift(entry, start_ms, end_ms) : null; };
   segments.forEach((segment, index) => {
-    const offset = offsets.get(segment.session_id); if (offset === undefined) return;
+    const offset = shiftOf(segment.session_id, segment.start_ms, segment.end_ms) ?? segment.video_offset_ms; if (!Number.isFinite(offset)) return;
     const item = transcript[index]; item.start_ms += offset; item.end_ms += offset; item.video_time = true;
   });
   for (const item of transcript) {
@@ -73,17 +74,18 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
   const sessionNumber = sessionId => sessions.findIndex(session => session.session_id === sessionId) + 1;
   // Time-ordered summary groups: one group per AI batch that produced grounded summary facts.
   const timeline = (summary?.groups ?? []).map(group => {
-    const starts = group.items.map(item => item.start_ms + (offsets.get(item.session_id) ?? 0)).filter(Number.isFinite);
+    const timed = group.items.filter(item => Number.isFinite(item.start_ms)).map(item => ({ item, offset: shiftOf(item.session_id, item.start_ms, item.start_ms) }));
+    const video_time = timed.length > 0 && timed.every(entry => entry.offset !== null);
+    const starts = timed.map(({ item, offset }) => item.start_ms + (video_time ? offset : 0));
     return { group: group.group, title: clean(group.title), session_number: sessionNumber(group.items[0]?.session_id),
-      start_ms: starts.length ? Math.min(...starts) : 0,
+      start_ms: starts.length ? Math.min(...starts) : 0, video_time,
       items: group.items.map(item => ({ text: item.text, quote: item.quote, segment_id: item.segment_id ?? null })) };
   }).filter(group => group.items.length).sort((a, b) => a.session_number - b.session_number || a.start_ms - b.start_ms);
   const digest = summary?.digest ? { overview: summary.digest.overview, topics: summary.digest.topics } : null;
-  const timedSessions = sessions.filter(session => segments.some(segment => segment.session_id === session.session_id));
-  const allVideoTime = timedSessions.length > 0 && timedSessions.every(session => offsets.has(session.session_id));
+  const videoItems = transcript.filter(item => item.video_time).length;
   const warnings = ['AI 음성 전사에서 발언을 발췌한 검토용 회의록입니다. 발언자·참석자·정식 의결 결과는 원음과 공식 기록으로 확인해야 합니다.',
-    allVideoTime ? '시각은 공식 영상의 재생 위치입니다. 녹음 음성과 공식 영상 음성을 대조해 세션별로 맞췄습니다.'
-      : offsets.size ? '"영상"으로 표시한 시각은 공식 영상의 재생 위치이고, 나머지는 수집 세션별 경과 시간입니다.'
+    videoItems && videoItems === transcript.length ? '시각은 공식 영상의 재생 위치입니다. 녹음 음성과 공식 영상 음성을 대조해 세션별로 맞췄습니다.'
+      : videoItems ? '"영상"으로 표시한 시각은 공식 영상의 재생 위치이고, 나머지는 수집 세션별 경과 시간입니다.'
         : '시각은 수집 세션과 입력 구간별 경과 시간입니다. 방송 영상의 시각과 일치 여부는 확인되지 않았습니다.',
     record.capture_from_start ? '방송 시작 부분부터 수집을 요청했습니다. 제공자의 다시보기·보관 구간에 따라 시작 부분이 누락될 수 있으며 전체 수록 여부는 확인되지 않았습니다.'
       : '수집 연결 이후의 음성으로 작성했습니다. 방송 시작부터 전체 수록했는지는 확인되지 않았습니다.'];
@@ -92,17 +94,20 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
   if (sessions.some(session => session.state === 'interrupted')) warnings.push('서버 재시작으로 중단된 수집 세션이 있습니다.');
   if (sessions.some(session => session.error)) warnings.push('수집 또는 전사 오류가 기록된 세션이 있습니다.');
   const started = sessions.map(session => session.started_ms).filter(Number.isFinite).sort((a, b) => a - b)[0];
+  // The council replay goes in its own field so readers that only know the YouTube form keep accepting the document.
+  const alignment = extras.videoAlignment; const aligned = [...offsets].map(([sessionId, entry]) => ({ session_number: sessionNumber(sessionId), offset_ms: entry.offset_ms }));
   const value = { id: record.id, title: record.title, sources: record.sources,
     scheduled_at: clean(record.scheduled_at) || (started ? seoul(started) + ' (수집 시작 시각)' : ''), meeting_round: record.meeting_round ?? '', meeting_type: record.meeting_type ?? '',
     committee, agenda: record.agenda ?? '', status: active ? 'in_progress' : 'draft',
     method: 'extractive_transcript', updated_ms: Date.now(), segment_count: transcript.length,
-    video_alignment: offsets.size ? { video_id: extras.videoAlignment.video_id,
-      sessions: [...offsets].map(([sessionId, offset_ms]) => ({ session_number: sessionNumber(sessionId), offset_ms })) } : null,
+    // Earlier site versions accept only non-negative offsets in video_alignment.
+    video_alignment: offsets.size && alignment.video_id ? { video_id: alignment.video_id, sessions: aligned.filter(item => item.offset_ms >= 0) } : null,
+    replay: offsets.size && alignment.media_url ? { media_url: alignment.media_url, page_url: alignment.page_url ?? null, sessions: aligned } : null,
     session_count: sessions.length, warnings, summary, digest, timeline, discussion: ranked, participants: participantList, paragraphs, transcript,
     final_speakers: finalReview ? { phase: finalReview.phase, assigned: finalReview.assigned, unresolved: finalReview.unresolved, updated_ms: finalReview.updated_ms }
       : { phase: active ? 'live' : 'pending', assigned: 0, unresolved: transcript.length, updated_ms: 0 },
     gaps: gaps.map(gap => {
-      const offset = (gap.timeline_epoch ?? 0) === 0 ? offsets.get(gap.session_id) ?? 0 : 0;
+      const offset = (gap.timeline_epoch ?? 0) === 0 && gap.start_ms != null ? shiftOf(gap.session_id, gap.start_ms, gap.end_ms ?? gap.start_ms) ?? 0 : 0;
       return { session_number: sessions.findIndex(session => session.session_id === gap.session_id) + 1, epoch: gap.timeline_epoch ?? 0,
         start_ms: gap.start_ms == null ? null : gap.start_ms + offset, end_ms: gap.end_ms == null ? null : gap.end_ms + offset, reason: gap.reason };
     }) };

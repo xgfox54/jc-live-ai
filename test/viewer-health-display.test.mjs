@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TranscriptState, viewerHealthMessage, publicationConnectionMessage } from '../public/client-state.mjs';
+import { TranscriptState, viewerHealthMessage, publicationConnectionMessage, deliveryMetricsText, meetingStateText, meetingPause, newestMeetingsFirst,
+  engineFromStatus, showEngineStatus } from '../public/client-state.mjs';
 
 test('viewer health uses fixed public copy for each status and never renders server errors', () => {
   const expected = [
@@ -50,4 +51,52 @@ test('health refresh replaces health only and preserves transcript browsing stat
 test('ended ingestion is explicit while a few corrections remain pending', () => {
   assert.equal(viewerHealthMessage({ status: 'correction_delayed', stages: { ingestion: 'stopped', transcription: 'stopped' } }),
     '방송 기록 수집이 종료되었습니다. 일부 문장은 AI 후보정을 기다리고 있습니다.');
+});
+
+test('processing time and meeting state use measured values and the newest public sentence only', () => {
+  const now = 10_000_000; const live = { status: 'silent', stages: { ingestion: 'ready' }, last_speech_ms: now - 150_000, backlog_ms: 4000 };
+  assert.equal(deliveryMetricsText({ latency: { draft: { avg_ms: 14_400, max_ms: 61_000 }, corrected: null } }),
+    '발언 후 표시까지 걸린 시간(최근 10분) · 1차 받아쓰기 평균 14초, 최대 1분 1초');
+  assert.equal(deliveryMetricsText({ latency: null }), '');
+  assert.equal(meetingStateText(live, 'recess', now), '정회가 선포된 뒤 새 발언이 없습니다.');
+  assert.equal(meetingStateText(live, 'adjourned', now), '산회가 선포되었습니다.');
+  assert.equal(meetingStateText(live, null, now), '마지막 발언은 2분 30초 전에 받았습니다. 새 발언을 기다립니다.');
+  assert.equal(meetingStateText({ ...live, backlog_ms: 185_000 }, 'recess', now),
+    '받아쓰기가 방송보다 약 3분 5초 늦습니다. 받은 순서대로 처리하고 있습니다.');
+  assert.equal(meetingStateText({ ...live, status: 'stopped' }, 'recess', now), '');
+  assert.equal(meetingStateText({ ...live, last_speech_ms: now - 30_000 }, null, now), '');
+});
+
+test('a 정회·산회 declaration pauses the meeting until other speech arrives', () => {
+  const said = (text, at, extra = {}) => ({ text, audio_received_ms: at, ai_corrected: true, ...extra });
+  // 2026-11-05 12:32: the declaration stayed the newest sentence while room sound was decoded until 14:30.
+  assert.equal(meetingPause([said('원활한 회의 진행을 위해서 10분 쉬겠습니다.', 0), said('4시 30분까지 정회를 선포합니다. 감사합니다.', 10_000)]), 'recess');
+  // 2026-10-23: a remark five seconds later and courtesy replies keep the adjournment.
+  assert.equal(meetingPause([said('산회를 선포합니다. 감사합니다.', 0), said('수고하셨습니다. 시간 너무 길어.', 5_000),
+    said('감사합니다. 감사합니다. 감사합니다.', 12_000), { text: '감사합니다.', audio_received_ms: 600_000, display_state: 'draft' }]), 'adjourned');
+  // 2026-11-05 16:09: speech two and a half hours later resumes the meeting, already as a first draft.
+  assert.equal(meetingPause([said('정회를 선포합니다.', 0), { text: '의석을 정돈해 주시기 바랍니다.', audio_received_ms: 8_834_000, display_state: 'draft' }]), null);
+  // Removed drafts and rows awaiting correction are not public speech; six newer sentences end the pause whatever their timing.
+  assert.equal(meetingPause([said('정회를 선포합니다.', 0), { text: '', display_state: 'removed', audio_received_ms: 900_000 },
+    { text: '미보정 문장', audio_received_ms: 900_000, ai_corrected: false }]), 'recess');
+  assert.equal(meetingPause([said('정회를 선포합니다.', 0), ...Array.from({ length: 6 }, (_, i) => said('질의를 이어 가겠습니다 ' + i, 1000 + i))]), null);
+  assert.equal(meetingPause([said('정회 시간을 알려 드리겠습니다.', 0)]), null); assert.equal(meetingPause([]), null);
+});
+
+test('minutes list shows the newest meeting first and undated entries last', () => {
+  const items = [{ id: 'a', scheduled_at: '2026-10-21 10:00' }, { id: 'b', scheduled_at: '2026-11-04 15:04 (수집 시작 시각)' }, { id: 'c', scheduled_at: '' },
+    { id: 'd', scheduled_at: '2026-10-21 15:00' }, { id: 'e', scheduled_at: '2026-11-05 10:00' }, { id: 'f', scheduled_at: '2026-10-21 10:00' }, { id: 'g' }];
+  assert.deepEqual(newestMeetingsFirst(items).map(item => item.id), ['e', 'b', 'd', 'a', 'f', 'c', 'g']);
+  assert.deepEqual(items.map(item => item.id), ['a', 'b', 'c', 'd', 'e', 'f', 'g']);
+});
+
+test('engine indicator shows 정상 or 일시중단 and hides values it does not know', () => {
+  const label = { textContent: '' }; const element = { hidden: true, dataset: {}, title: '', querySelector: () => label };
+  showEngineStatus(element, 'running');
+  assert.deepEqual([element.hidden, label.textContent, element.dataset.engine], [false, '정상', 'running']);
+  showEngineStatus(element, engineFromStatus(503));
+  assert.deepEqual([element.hidden, label.textContent, element.dataset.engine], [false, '일시중단', 'stopped']);
+  for (const status of [502, 504]) assert.equal(engineFromStatus(status), 'stopped');
+  for (const status of [200, 304, 404, 429, 500]) assert.equal(engineFromStatus(status), null);
+  for (const value of [undefined, null, 'toString', 'paused']) { showEngineStatus(element, value); assert.equal(element.hidden, true); }
 });

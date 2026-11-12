@@ -10,14 +10,25 @@ import { createService } from './server.mjs';
 import { initializeCommitteeChannels } from './committees.mjs';
 import { LiveDiarization } from './live-diarization.mjs';
 import { AltEngine } from './alt-engine.mjs';
+import { AcousticVad } from './acoustic-vad.mjs';
 import { assertSupportedRuntime } from '../web/lib/runtime.mjs';
 
 assertSupportedRuntime();
 const configPath = resolve(process.argv[2] ?? 'config.local.json');
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
+// A standby laptop runs only while its standby controller holds a valid lease: desktop transcription has priority
+// (docs/LAPTOP-STANDBY.md). Without standbyLeaseFile the engine starts as before.
+const standbyLease = () => {
+  if (!config.standbyLeaseFile) return true;
+  try {
+    const lease = JSON.parse(readFileSync(config.standbyLeaseFile, 'utf8'));
+    return lease.role === 'laptop' && lease.valid_until > Date.now();
+  } catch (error) { if (!(error instanceof Error)) throw error; return false; }
+};
+if (!standbyLease()) throw new Error('Laptop is waiting for a valid standby lease');
 if (config.speechGate === undefined) config.speechGate = true;
 if (typeof config.speechGate !== 'boolean') throw new Error('Invalid speech gate configuration');
-if (process.argv.includes('--manual')) { config.manualMode = true; delete config.cloudSyncFile; }
+if (process.argv.includes('--manual')) { config.manualMode = true; delete config.cloudSyncFile; delete config.cloudSyncFiles; }
 if (![5, 10].includes(config.chunkSeconds) || !Number.isInteger(config.queueChunks)
   || config.queueChunks < 2 || config.queueChunks > 24) throw new Error('Invalid chunk or queue configuration');
 if (config.batch !== 1) throw new Error('This whisper-rs adapter supports batch 1 only');
@@ -54,16 +65,28 @@ if (config.liveDiarization === true) {
   scheduler.diarizer = new LiveDiarization(store, config); scheduler.metrics.diarization = scheduler.diarizer.metrics;
 }
 if (config.altRecognizer === true) scheduler.alt = new AltEngine(config);
+if (config.acousticVad) scheduler.vad = new AcousticVad(config.acousticVad);
 const inputs = new FileInputs(scheduler, config);
 const service = createService({ store, scheduler, inputs, config, configPath, shutdown: () => stop().catch(error => {
   process.stderr.write(error.message + '\n'); process.exitCode = 1;
 }) });
 let stopping = false;
+// When the lease lapses the desktop is back: stop collecting at once, then shut down normally.
+const standbyTimer = config.standbyLeaseFile ? setInterval(() => {
+  if (standbyLease() || stopping) return;
+  inputs.close().then(() => stop()).catch(error => {
+    process.stderr.write(JSON.stringify({ event: 'standby.expired', error: error.message }) + '\n'); process.exitCode = 1;
+  });
+}, 2000) : null;
+standbyTimer?.unref();
 async function stop() {
   if (stopping) return; stopping = true;
+  clearInterval(standbyTimer);
+  // New collection stops first, so no audio is taken after a handover while the other services close.
+  await service.monitor.close(); await service.discovery.close(); await inputs.close();
   await service.finalSpeakers.close(); await service.videoAlignment.close(); await service.discovery.close(); await service.schedule.close(); await service.speakerDirectory.close(); await service.monitor.close(); await service.review.close(); await service.audioReview.close(); await service.modelManager.close(); await service.liveCorrection.close(); await service.correctionAI.close(); await inputs.close(); await scheduler.close();
   service.minutes.flush(); await service.cloudSync.flush({ force: true });
-  if (service.server.listening) await service.close(); else service.minutes.close(); store.close();
+  if (service.server.listening) await service.close(); else { await service.desktopLive?.close(); service.minutes.close(); } store.close();
 }
 process.on('SIGINT', () => stop().catch(error => { process.stderr.write(error.message + '\n'); process.exitCode = 1; }));
 process.on('SIGTERM', () => stop().catch(error => { process.stderr.write(error.message + '\n'); process.exitCode = 1; }));
@@ -73,11 +96,13 @@ for (const kind of ['unhandledRejection', 'uncaughtException']) process.on(kind,
 });
 try {
   await engine.start();
+  await scheduler.vad?.start();
   await scheduler.diarizer?.start();
   await scheduler.alt?.start();
   scheduler.exclusive = false; scheduler.pump();
   if (!stopping) {
     service.server.listen(config.port ?? 4320, '127.0.0.1'); await once(service.server, 'listening');
+    await service.desktopLive?.start();
     service.schedule.start();
     if (!config.manualMode) service.speakerDirectory.start(); else await service.speakerDirectory.load();
     if (!config.manualMode) { service.monitor.start(); service.discovery.start(); service.cloudSync.start(); }

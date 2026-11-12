@@ -22,6 +22,14 @@ test('only newly opted-in recognition drafts are projected and corrected text re
   const removed = publicLiveSegment(viewerLiveSegment({ ...row, version: 3, speech_activity: { state: 'silence' } }));
   history.update([removed]); assert.equal(history.items[0].display_state, 'removed'); assert.equal(history.items[0].text, '');
 });
+test('a pending phrase Whisper also makes over silence waits for the speaker check and invented endings are cut', () => {
+  const waiting = viewerLiveSegment({ ...row, raw_text: '감사합니다.', speaker_state: 'pending', speech_activity: { state: 'unknown' } });
+  assert.equal(waiting.display_state, 'removed'); assert.equal(waiting.text, '');
+  assert.equal(viewerLiveSegment({ ...row, raw_text: '다음 안건을 상정합니다. MBC 뉴스 김성현입니다.' }).text, '다음 안건을 상정합니다.');
+  assert.equal(viewerLiveSegment({ ...row, ai_corrected: true, version: 2, corrected_text: '다음은 애국가를 부르겠습니다. 찬송가 2장.' }).text,
+    '다음은 애국가를 부르겠습니다.');
+  assert.equal(viewerLiveSegment({ ...row, raw_text: '제주 사삼 희생자 지원' }).text, '제주 4.3 희생자 지원');
+});
 test('live snapshots and cloud validators scope drafts to the requested broadcast and preserve archive policy', () => {
   const store = new Store(':memory:');
   try {

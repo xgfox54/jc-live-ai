@@ -1,8 +1,10 @@
+import { Handoff } from './handoff.mjs';
 import { createServer } from 'node:http';
 import { assertSupportedRuntime } from '../web/lib/runtime.mjs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { EventFeed } from './events.mjs';
+import { createDesktopLive } from './desktop-live.mjs';
 import { Security } from './security.mjs';
 import { resolveCouncil, councilPage } from './council.mjs';
 import { BroadcastMonitor, supportsAutoStart } from './broadcast-monitor.mjs';
@@ -16,7 +18,7 @@ import { CouncilSchedule } from './council-schedule.mjs';
 import { ArchiveEnricher } from './council-archive.mjs';
 import { MinutesService } from './minutes.mjs';
 import { minutesRequest } from './minutes-http.mjs';
-import { CloudPublisher } from './cloud-publisher.mjs';
+import { CloudPublishers } from './cloud-publishers.mjs';
 import { CorrectionService } from './ai-correction.mjs';
 import { ReviewService } from './review.mjs';
 import { FinalSpeakerReview } from './final-speakers.mjs';
@@ -33,10 +35,11 @@ import { namedCommitteeStream } from './committees.mjs';
 import { HttpError, identifier, integer, text, sourcePage, videoId, body, jsonBody } from './validate.mjs';
 
 const staticFiles = new Map(['index.html', 'app.mjs', 'style.css', 'capture.mjs', 'pcm-worklet.mjs',
-  'player.mjs', 'sync.mjs', 'client-state.mjs', 'subscription.mjs', 'icon-192.png', 'logo-jc-live.png', 'admin.html', 'admin.mjs',
+  'player.mjs', 'sync.mjs', 'client-state.mjs', 'subscription.mjs', 'live-transport.mjs', 'live-transport.json', 'icon-192.png', 'logo-jc-live.png', 'admin.html', 'admin.mjs',
   'viewer-stage.mjs', 'transcripts.mjs', 'selection.mjs', 'admin-tools.mjs', 'automation.mjs',
   'minutes.html', 'minutes.mjs', 'polling.mjs', 'ai-tools.mjs', 'workspace.mjs', 'display.mjs',
-  'JejuGothic-Regular.ttf', 'Pretendard-SemiBold.woff2', 'JejuGothic-OFL.txt', 'Pretendard-OFL.txt', 'speakers.mjs'].map(name => ['/' + name, new URL('../public/' + name, import.meta.url)]));
+  'JejuGothic-Regular.ttf', 'Pretendard-SemiBold.woff2', 'JejuGothic-OFL.txt', 'Pretendard-OFL.txt', 'speakers.mjs',
+  'keyword-alerts.mjs', 'hls.light.min.mjs', 'HLSJS-LICENSE.txt'].map(name => ['/' + name, new URL('../public/' + name, import.meta.url)]));
 staticFiles.set('/minutes', new URL('../public/minutes.html', import.meta.url));
 staticFiles.set('/admin', new URL('../public/admin.html', import.meta.url));
 staticFiles.set('/admin/', new URL('../public/admin.html', import.meta.url));
@@ -53,9 +56,11 @@ export function createService(context) {
   const schedule = context.schedule ?? new CouncilSchedule();
   const minutes = new MinutesService({ registry, store, config });
   const viewer = createViewer({ ...context, registry, schedule, get cloudSync() { return cloudSync; } });
-  const monitor = new BroadcastMonitor({ ...context, registry, minutes });
+  const handoff = new Handoff({ ...context, registry });
+  const monitor = new BroadcastMonitor({ ...context, registry, minutes, handoff });
   const discovery = new BroadcastDiscovery({ ...context, registry, monitor, archive: new ArchiveEnricher({ registry }) });
-  const cloudSync = new CloudPublisher({ ...context, registry, minutes, schedule });
+  const cloudSync = new CloudPublishers({ ...context, registry, minutes, schedule, getCorrectionAI: () => correctionAI });
+  const desktopLive = createDesktopLive({ ...context, registry, schedule });
   const correctionAI = new CorrectionService({ ...context, registry });
   const speakerDirectory = context.speakerDirectory ?? new SpeakerDirectory({ file: config.speakerLabels ?? 'data/speaker-labels.json' });
   correctionAI.peopleDirectory = speakerDirectory;
@@ -75,7 +80,7 @@ export function createService(context) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://www.youtube.com https://s.ytimg.com; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self'; media-src 'self' blob:; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://www.youtube.com https://s.ytimg.com; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self' https://vod.council.jeju.kr; media-src 'self' blob: https://vod.council.jeju.kr; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
@@ -89,7 +94,7 @@ export function createService(context) {
         const file = staticFiles.get(url.pathname === '/' ? '/index.html' : url.pathname);
         const extension = fileURLToPath(file).split('.').at(-1);
         res.setHeader('Content-Type', { html: 'text/html; charset=utf-8', css: 'text/css', mjs: 'text/javascript', png: 'image/png', jpg: 'image/jpeg',
-          ttf: 'font/ttf', woff2: 'font/woff2', txt: 'text/plain; charset=utf-8' }[extension]);
+          ttf: 'font/ttf', woff2: 'font/woff2', txt: 'text/plain; charset=utf-8', json: 'application/json' }[extension]);
         res.end(await readFile(file)); return;
       }
       if (url.pathname === '/health/live') { json(res, { live: true }); return; }
@@ -243,9 +248,10 @@ export function createService(context) {
     }
   });
   server.maxConnections = 400; server.requestTimeout = 15_000; server.headersTimeout = 10_000;
-  return { server, feed, viewerFeed: viewer.feed, monitor, discovery, schedule, registry, minutes, cloudSync, correctionAI, liveCorrection, speakerDirectory, review, finalSpeakers, videoAlignment, audioReview, modelManager, async close() {
+  return { server, feed, viewerFeed: viewer.feed, desktopLive, monitor, discovery, schedule, registry, minutes, cloudSync, correctionAI, liveCorrection, speakerDirectory, review, finalSpeakers, videoAlignment, audioReview, modelManager, async close() {
+    await desktopLive?.close();
     await finalSpeakers.close(); await videoAlignment.close(); await review.close(); await audioReview.close(); await modelManager.close();
-    await discovery.close(); await monitor.close(); await correctionAI.close(); await cloudSync.close(); minutes.close();
+    await discovery.close(); await monitor.close(); await handoff.close(); await correctionAI.close(); await cloudSync.close(); minutes.close();
     feed.close(); viewer.feed.close(); server.closeAllConnections();
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   } };
