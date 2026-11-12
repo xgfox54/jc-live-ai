@@ -4,9 +4,13 @@ import { timingSafeEqual } from 'node:crypto';
 // does not answer, and it polls /api/failover to decide when to start (docs/LAPTOP-STANDBY.md).
 const DESKTOP = 'http://127.0.0.1:4321';
 // The 2026-11-11 plenary was recovered on the laptop from the official replay while the desktop was off.
-// The desktop holds only the part recorded before its power loss, so it must not replace the recovered
+// The desktop held only the part recorded before its power loss, so it must not replace the recovered
 // archive or drop it from the minutes index.
 export const RESTORED_MINUTES_ID = '1c7625ca6efb9f66ec5b3c96147fc13df66ff3b9832467a1c988cb36ad165695';
+// On 2026-11-13 the recovered rows after the power loss became the third session of the desktop record of the same
+// meeting. Once that record is published it covers the whole meeting and the recovered entry leaves the index;
+// the recovered archive stays readable at its own address.
+export const MERGED_MINUTES_ID = 'a6713355fc47281273206740e80a3c57d0ed1be338d13377e33250d456197f7b';
 const validKey = (received, expected) => /^[a-f0-9]{64}$/.test(received ?? '') && typeof expected === 'string'
   && expected.length === 64 && timingSafeEqual(Buffer.from(received), Buffer.from(expected));
 
@@ -79,11 +83,13 @@ export function protectedArchive(storage) {
   };
 }
 
-// The desktop publishes its own minutes index, which does not know the restored meeting; viewers see both.
+// The desktop publishes its own minutes index, which does not know the restored meeting; viewers see both
+// until the merged desktop record is published.
 export function archiveViewer(storage, summarize) {
   return { async read(path) {
     const row = await storage.read(path);
     if (path !== 'site.json' || !row) return row;
+    if (row.value.minutes_index.some(item => item.id === MERGED_MINUTES_ID && item.session_count >= 3)) return row;
     const saved = await storage.read('minutes/' + RESTORED_MINUTES_ID + '.json');
     if (!saved) return row;
     const index = [summarize(saved.value.document), ...row.value.minutes_index.filter(item => item.id !== RESTORED_MINUTES_ID)];

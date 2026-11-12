@@ -20,12 +20,12 @@
 
 ## 현재 실행 상태
 
-2026-11-13 01:40(한국시간) 기준.
+2026-11-13 07:47(한국시간) 기준.
 
-- Cloudflare 워커 판 `eb901621-eb26-4f83-ab14-ca61380e360f` 적용(2026-11-12 10:28, 랩탑 세션이 Cloudflare API로 배포). 직전 판 `804429eb-c5a1-440c-97f6-fda05e8ba125`. 정적 화면 파일은 2026-11-11 02:49 데스크탑 배포 판 `ac69adf9-9525-40e5-b4ac-5a6d254f3df9`과 같음(2026-11-13 73개 일치 확인). 랩탑 배포 내용과 데스크탑 소스의 차이는 [데스크탑 우선·랩탑 대기 운영](LAPTOP-STANDBY.md) 참조.
+- Cloudflare 워커 판 `1ded5377-4012-4d97-a3f9-52404a064038` 적용(2026-11-13 07:46, 데스크탑 소스 `e7dc341` 배포). 직전 판 `eb901621-eb26-4f83-ab14-ca61380e360f`(2026-11-12 10:28 랩탑 세션이 Cloudflare API로 배포). 정적 화면 파일은 바뀌지 않음(배포 때 새로 올린 파일 0개). 배포 뒤 `JC_LAPTOP_URL` 변수와 비밀 3개 유지 확인.
 - 랩탑 대기: 랩탑 예약 작업이 15초마다 데스크탑 상태 확인. 데스크탑 60초 이상 무응답 때만 랩탑이 전사하고, 수집 PC가 바뀌면 영상 시간 기준으로 이어서 전사.
-- 공개 회의록 14건 게시(2026-11-13 확인): 제455회 7건(공식 다시보기 시각 대조 완료), 11월 4일 제주유산 정책포럼 1건, 11월 5일 청문회 1건(최종본), 11월 10일 의회운영위원회·1차 본회의 2건, 11월 11일 2차 본회의 2건(데스크탑 앞부분 `a6713355`, 랩탑 복구본 `1c7625ca`), 11월 12일 3차 본회의 1건. 시험 표시 자료는 공개 목록에서 제외.
-- 전사 엔진을 `start-cloudflare.ps1 -Mode Engine`으로 실행 중(2026-11-13 01:37 통합 코드로 재시작, 직전 프로세스는 랩탑 세션이 2026-11-12 10:38에 원격 시작). 같은 프로세스가 127.0.0.1의 4320(관리자)과 4321(공개 조회) 사용. JC-LIVE 터널 실행 중(2026-11-05 10:01 재시작).
+- 공개 회의록 13건 게시(2026-11-13 07:47 확인): 제455회 7건(공식 다시보기 시각 대조 완료), 11월 4일 제주유산 정책포럼 1건, 11월 5일 청문회 1건(최종본), 11월 10일 의회운영위원회·1차 본회의 2건, 11월 11일 2차 본회의 1건(데스크탑 기록 `a6713355`에 랩탑 복구분을 합침, 아래 2026-11-13 회의록 합치기 참조), 11월 12일 3차 본회의 1건. 시험 표시 자료는 공개 목록에서 제외.
+- 전사 엔진을 `start-cloudflare.ps1 -Mode Engine`으로 실행 중(2026-11-13 07:45 회의록 합치기 적용 뒤 재시작. 01:37에도 통합 코드로 재시작했고, 그 전 프로세스는 랩탑 세션이 2026-11-12 10:38에 원격 시작). 같은 프로세스가 127.0.0.1의 4320(관리자)과 4321(공개 조회) 사용. JC-LIVE 터널 실행 중(2026-11-05 10:01 재시작).
 - 엔진과 터널은 Codex 세션 밖의 별도 프로세스로 실행됨. Codex 앱이 재시작돼도 종료되지 않음.
 - 방송 감지·수신·후보정·게시·다시보기 확인 자동 실행. 발언자 재검토는 수집 중인 방송이 없을 때 한 건씩 진행.
 - 조회 전용 모드(`-Mode Viewer`)는 SQLite 읽기 전용 연결로 공식 일정과 이미 기록된 내용만 제공. 다른 프로세스의 새 이벤트는 250ms 간격으로 확인하고 기존 SSE에 전달. 새 방송 수신·전사는 엔진 모드 필요.
@@ -79,6 +79,10 @@ D1 한 행 상한 때문에 압축 문서 1.9MB 초과는 게시 거절 후 로�
 
 # 종료 회의록 수동 게시. Cloudflare 대상만 전송.
 ./bin/node/node.exe scripts/publish-cloudflare-archives.mjs
+
+# 최초 1회: 계정·D1·VPC ID를 넣을 로컬 배포 설정(git 제외) 만들기
+Copy-Item cloudflare/wrangler.example.json cloudflare/wrangler.local.json
+# account_id, d1_databases의 database_id, vpc_services의 service_id 값을 채워 저장
 
 # Cloudflare 소스 빌드 및 배포
 $env:JC_LIVE_DESKTOP_ORIGIN = 'https://jc-live.xgfox54.workers.dev'
@@ -273,9 +277,29 @@ Cloudflare 회의록 게시 중단 원인과 조치:
 - 배경: 2026-11-11 14:29 데스크탑 전원 중단. 랩탑이 대신 전사하고 Worker를 Cloudflare API로 9회 배포(11-11 16:24~11-12 10:28). 이 변경은 데스크탑 소스에 없었음.
 - 통합: 우선순위 중계, `/api/failover`, `/api/handoff`, 복구 회의록 보호를 `cloudflare/` 소스로 이전. 엔진 인계, 대기 임대, 랩탑 음성 감지 게이트, 랩탑 대기 스크립트 추가. 상세는 [데스크탑 우선·랩탑 대기 운영](LAPTOP-STANDBY.md).
 - `cloudflare/wrangler.json`에 `"keep_vars": true` 추가. 없으면 데스크탑 배포 때 랩탑 터널 주소 변수(`JC_LAPTOP_URL`)가 삭제됨.
-- 운영 판과 다른 점: 실시간 이벤트 연결 30초 제한을 랩탑 처리 중에만 적용, 보관 저장소 감싸기 객체를 DB마다 1회 생성. 운영 Worker 미배포(별도 승인 대상).
+- 운영 판과 다른 점: 실시간 이벤트 연결 30초 제한을 랩탑 처리 중에만 적용, 보관 저장소 감싸기 객체를 DB마다 1회 생성. 2026-11-13 07:46 Worker 배포(`1ded5377`)로 운영에 적용.
 - 검증: 전체 자동 테스트 366개 중 364개 통과, 실패 0개, 2개 건너뜀. 인계·우선순위 중계·음성 감지 시험 12개 추가.
 - 엔진 재시작: 2026-11-13 01:37:16 정상 종료 요청, 01:37:33 준비 완료(중단 약 17초, 수집 중 방송 없음). 재시작 뒤 운영 응답 처리 기기 desktop, 엔진 running, 엔진 오류 기록 0건(01:44까지 확인), 랩탑 대기 상태 desktop 유지. 수집 중 방송이 없어 통합 코드의 인계 위치 업로드는 아직 미실행. 다음 방송은 10:00 4차 본회의(ch0).
+
+## 2026-11-13 2차 본회의 회의록 합치기
+
+- 요청: 2026-11-13 사용자 승인. 11월 11일 2차 본회의의 데스크탑 앞부분과 랩탑 뒷부분을 합쳐 한 건으로 다시 작성.
+- 원자료: 데스크탑 기록 `a6713355`(09:40 수집 시작, 14:29 전원 중단, 공개 941문장, 발언자 이름 337구간)와 랩탑 복구본 `1c7625ca`(개회부터 산회까지 886문장, 유튜브 영상 시각, 화자 분리 없음). 랩탑 연결이 끊겨 있어 Cloudflare에 게시된 랩탑 복구본(AI 후보정 문장, SHA-256 `c71d410d3dceb0bbc5b73e301016e375d3439d5c246da842c75b6a31fac5efed`) 사용.
+- 시각 맞춤: 두 기록에 함께 있는 문장 614개의 위치를 대조해 유튜브 영상 시각과 데스크탑 수집 시각의 차이 2,734,743ms(45분 34.7초) 산출. 80%가 중앙값의 -2.3초에서 +1.7초 사이, 수집 시간대별 중앙값 차이 0.5초 이내.
+- 이음 지점: 데스크탑 마지막 문장의 끝(수집 시각 04:49:17, 영상 시각 05:34:52). 이 지점을 포함한 랩탑 30초 구간은 데스크탑과 겹치는 앞부분을 잘라 '읍면 지역의 교통체계 개편'부터 사용. 이후 랩탑 604문장은 그대로 사용(합계 605문장).
+- 적용: 엔진 정지(07:45) 뒤 DB 백업 `data/backups/live-20261113-before-1111-merge.sqlite`(무결성 ok, SHA-256 `6af88ef7d12e75548b3a172b3cbfe49b4fa7db99977253a17e1056e6a545a915`). 데스크탑 기록에 세 번째 세션 `ff9bee4d-8ae7-481a-b140-80fe06ad2ef3`로 605문장 추가, `audit` 표에 `minutes.merge` 기록, 엔진 재시작(07:45:44 준비 완료). 기존 데스크탑 문장과 랩탑 복구본은 변경·삭제 없음. 일회성 작업 스크립트는 저장소에 넣지 않음.
+- 추가 문장 형식: AI 후보정 문장(`corrected_text`)만 있고 전사 원문(`raw_text`)은 빈 값. 각 문장의 `merged` 필드에 랩탑 영상 시각과 원래 세션 번호 보존. 이음 지점 문장은 `trimmed_prefix` 표시.
+- 코드(`e7dc341`): 기록의 `merge_note`를 회의록 안내에 표시. 합친 기록은 영상 시간 대조에서 제외(녹음이 있는 세션만 영상 시각으로 옮겨져 시각 기준이 둘로 나뉘는 문제 방지). Worker는 같은 회의의 데스크탑 기록이 세션 3개 이상이면 랩탑 복구본을 목록에 추가하지 않음. 랩탑 복구본은 개별 주소로 계속 제공.
+- 결과(08:10 확인): 공개 목록 14건에서 13건. 11월 11일 2차 본회의는 `a6713355` 1건(세션 3개, 공개 1,544문장, 합치기 안내는 회의록의 '기록 범위 안내'에 표시). 추가한 605문장 중 2문장은 기존 공개 기준(인사말 반복)으로 비공개. 랩탑 복구본 개별 주소 응답 200. 엔진이 발언자 재검토(07:45부터 07:54까지, 이름 확인 344구간, 미확인 1,200구간, 뒷부분 이름 확인 6구간)와 AI 요약(07:55부터 08:09까지, 주제 5개, 시간순 요약 45개)을 자동으로 다시 실행하고 08:09에 다시 게시.
+- 한계: 뒷부분은 화자 분리 정보가 없어 의장 진행 문구·발언 소개 문장처럼 이름 근거가 있는 문장만 발언자 확인 가능. 회의록 시각은 데스크탑 수집 시각이며 공식 영상 재생 위치가 아님. 유튜브 영상은 비공개(2026-11-13 oEmbed 403), 공식 다시보기 대조는 2026-11-12부터 Python 오류로 실패 상태.
+- 롤백: Worker는 `scripts/cloudflare-cli.mjs rollback eb901621-eb26-4f83-ab14-ca61380e360f`(목록에 2건 다시 표시). DB는 엔진 정지 뒤 위 백업으로 복원하거나 세션 `ff9bee4d-8ae7-481a-b140-80fe06ad2ef3`의 문장·연결 행과 기록의 `merged_from`·`merge_note`를 지운 뒤 재시작. 백업 복원은 07:45 이후 기록이 사라지므로 운영자 판단 필요.
+
+## 2026-11-13 Cloudflare ID 분리
+
+- 배경: 공개 GitHub 저장소의 `cloudflare/wrangler.json`에 Cloudflare 계정 ID, D1 DB ID, VPC 서비스 ID가 들어 있었음. 자격증명이 아니어서 API 토큰 없이는 접근할 수 없지만 공개할 필요가 없는 값.
+- 변경: 저장소에는 세 값을 자리 표시(`<account_id>`, `<d1_database_id>`, `<vpc_service_id>`)로 바꾼 `cloudflare/wrangler.example.json`만 보관. 실제 값은 git 제외 파일 `cloudflare/wrangler.local.json`에 보관하고 `scripts/cloudflare-cli.mjs`가 `--config`로 지정. 이 파일이 없거나 ID 형식이 맞지 않으면 로그인 관련 명령(`login`, `logout`, `whoami`) 외에는 실행 중지. `cloudflare/wrangler.json`도 git 제외 대상으로 지정.
+- 효과: `cloudflare` 폴더에 `wrangler.json`이 없어 Wrangler를 직접 실행해도 ID 없는 설정으로 배포되지 않음. 실제 값 파일은 git이 추적한 적 없는 이름이라 이전 커밋을 체크아웃해도 지워지지 않음.
+- 한계: 이전 공개 커밋(GitHub `301b3f6`, `285b6a9`)에는 값이 남음. 이력에서 지우려면 강제 push가 필요해 미실시. 랩탑은 저장소 밖의 자체 스크립트와 `CLOUDFLARE_ACCOUNT_ID` 환경 변수를 사용해 영향 없음.
 
 ## 중지·복구·롤백
 
@@ -285,7 +309,7 @@ Cloudflare 회의록 게시 중단 원인과 조치:
 - 2026-11-05 기록 복구 전 DB 백업: `data/backups/live-20261105-before-resume-repair.sqlite`. 복원하면 10:50 이후 기록이 사라지므로 운영자 판단 필요.
 - 운영 설정 백업: `data/cloudflare-migration-2026-10-25T12-14-40-280Z/`. 설정·SQLite 일관 사본·기존 Vercel 설정 보존. 백업에는 비밀이 있으므로 공개 업로드 금지.
 - Cloudflare 게시 중지: 서비스 종료 후 설정의 Cloudflare 추가 경로 제거. Vercel 원래 설정 복원은 해당 백업의 비밀 설정을 사용. 데이터 복원 전에 현재 DB를 다시 백업하고 현재 작업 결과를 보존.
-- 웹 코드 롤백: `scripts/cloudflare-cli.mjs rollback <검증된 이전 버전 ID>`. 코드 롤백은 D1 데이터 복원이 아님. 첫 정상 배포 이전에는 사용할 이전 버전이 없을 수 있음. 2026-11-05 11:10 배포의 직전 판은 `cbc31c07-36e3-4ba9-8514-4d6dbe1a6cb7`. 2026-11-07 07:42 배포의 직전 판은 `1e093456-263c-41ef-9ffd-67f2df3b2499`. 2026-11-11 02:49 배포의 직전 판은 `ae3c678b-2c4b-446c-82a6-846de82b3a31`. 2026-11-12 10:28 랩탑 배포 판 `eb901621-eb26-4f83-ab14-ca61380e360f`의 직전 판은 `804429eb-c5a1-440c-97f6-fda05e8ba125`. `ac69adf9-9525-40e5-b4ac-5a6d254f3df9`로 롤백하면 랩탑 대기와 전사 인계 경로가 빠짐.
+- 웹 코드 롤백: `scripts/cloudflare-cli.mjs rollback <검증된 이전 버전 ID>`. 코드 롤백은 D1 데이터 복원이 아님. 첫 정상 배포 이전에는 사용할 이전 버전이 없을 수 있음. 2026-11-05 11:10 배포의 직전 판은 `cbc31c07-36e3-4ba9-8514-4d6dbe1a6cb7`. 2026-11-07 07:42 배포의 직전 판은 `1e093456-263c-41ef-9ffd-67f2df3b2499`. 2026-11-11 02:49 배포의 직전 판은 `ae3c678b-2c4b-446c-82a6-846de82b3a31`. 2026-11-12 10:28 랩탑 배포 판 `eb901621-eb26-4f83-ab14-ca61380e360f`의 직전 판은 `804429eb-c5a1-440c-97f6-fda05e8ba125`. `ac69adf9-9525-40e5-b4ac-5a6d254f3df9`로 롤백하면 랩탑 대기와 전사 인계 경로가 빠짐. 2026-11-13 07:46 배포 판 `1ded5377-4012-4d97-a3f9-52404a064038`의 직전 판은 `eb901621-eb26-4f83-ab14-ca61380e360f`.
 - 2026-11-11 받아쓰기 수정 원복: 커밋 `df29197`(4.3 표기), `4de7fea`(무음·지어낸 문구) 순서로 `git revert` 후 위 엔진 종료·시작 절차로 재시작. 화면 파일 변경이 없어 Cloudflare 재배포 불필요. 11-10 1차 본회의 96.7초 구간은 같은 관리자 경로로 이전 문장을 다시 저장해 복원(수정 이력은 `corrections` 표에 보존).
 - 연결 문제 진단: `data/cloudflare-viewer.*.log`, `data/cloudflare-tunnel.*.log` 확인. 토큰 파일 내용 출력 금지.
 
@@ -315,7 +339,7 @@ Cloudflare 회의록 게시 중단 원인과 조치:
 - 2026-11-07: `public/client-state.mjs`·`public/viewer-stage.mjs`·`public/transcripts.mjs`·`public/minutes.mjs`·`public/style.css`(정회 중 표시, 최신 문장 아래 표시, 후보정 점, 회의록 정렬), `src/files.mjs`·`src/broadcast-monitor.mjs`(산회 뒤 종료 확인), `src/cloud-publisher.mjs`·`src/publication-control.mjs`(요청별 제한 시간, 게시 구간 점유 시간, 진단 지표), `test/viewer-health-display.test.mjs`·`test/transcript-time.test.mjs`·`test/auto-start.test.mjs`·`test/input-completion.test.mjs`.
 - 2026-11-10: `src/viewer.mjs`·`src/desktop-live.mjs`·`cloudflare/live-proxy.mjs`(엔진 상태 값과 상태 경로), `public/app.mjs`·`public/minutes.mjs`·`public/client-state.mjs`·`public/live-transport.mjs`·`public/display.mjs`·`public/index.html`·`public/minutes.html`·`public/style.css`(머리글 상태 표시), `test/desktop-live.test.mjs`·`test/cloudflare.test.mjs`·`test/viewer-health-display.test.mjs`.
 - 2026-11-11: `src/speech-activity.mjs`(거의 무음 판정), `src/silence-filter.mjs`·`src/scheduler.mjs`·`src/viewer.mjs`·`src/broadcast-registry.mjs`(지어낸 문구 제거와 공개 문장 정리), `src/ai-correction.mjs`·`src/correction-prompt.mjs`·`src/glossary-packs.json`(4.3 표기와 숫자 점검), `test/silence-filter.test.mjs`·`test/speech-evidence.test.mjs`·`test/live-preview.test.mjs`·`test/realtime-pipeline.test.mjs`·`test/ai-correction.test.mjs`.
-- 2026-11-13: `cloudflare/priority-routing.mjs`·`cloudflare/handoff.mjs`·`cloudflare/live-proxy.mjs`·`cloudflare/worker.mjs`·`cloudflare/wrangler.json`(우선순위 중계, 인계, 복구 회의록 보호, `keep_vars`), `src/handoff.mjs`·`src/files.mjs`·`src/broadcast-monitor.mjs`·`src/scheduler.mjs`·`src/server.mjs`·`src/viewer.mjs`·`src/minutes.mjs`·`src/audio-timeline.mjs`(엔진 인계), `src/main.mjs`·`src/acoustic-vad.mjs`·`src/speech-activity.mjs`·`worker/speech_gate.py`(대기 임대, 음성 감지 게이트), `scripts/standby/`(랩탑 대기 실행), `test/handoff.test.mjs`·`test/failover.test.mjs`·`test/speech-evidence.test.mjs`·`test/cloudflare.test.mjs`, `docs/LAPTOP-STANDBY.md`.
+- 2026-11-13: `cloudflare/priority-routing.mjs`·`cloudflare/handoff.mjs`·`cloudflare/live-proxy.mjs`·`cloudflare/worker.mjs`·`cloudflare/wrangler.json`(우선순위 중계, 인계, 복구 회의록 보호, `keep_vars`), `src/handoff.mjs`·`src/files.mjs`·`src/broadcast-monitor.mjs`·`src/scheduler.mjs`·`src/server.mjs`·`src/viewer.mjs`·`src/minutes.mjs`·`src/audio-timeline.mjs`(엔진 인계), `src/main.mjs`·`src/acoustic-vad.mjs`·`src/speech-activity.mjs`·`worker/speech_gate.py`(대기 임대, 음성 감지 게이트), `scripts/standby/`(랩탑 대기 실행), `test/handoff.test.mjs`·`test/failover.test.mjs`·`test/speech-evidence.test.mjs`·`test/cloudflare.test.mjs`, `docs/LAPTOP-STANDBY.md`. 회의록 합치기: `src/minutes.mjs`·`src/video-alignment.mjs`·`cloudflare/priority-routing.mjs`, `test/failover.test.mjs`·`test/video-alignment.test.mjs`. ID 분리: `cloudflare/wrangler.example.json`(이전 `cloudflare/wrangler.json`), `scripts/cloudflare-cli.mjs`, `cloudflare/package.json`, `.gitignore`.
 
 ## 공식 참고 자료
 

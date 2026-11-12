@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { priorityFetch, priorityControl, protectedArchive, archiveViewer, requestLimit, RESTORED_MINUTES_ID } from '../cloudflare/priority-routing.mjs';
+import { priorityFetch, priorityControl, protectedArchive, archiveViewer, requestLimit, RESTORED_MINUTES_ID, MERGED_MINUTES_ID } from '../cloudflare/priority-routing.mjs';
 import { handleRequest } from '../cloudflare/worker.mjs';
 import { proxyLive } from '../cloudflare/live-proxy.mjs';
 import { StandbyPolicy } from '../scripts/standby/standby-policy.mjs';
@@ -84,4 +84,13 @@ test('returning desktop cannot overwrite restored transcript or remove its index
   await store.write('minutes/' + id + '.json', { document: { transcript: [{ segment_id: 'restored' }], digest: { topics: [{}] }, timeline: [{}] } }, 'etag');
   await store.write('minutes/' + 'c'.repeat(64) + '.json', { document: { transcript: [] } }, 'etag');
   assert.equal(writes, 2);
+});
+
+test('the merged desktop record replaces the restored entry once it holds the recovered rows', async () => {
+  const restored = { document: { id: RESTORED_MINUTES_ID, scheduled_at: '2026-11-11', segment_count: 886 } };
+  const viewer = sessions => archiveViewer({ read: async path => ({ etag: '1', value: path === 'site.json'
+    ? { minutes_index: [{ id: MERGED_MINUTES_ID, scheduled_at: '2026-11-11 10:00', session_count: sessions }] } : restored }) }, doc => doc);
+  assert.deepEqual((await viewer(2).read('site.json')).value.minutes_index.map(x => x.id), [MERGED_MINUTES_ID, RESTORED_MINUTES_ID]);
+  assert.deepEqual((await viewer(3).read('site.json')).value.minutes_index.map(x => x.id), [MERGED_MINUTES_ID]);
+  assert.equal((await viewer(3).read('minutes/' + RESTORED_MINUTES_ID + '.json')).value, restored);
 });

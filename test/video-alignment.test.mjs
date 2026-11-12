@@ -127,3 +127,15 @@ test('a failed new measurement keeps the completed result and an interrupted one
   assert.equal(states.get('video-alignment:' + id), previous);
 });
 
+test('a record merged from another PC keeps its collection clock', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'jc-align-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(join(directory, 'rec', 'ch0', 'one'), { recursive: true }); writeFileSync(join(directory, 'rec', 'ch0', 'one', 'audio.pcm'), Buffer.alloc(32));
+  const id = 'f'.repeat(64); const record = { id, video_id: 'pwvxi_rX3ao', sources: [], merged_from: ['1'.repeat(64)] }; const states = new Map();
+  const review = { get: key => states.get(key) ?? null, save: (key, value) => { states.set(key, value); return value; }, record: () => record, store: {} };
+  const registry = { list: () => [record], sessions: () => [{ session_id: 'one', stream_id: 'ch0' }] };
+  const alignment = new VideoAlignment({ registry, review, store: { emit() {} }, config: { recordings: join(directory, 'rec'), alignmentDirectory: join(directory, 'work') } });
+  t.after(() => alignment.close());
+  assert.throws(() => alignment.start(id), error => error.status === 409);
+  alignment.auto();
+  assert.equal(alignment.pending, null); assert.equal(states.size, 0);
+});

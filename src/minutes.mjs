@@ -91,6 +91,8 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
       : '수집 연결 이후의 음성으로 작성했습니다. 방송 시작부터 전체 수록했는지는 확인되지 않았습니다.'];
   if (gaps.length) warnings.push('음성·전사 누락 또는 입력 중단 기록 ' + gaps.length + '건이 있습니다. 원음 확인이 필요합니다.');
   if (record.beginning_fallback) warnings.push('시작 부분 수집에 실패해 현재 시점의 음성 수집으로 전환했습니다. 수집 사이의 누락 범위는 확인되지 않았습니다.');
+  // Rows merged from another PC's record carry a note on their source and clock (2026-11-11 plenary).
+  if (record.merge_note) warnings.push(clean(record.merge_note));
   if (sessions.some(session => session.state === 'interrupted')) warnings.push('서버 재시작으로 중단된 수집 세션이 있습니다.');
   if (sessions.some(session => session.error)) warnings.push('수집 또는 전사 오류가 기록된 세션이 있습니다.');
   const started = sessions.map(session => session.started_ms).filter(Number.isFinite).sort((a, b) => a - b)[0];

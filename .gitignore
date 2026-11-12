@@ -25,4 +25,6 @@ __pycache__/
 /cloudflare/public/
 /cloudflare/node_modules/
 /cloudflare/.dev.vars*
+/cloudflare/wrangler.json
+/cloudflare/wrangler.local.json
 /scripts/standby/*.exe

@@ -8,8 +8,8 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "check": "wrangler deploy --dry-run",
-    "deploy": "wrangler deploy"
+    "check": "wrangler deploy --dry-run --config wrangler.local.json",
+    "deploy": "wrangler deploy --config wrangler.local.json"
   },
   "devDependencies": {
     "wrangler": "4.152.0"

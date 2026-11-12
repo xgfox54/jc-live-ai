@@ -91,6 +91,7 @@ export class VideoAlignment {
     const record = this.review.record(id);
     if (this.closed || this.pending) throw new HttpError(409, '다른 영상 시간 대조 작업이 진행 중입니다.');
     const source = alignmentSource(record);
+    if (record.merged_from) throw new HttpError(409, '다른 PC의 기록을 합친 회의록은 수집 시각을 그대로 사용하므로 영상 시간을 대조하지 않습니다.');
     if (!source) throw new HttpError(400, '공식 다시보기 영상이나 공식 유튜브 영상이 연결된 회의만 대조할 수 있습니다.');
     if (!Object.keys(this.sessionFiles(id)).length) throw new HttpError(400, '대조할 녹음 파일이 없습니다.');
     // A completed result stays in force if a new measurement fails.
@@ -144,7 +145,8 @@ export class VideoAlignment {
     if (this.closed || this.pending || this.config.manualMode || this.scheduler?.states?.().some(state => ['running', 'draining'].includes(state.state))) return;
     for (const record of this.registry.list()) {
       const source = alignmentSource(record);
-      if (record.test_run || !source || !['ready', 'empty', 'correcting'].includes(finalReadiness(this.registry, record.id))) continue;
+      // A merged record keeps one collection clock; audio matching would move only the session that has a recording.
+      if (record.test_run || record.merged_from || !source || !['ready', 'empty', 'correcting'].includes(finalReadiness(this.registry, record.id))) continue;
       const previous = this.review.get('video-alignment:' + record.id);
       const moved = previous && !previous.media_url && source.media_url && Date.now() - (previous.rerun_failed_ms ?? 0) >= 21_600_000;
       if (!moved && (previous?.phase === 'complete' || previous?.phase === 'running' || (previous && Date.now() - previous.updated_ms < 21_600_000))) continue;
