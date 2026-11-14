@@ -14,7 +14,7 @@ export function youtubePhase(value) {
     default: throw new Error('방송 상태를 확인하지 못했습니다. 다음 확인 때 다시 시도합니다.');
   }
 }
-export function probeYouTube(config, stream, signal) {
+function probeYouTube(config, stream, signal) {
   const id = videoId(stream.page_url);
   if (!id || !stream.approved || !config.ytdlp) return Promise.reject(new Error('승인된 YouTube 방송 주소가 필요합니다.'));
   return new Promise((resolve, reject) => {

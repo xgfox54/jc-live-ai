@@ -99,8 +99,9 @@ export class BroadcastMonitor {
         }
       } else if (this.active(id)) phase = 'collecting';
       if (current.broadcast_id && this.registry) {
-        const record = this.registry.get(current.broadcast_id);
-        if (record) this.registry.save({ ...record, phase: this.active(id) ? 'live' : result.phase });
+        // Only a changed phase is saved: each save signals a broadcast change, which rebuilds and republishes its minutes.
+        const record = this.registry.get(current.broadcast_id); const recordPhase = this.active(id) ? 'live' : result.phase;
+        if (record && record.phase !== recordPhase) this.registry.save({ ...record, phase: recordPhase });
       }
       if (['offline', 'ended', 'waiting'].includes(result.phase) && stream.auto_completed_key?.startsWith('hls:'))
         this.store.saveStream({ ...current, auto_completed_key: null });

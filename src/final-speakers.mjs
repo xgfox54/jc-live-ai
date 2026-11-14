@@ -29,13 +29,20 @@ export const SETTLE_MS = 600_000;
 // v6: committee/party-prefixed introductions; unnamed presiding boundaries; mixed speech stays unresolved.
 // v7: plenary presiding officer addressed in the session; introductions and invitations split across two groups;
 //     the greeting just before an introduction; short presiding continuations under the same diarization number.
-export const REVIEW_METHOD = 'grounded-segment-review-v9';
+// v10: plenary questioner calls ("질문해 주시기 바랍니다"), a call cut after the name, the chair's call of the governor.
+// v11: constituency introductions; the rest of a call split into the next group; voice names never contradict rule
+//      evidence or name a member other than the one whose turn it is.
+// v12: a mixed first group of a turn no longer breaks the link to the member's next labeled group.
+export const REVIEW_METHOD = 'grounded-segment-review-v12';
 // Results from these earlier rules stay public until the current rules have reviewed the meeting again.
-export const PREVIOUS_METHODS = ['grounded-segment-review-v7', 'grounded-segment-review-v7-revalidated', 'grounded-segment-review-v6', 'grounded-segment-review-v6-revalidated'];
+// v10 is left out: its voice names could carry one member's name into the next member's speech.
+export const PREVIOUS_METHODS = ['grounded-segment-review-v11', 'grounded-segment-review-v11-revalidated', 'grounded-segment-review-v9', 'grounded-segment-review-v9-revalidated', 'grounded-segment-review-v7', 'grounded-segment-review-v7-revalidated', 'grounded-segment-review-v6', 'grounded-segment-review-v6-revalidated'];
 const EXCHANGE_MS = { floor: 900_000, self: 300_000, reply: 300_000 };
 export function finalReadiness(registry, id, ai = {}, now = Date.now()) {
   const sessions = registry.sessions(id);
-  if (!sessions.length || sessions.some(row => !['stopped', 'interrupted'].includes(row.state) || row.queue_length > 0)) return 'transcribing';
+  // A record that never collected anything has nothing to wait for.
+  if (!sessions.length) return 'empty';
+  if (sessions.some(row => !['stopped', 'interrupted'].includes(row.state) || row.queue_length > 0)) return 'transcribing';
   const record = registry.get(id); const lastEnd = Math.max(...sessions.map(row => row.ended_ms ?? row.last_receive_ms ?? 0));
   const finished = sessions.every(row => row.input_end_reason === 'eof') || record?.completed === true || record?.phase === 'ended'
     || now - lastEnd >= SETTLE_MS;
@@ -109,6 +116,11 @@ export function identityAnchors(rows, people, record) {
   const anchors = []; const chairs = datedChairs.length ? datedChairs : people.filter(person => person.role === 'member'
     && (chairNames ? chairNames.includes(person.name) : person.title === '위원장'));
   const officers = chairNames && !chairNames.length ? presidingOfficers(rows, people) : new Map();
+  // Plenary meetings have no attendance list and the chair calls the governor by title only. The single roster official
+  // titled 도지사 is used when this meeting also says the name with the title ("답변하신 위성곤 도지사").
+  const governors = people.filter(person => person.role === 'official' && /도지사$/.test(person.title ?? ''));
+  const governor = governors.length === 1 && rows.some(row => [...row.corrected_text.matchAll(/(?<![가-힣])([가-힣]{2,4})\s*도지사/g)]
+    .some(match => resolveName(match[1], governors, 'official') === governors[0])) ? governors[0] : null;
   const add = (row, index, person, kind, quote) => {
     if (!anchors.some(item => item.index === index && item.name === person.name && item.kind === kind)) anchors.push({ id: row.segment_id, index, name: person.name, kind, quote: quote.trim() });
   };
@@ -126,6 +138,13 @@ export function identityAnchors(rows, people, record) {
       const person = resolveName(match[1], people);
       if (person?.role === 'member') add(row, index, person, 'self', match[0]);
     }
+    // Plenary questioners introduce themselves after their constituency ("제주시 아라동을 지역구로 둔 양영수 의원입니다",
+    // "이도이동을 선거구 여러분의 비서 한동수 의원입니다").
+    for (const match of joined.matchAll(/(?:지역구|선거구|비례대표)[^.!?]{0,30}?\s(?:(?:국민의힘|[가-힣]+당)\s+)?([가-힣]{2,4})\s*의원입니다(?![가-힣])/g)) {
+      if (!here(match, match[1])) continue;
+      const person = resolveName(match[1], people);
+      if (person?.role === 'member') add(row, index, person, 'self', match[0]);
+    }
     // Official names must have three syllables; shorter matches were recognition errors such as "국장 김치입니다".
     for (const match of joined.matchAll(new RegExp('(' + OFFICIAL_TITLE + ')\\s+([가-힣]{3})입니다', 'g'))) {
       if (!here(match, match[2])) continue;
@@ -138,11 +157,29 @@ export function identityAnchors(rows, people, record) {
     }
     // An invitation that ends in the next group is recorded at that group, so the answer starts after it.
     // The name starts a word and the title is not the start of 위원회, so "교육위원회 김혜지 의원" is not read as 교육 위원.
+    // A request for the written answer to a written question ("서면 질문에 대한 답변서를 … 제출해 주시기") is not a call to speak.
     for (const match of joined.matchAll(new RegExp('(?<![가-힣])([가-힣]{2,4})\\s*' + MEMBER_TITLE + '(?!회)님?[^.!?]{0,35}(?:보충\\s*)?(?:질의|발언|답변|보고)[^.!?]{0,15}(?:해\\s*주시|하여\\s*주시|하시|해\\s*주십|해\\s*주세요)', 'g'))) {
-      if (!here(match, match[1])) continue;
+      if (!here(match, match[1]) || match[0].includes('서면')) continue;
       const person = resolveName(match[1], people); if (!person) continue;
       const at = match.index + match[0].length > text.length ? index + 1 : index;
       add(rows[at], at, person, 'floor', match[0]);
+    }
+    // Plenary questioners are called with 질문 ("발언대로 나오셔서 1문 1답 방식으로 질문해 주시기 바랍니다", "보충질문 하시겠습니까").
+    // Only an explicit request counts: "나중에 강봉직 위원님 질문하시겠지만" in an answer is a mention.
+    for (const match of joined.matchAll(new RegExp('(?<![가-힣])([가-힣]{2,4})\\s*' + MEMBER_TITLE + '(?!회)님?[^.!?]{0,35}질문\\s*(?:해\\s*주시|하여\\s*주시|해\\s*주십|해\\s*주세요|하시겠습니까|하시기\\s*바랍니다|하십시오)', 'g'))) {
+      if (!here(match, match[1]) || match[0].includes('서면')) continue;
+      const person = resolveName(match[1], people); if (!person) continue;
+      const at = match.index + match[0].length > text.length ? index + 1 : index;
+      add(rows[at], at, person, 'floor', match[0]);
+    }
+    // Recognition sometimes keeps only "순서에 따라 한동수 의원." of a plenary call before the member starts speaking.
+    for (const match of text.matchAll(/순서에\s*따라\s+([가-힣]{2,4})\s*의원님?\s*\./g)) {
+      const person = resolveName(match[1], people); if (person?.role === 'member') add(row, index, person, 'floor', match[0]);
+    }
+    if (governor) for (const match of joined.matchAll(/(?<![가-힣])도지사님?께서는?[^.!?]{0,40}나오셔서[^.!?]{0,20}답변해\s*주시/g)) {
+      if (match.index >= text.length) continue;
+      const at = match.index + match[0].length > text.length ? index + 1 : index;
+      add(rows[at], at, governor, 'floor', match[0]);
     }
     // Only explicit requests identify an answerer. A job title mentioned during a report does not.
     for (const match of text.matchAll(/(?<![가-힣])([가-힣]{0,30}(?:국장|실장|과장|원장|본부장|시장|교육감))님?[^.!?]{0,50}(?:답변해\s*주시기|답변해\s*주세요|답변\s*부탁)/g)) {
@@ -175,15 +212,38 @@ export function dominantSpeaker(row) {
   const [id, ms] = [...time.entries()].sort((a, b) => b[1] - a[1])[0] ?? [];
   return id && ms >= 1000 && ms / total >= 0.7 ? id : null;
 }
-// A floor invitation is often followed by a short unlabeled acknowledgement before the invited member speaks.
+// The rest of a presiding call that recognition put into the next group ("발언대로 나오셔서 일괄 질문하여 주시기 바랍니다.").
+const CALL_REST = /^[^.!?]{0,40}(?:나오셔서|주시기\s*바랍니다|하십시오)/;
+// A floor invitation is often followed by a short unlabeled acknowledgement, or by the rest of the call from the
+// presiding seat, before the invited member speaks.
 function floorStart(anchor, rows) {
+  const caller = dominantSpeaker(rows[anchor.index]);
   let start = anchor.index + 1;
   for (let skipped = 0; skipped < 2; skipped++) {
-    const row = rows[start];
-    if (!row || dominantSpeaker(row) || row.corrected_text.replace(/\s/g, '').length > 8) break;
+    const row = rows[start]; if (!row) break;
+    const speaker = dominantSpeaker(row);
+    const acknowledgement = !speaker && row.corrected_text.replace(/\s/g, '').length <= 8;
+    const rest = (!speaker || speaker === caller) && CALL_REST.test(row.corrected_text) && !GREETING.test(row.corrected_text);
+    if (!acknowledgement && !rest) break;
     start++;
   }
   return start;
+}
+// The live diarization number that links later turns to an exchange. When the first group of the turn is unlabeled or
+// mixed (a greeting over the chair or applause), the next labeled group within 20 seconds is used, unless it has the
+// caller's number, mixed speech or evidence for someone else. The mixed group itself stays unresolved.
+function linkedSpeaker(anchor, start, rows, anchors) {
+  const first = rows[start]; const own = first.speaker_state === 'multiple' ? null : dominantSpeaker(first);
+  if (own) return { speaker: own, scope: first.speaker_scope };
+  const caller = ['floor', 'reply'].includes(anchor.kind) ? dominantSpeaker(rows[anchor.index]) : null;
+  for (let i = start + 1; i <= start + 2 && i < rows.length; i++) {
+    const row = rows[i];
+    if (row.session_id !== first.session_id || row.timeline_epoch !== first.timeline_epoch || row.start_ms - first.start_ms > 20_000
+      || ['pending', 'multiple'].includes(row.speaker_state) || anchors.some(other => other.index === i && other.name !== anchor.name)) return null;
+    const speaker = dominantSpeaker(row);
+    if (speaker) return speaker === caller ? null : { speaker, scope: row.speaker_scope };
+  }
+  return null;
 }
 // The presiding officer often finishes a procedural sentence in a neighbouring group. A neighbour counts only while the
 // same diarization number speaks without interruption, within four groups and 60 seconds, never across another
@@ -216,21 +276,42 @@ function eligibleAnchor(anchor, targetIndex, rows, anchors = []) {
   const start = ['floor', 'reply'].includes(anchor.kind) ? floorStart(anchor, rows) : anchor.index;
   const first = rows[start];
   if (!first || first.session_id !== from.session_id || first.timeline_epoch !== from.timeline_epoch
-    || ['pending', 'multiple'].includes(first.speaker_state) || targetIndex < start
+    || first.speaker_state === 'pending' || targetIndex < start
     || target.start_ms < first.start_ms || target.start_ms - first.start_ms > EXCHANGE_MS[anchor.kind]) return false;
   if (targetIndex === start) return first.speaker_state !== 'pending' && (first.speaker_state !== 'multiple' || Boolean(dominantSpeaker(first)));
   // Later turns of the same exchange: the live diarization number of the first answering group identifies the person.
-  const speaker = dominantSpeaker(first);
-  return Boolean(speaker) && dominantSpeaker(target) === speaker && target.speaker_scope === first.speaker_scope;
+  const link = linkedSpeaker(anchor, start, rows, anchors);
+  return Boolean(link) && dominantSpeaker(target) === link.speaker && target.speaker_scope === link.scope;
 }
 // An exchange ends at the next floor invitation or presiding phrase, or when another person introduces themselves
 // under the same diarization number (numbers are reused for different people within a meeting).
 function exchangeEnded(anchor, targetIndex, rows, anchors) {
-  const start = rows[['floor', 'reply'].includes(anchor.kind) ? floorStart(anchor, rows) : anchor.index];
+  const startIndex = ['floor', 'reply'].includes(anchor.kind) ? floorStart(anchor, rows) : anchor.index; const start = rows[startIndex];
+  const link = start ? linkedSpeaker(anchor, startIndex, rows, anchors) : null;
+  const speaker = link ? link.speaker : start && dominantSpeaker(start); const scope = link ? link.scope : start?.speaker_scope;
   return anchors.some(other => other.name !== anchor.name && other.index > anchor.index && other.index <= targetIndex
     && rows[other.index].session_id === rows[targetIndex].session_id
-    && (other.kind === 'floor' || other.kind === 'chair' || other.kind === 'stop' || anchor.kind === 'reply' && other.kind === 'reply' || (['self', 'boundary'].includes(other.kind) && start && dominantSpeaker(rows[other.index]) === dominantSpeaker(start)
-      && rows[other.index].speaker_scope === start?.speaker_scope)));
+    && (other.kind === 'floor' || other.kind === 'chair' || other.kind === 'stop' || anchor.kind === 'reply' && other.kind === 'reply' || (['self', 'boundary'].includes(other.kind) && start && dominantSpeaker(rows[other.index]) === speaker
+      && rows[other.index].speaker_scope === scope)));
+}
+// Whose turn each group belongs to: the member last called to the floor or introduced, or the official called to answer.
+// A recess, adjournment or opening ends the turn, and so does a break of over two minutes between captures.
+const TURN_END = /(?:정회|산회)를\s*선포|(?:개의|개회|속개)하겠습니다/;
+export function turnOwners(rows, anchors, people, sessions = []) {
+  const started = new Map(sessions.map(session => [session.session_id, session.started_ms ?? 0]));
+  const roles = new Map(people.map(person => [person.name, person.role]));
+  let owner = null;
+  return rows.map((row, index) => {
+    const previous = rows[index - 1];
+    if (previous && (previous.session_id !== row.session_id || previous.timeline_epoch !== row.timeline_epoch)) {
+      const gap = (started.get(row.session_id) ?? 0) + row.start_ms - (started.get(previous.session_id) ?? 0) - previous.end_ms;
+      if (!(gap >= 0 && gap <= 120_000)) owner = null;
+    }
+    if (TURN_END.test(row.corrected_text)) owner = null;
+    for (const anchor of anchors) if (anchor.index === index
+      && (anchor.kind === 'floor' && roles.has(anchor.name) || anchor.kind === 'self' && roles.get(anchor.name) === 'member')) owner = anchor.name;
+    return owner;
+  });
 }
 export function validateAssignments(raw, batch, rows, people, anchors) {
   const response = typeof raw === 'string' ? parse(raw) : raw;
@@ -372,9 +453,21 @@ export class FinalSpeakerReview {
       const enrolled = decisionOverlay({ assignments }, decisions, rows)?.assignments ?? assignments;
       const blocked = new Set(Object.entries(decisions?.entries ?? {}).filter(([, item]) => item.identity === null).map(([key]) => key));
       const voices = voiceCandidates(rows, acoustic.features, enrolled);
-      for (const [key, identity] of Object.entries(voices)) if (!assignments[key] && !blocked.has(key)) assignments[key] = identity;
       const offlineRows = acousticOverlay(rows, acoustic.features);
       const offlinePeople = structuredClone(people); const offlineAnchors = identityAnchors(offlineRows, offlinePeople, record);
+      // Voice similarity is the weakest evidence. It never names a group that rule evidence gives to other people, nor a
+      // member other than the one whose turn it is; officials answer and the presiding officer speaks in any turn.
+      const owners = turnOwners(rows, anchors, people, this.registry.sessions(id));
+      const presiders = new Set(anchors.filter(anchor => anchor.kind === 'chair').map(anchor => anchor.name));
+      let voice_assigned = 0;
+      rows.forEach((row, index) => {
+        const identity = voices[row.segment_id];
+        if (!identity || assignments[row.segment_id] || blocked.has(row.segment_id)) return;
+        const named = new Set([...candidatesFor(index, rows, anchors), ...candidatesFor(index, offlineRows, offlineAnchors)].map(candidate => candidate.name));
+        if (named.size && !named.has(identity.name)) return;
+        if (owners[index] && identity.role === 'member' && identity.name !== owners[index] && !presiders.has(identity.name)) return;
+        assignments[row.segment_id] = identity; voice_assigned++;
+      });
       // These disagreements are administrator review candidates, never replacement identities.
       const acoustic_conflicts = offlineRows.flatMap((row, index) => {
         const names = candidatesFor(index, offlineRows, offlineAnchors).map(candidate => candidate.name);
@@ -383,7 +476,7 @@ export class FinalSpeakerReview {
       });
       const assigned = Object.values(assignments).filter(Boolean).length;
       const result = { ...job, phase: assigned === rows.length ? 'complete' : 'partial', updated_ms: Date.now(),
-        assigned, unresolved: rows.length - assigned, assignments, text_assignments, voice_assigned: Object.keys(voices).filter(key => !text_assignments[key] && !blocked.has(key)).length,
+        assigned, unresolved: rows.length - assigned, assignments, text_assignments, voice_assigned,
         people, people_hash, acoustic_conflicts, method: REVIEW_METHOD };
       if (previous) this.review.save('final-speakers-history:' + id + ':' + job.started_ms, previous);
       this.review.save('final-speakers:' + id, result); this.review.save('speaker-job:' + id, { ...job, phase: result.phase, updated_ms: result.updated_ms });
@@ -397,11 +490,15 @@ export class FinalSpeakerReview {
   auto() {
     if (this.closed || this.pending || this.ai.pending || this.ai.externalBusy || this.ai.config?.manualMode || !this.ai.settings().automatic) return;
     for (const record of this.registry.list()) {
-      // Obsolete evidence methods are hidden by the registry until a current review replaces them.
-      const final = this.registry.finalSpeakers(record.id);
-      if (record.test_run || finalReadiness(this.registry, record.id, this.ai) !== 'ready'
-        || final?.method === REVIEW_METHOD && final.review_decision_version === (this.review.get('speaker-decisions:' + record.id)?.version ?? 0)
-          && final.people_hash === hash(peopleCandidates(record, this.directory, this.review.get('speaker-roster:' + record.id)?.people))) continue;
+      // Obsolete evidence methods are hidden by the registry until a current review replaces them. A review is current under
+      // the rules finalSpeakers() applies (method, phase, source guard) with unchanged decisions and roster. Only those fields
+      // are read: parsing every stored result and its sentences held the event loop for up to 2 seconds per pass (2026-11-14).
+      const final = this.registry.finalSpeakersHead(record.id);
+      if (record.test_run || final?.method === REVIEW_METHOD && ['complete', 'partial'].includes(final.phase)
+          && final.source_guard === finalSourceGuard(this.registry, record.id)
+          && final.decision_version === (this.review.get('speaker-decisions:' + record.id)?.version ?? 0)
+          && final.people_hash === hash(peopleCandidates(record, this.directory, this.review.get('speaker-roster:' + record.id)?.people))
+        || finalReadiness(this.registry, record.id, this.ai) !== 'ready') continue;
       const job = this.review.get('speaker-job:' + record.id);
       // Paused jobs wait for the administrator; failed jobs retry at most every 30 minutes.
       if (job?.method === REVIEW_METHOD && job.source_guard === finalSourceGuard(this.registry, record.id)

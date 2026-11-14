@@ -1,6 +1,6 @@
 import { committees, committeeForChannel, CHANNELS, GENERAL_CHANNEL } from '../public/committees.mjs';
 
-const normalize = value => String(value ?? '').replace(/[\s·.ㆍ]/g, '');
+export const normalize = value => String(value ?? '').replace(/[\s·.ㆍ]/g, '');
 // Official broadcasts without exactly one committee match (plenary sessions, joint meetings) go to channel 0.
 export function matchCommittee(record) {
   const exact = committees.find(c => normalize(c.name) === normalize(record.committee));

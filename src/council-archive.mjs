@@ -1,14 +1,14 @@
-import { councilHtml, councilMetadata, plain } from './official-directory.mjs';
+import { councilHtml, councilMetadata, plain, withoutScripts } from './official-directory.mjs';
+import { normalize } from './committees.mjs';
+import { seoulDate } from './council-schedule.mjs';
 import { parseCouncilPlayer, councilReplay } from './council.mjs';
 import { committeeForChannel } from '../public/committees.mjs';
 
 // Fills meeting information for recordings registered without the official detail page (for example from the YouTube live list)
 // using the council "다시보기" archive, which lists every finished broadcast with its date, round, type and committee.
 export const ARCHIVE_URL = 'https://www.council.jeju.kr/broadcast/broad.do';
-const normalize = value => String(value ?? '').replace(/[\s·.ㆍ]/g, '');
-const seoulDate = ms => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(ms);
 export function parseCouncilArchive(html) {
-  const clean = html.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>/gi, '');
+  const clean = withoutScripts(html);
   const rows = [];
   for (const row of clean.match(/<tr>[\s\S]*?<\/tr>/gi) ?? []) {
     const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(match => plain(match[1]));
@@ -44,10 +44,12 @@ export class ArchiveEnricher {
   async match(record, rows, page, signal) {
     const channel = committeeForChannel(record.stream_id);
     const committee = record.committee || (channel?.general ? '' : channel?.name) || '';
+    // A hearing adds its subject in parentheses ("문화관광체육위원회 (제주관광공사 사장 예정자 인사청문회)"); the archive lists the committee.
+    const names = new Set([committee, committee.replace(/\s*\([^)]*\)\s*$/, '')].filter(Boolean).map(normalize));
     const started = this.registry.sessions(record.id).map(session => session.started_ms).filter(Number.isFinite).sort((a, b) => a - b)[0];
     const date = started ? seoulDate(started) : null;
     let best = null;
-    for (const row of rows.filter(row => row.date === date && normalize(row.title) === normalize(committee))) {
+    for (const row of rows.filter(row => row.date === date && names.has(normalize(row.title)))) {
       if (signal?.aborted) break;
       try {
         const html = await page(row.page_url); const metadata = councilMetadata(html);

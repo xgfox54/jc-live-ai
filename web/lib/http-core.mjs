@@ -8,7 +8,7 @@ import { selectSnapshotText, snapshotEtag, matchesEtag } from './snapshot-select
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
 // Public viewer data only: Vercel's CDN shares a response for one second and collapses simultaneous misses
 // into one function call. Browsers still revalidate every poll; errors and 304 replies are never shared.
-export const edgeCache = { 'Vercel-CDN-Cache-Control': 'max-age=1, stale-while-revalidate=2' };
+const edgeCache = { 'Vercel-CDN-Cache-Control': 'max-age=1, stale-while-revalidate=2' };
 const json = (value, status = 200, extra = {}) => Response.json(value, { status, headers: { ...headers, ...extra } });
 function acceptsGzip(value = '') {
   return value.split(',').some(part => { const [name, ...params] = part.trim().split(';');
@@ -22,6 +22,8 @@ function deliver(request, value, responseHeaders) {
     Vary: 'Accept-Encoding, Origin', ...(gzip ? { 'Content-Encoding': 'gzip' } : {}) } });
 }
 const publicJson = (request, value) => deliver(request, JSON.stringify(value), { 'Content-Type': 'application/json; charset=utf-8' });
+const storedGzip = (request, body) => new Response(body, { headers: { ...headers, ...(!request.headers.has('authorization') && !request.headers.has('cookie') ? edgeCache : {}),
+  'Content-Type': 'application/json; charset=utf-8', Vary: 'Accept-Encoding, Origin', 'Content-Encoding': 'gzip' } });
 const fail = (status, message) => { throw new CloudError(status, message); };
 function sameOrigin(request) {
   const origin = request.headers.get('origin');
@@ -153,9 +155,17 @@ export async function viewerRequest(request, { storage, runtimeCheck = () => {} 
     }
     const match = route.match(/^minutes\/([a-f0-9]{64})(?:\.(md|json))?$/);
     if (!match) fail(404, 'Route not found');
-    const stored = await readViewer(storage, 'minutes/' + match[1] + '.json');
+    const path = 'minutes/' + match[1] + '.json'; const gzip = acceptsGzip(request.headers.get('accept-encoding') ?? '');
+    // A store that keeps the compressed public document (Cloudflare D1) answers without decoding the archive.
+    if (!match[2] && gzip && storage.readView) { const body = await storage.readView(path); if (body) return storedGzip(request, body); }
+    const stored = await readViewer(storage, path);
     if (!stored) fail(404, '회의록을 찾지 못했습니다.');
-    const value = viewerModel(storage, 'minutes/' + match[1] + '.json', stored).document;
+    const value = viewerModel(storage, path, stored).document;
+    if (!match[2] && gzip && storage.saveView && stored.etag) {
+      // An archive stored before its view existed gets the view at its first read.
+      const body = gzipSync(Buffer.from(JSON.stringify(value)));
+      await storage.saveView(path, stored.etag, body).catch(() => {}); return storedGzip(request, body);
+    }
     if (!match[2]) return publicJson(request, value);
     return deliver(request, match[2] === 'md' ? value.markdown : JSON.stringify(value, null, 2), {
       'Content-Type': match[2] === 'md' ? 'text/markdown; charset=utf-8' : 'application/json; charset=utf-8',

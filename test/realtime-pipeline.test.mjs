@@ -213,20 +213,18 @@ test('refinement keeps an administrator edit and does not publish a changed amou
   assert.equal(f.read(flagged.segment_id).corrected_text, '예산은 100원입니다.');
   assert.equal(f.live.metrics.refine_applied, 0);
 });
-test('refinement waits for the next sentence and receives both recognizer results', async t => {
-  // Given a segment with a second recognizer result, followed by the next sentence
+test('refinement waits for the next sentence and receives it', async t => {
+  // Given a segment followed by the next sentence
   const f = refineFixture(t, { fast: text => text, refiner: text => text + '.' }, { nextWaitMs: 5000 });
-  const first = f.add('예산이 올', { alt_text: '예산이 올라' });
+  const first = f.add('예산이 올');
   await until(() => f.read(first.segment_id).corrected_text !== null);
   assert.equal(f.requests.filter(r => r.model === 'refiner').length, 0);
   // When the next sentence arrives
   f.add('라갔습니다');
   await until(() => f.live.metrics.refine_applied >= 1);
-  // Then the refinement request carried the next sentence and the alternative recognizer text
+  // Then the refinement request carried the next sentence
   const refine = f.requests.find(r => r.model === 'refiner');
   assert.equal(refine.input.next, '라갔습니다');
-  assert.equal(refine.input.segments[0].alt, '예산이 올라');
-  assert.equal(f.requests.find(r => r.model === 'fast').input.segments[0].alt, undefined);
 });
 
 

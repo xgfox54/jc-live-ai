@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { CLOUDFLARE_SITE } from './sites.mjs';
 
 export function playlistResume(playlist, videoMs) {
   const sequence = Number(playlist.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/)?.[1]);
@@ -29,14 +30,14 @@ export function videoOffset(timeline) {
 export class Handoff {
   constructor({ store, registry, scheduler, config }) {
     Object.assign(this, { store, registry, scheduler, config });
-    this.sent = new Map(); this.busy = null; this.closed = false;
+    this.sent = new Map(); this.busy = null; this.closed = false; this.stopping = new AbortController();
     if (config.handoffFile) {
       this.settings = JSON.parse(readFileSync(config.handoffFile, 'utf8'));
       if (this.settings.secretFile) {
         const value = readFileSync(this.settings.secretFile, 'utf8').trim();
         this.settings.secret = this.settings.secretJson ? JSON.parse(value).secret : value;
       }
-      if (!/^https:\/\/jc-live\.xgfox54\.workers\.dev\/api\/handoff$/.test(this.settings.endpoint) ||
+      if (this.settings.endpoint !== CLOUDFLARE_SITE + '/api/handoff' ||
         !/^[a-f0-9]{64}$/.test(this.settings.secret)) throw new Error('Invalid handoff configuration');
       this.timer = setInterval(() => this.flush().catch(error => {
         console.error(JSON.stringify({ event: 'handoff.sync_failed', error: error.message }));
@@ -47,7 +48,7 @@ export class Handoff {
     const url = this.settings.endpoint + '?video=' + encodeURIComponent(video) + (after ? '&after=' + encodeURIComponent(after) : '');
     const response = await fetch(url, { method: data ? 'POST' : 'GET',
       headers: { 'X-JC-Handoff-Key': this.settings.secret, ...(data ? { 'Content-Type': 'application/json' } : {}) },
-      ...(data ? { body: JSON.stringify(data) } : {}), signal: AbortSignal.timeout(30000) });
+      ...(data ? { body: JSON.stringify(data) } : {}), signal: AbortSignal.any([AbortSignal.timeout(30000), this.stopping.signal]) });
     if (!response.ok) throw new Error('Handoff HTTP ' + response.status);
     return response.json();
   }
@@ -98,5 +99,11 @@ export class Handoff {
         broadcast_id: stream.broadcast_id, video_ms: position, processor: this.settings.processor });
     }
   }
-  async close() { clearInterval(this.timer); await this.flush(); this.closed = true; }
+  // The last progress is still sent at shutdown, but for at most 10 seconds (each request alone could wait 30 seconds).
+  async close() {
+    clearInterval(this.timer); const limit = setTimeout(() => this.stopping.abort(), 10_000);
+    try { await this.flush(); }
+    catch (error) { console.error(JSON.stringify({ event: 'handoff.final_sync_failed', error: error.message })); }
+    finally { clearTimeout(limit); this.closed = true; }
+  }
 }

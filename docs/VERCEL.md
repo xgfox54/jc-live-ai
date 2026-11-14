@@ -2,6 +2,8 @@
 
 공식 명칭: JC-LIVE. 공개 주소: https://jc-live-ykh1.vercel.app/ . Vercel 프로젝트: `ykh1/jc-live`.
 
+현재 상태(2026-11-14): 2026-11-04 게시 시도부터 Vercel이 요청을 거부(suspended)해 게시 중지. 게시 차단을 해제하면 Vercel이 거부한 대기 요청(11-04 회의록·목록)은 삭제되고 다음 게시 때 현재 자료로 다시 만들어 전송([게시 차단 점검·재개](DEPLOYMENT-RUNBOOK.md)). 재개 전 Vercel 사용량 확인 필요.
+
 ## 실행 위치
 
 | 위치 | 담당 기능 |

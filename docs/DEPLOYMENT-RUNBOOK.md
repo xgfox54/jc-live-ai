@@ -55,7 +55,7 @@ Node 런타임은 공식 압축파일의 고정 SHA-256을 매번 검증. warm c
 & ./bin/node/node.exe scripts/publication-state.mjs --db data/live.sqlite --settings data/cloud-sync.secret --resume
 ```
 
-원격 요청은 실행하지 않으며 대기 항목·기존 요청 ID·원본 기록 보존. 새 게시자 시작은 별도 승인 범위. `force`로는 차단 해제 불가.
+원격 요청은 실행하지 않음. 서버가 거부한 대기 요청(인증·한도·정지·충돌·형식·크기 오류)은 삭제하고 다음 게시 때 현재 내용으로 새로 만듦. 정지 전에 쌓인 예전 자료는 전송하지 않음. 응답을 받지 못한 요청은 같은 요청 ID로 재전송. 원본 기록 보존. 새 게시자 시작은 별도 승인 범위. `force`로는 차단 해제 불가.
 
 공급자 집계 기간 변경을 실제로 확인했을 때만 로컬 비밀 설정 파일의 `budget.period_id`와 `advanced_used`를 수정. 이어 `--review-budget-period --resume` 실행. 같은 기간 재설정은 거부. 달력상 다음 달이라는 이유로 카운터 초기화 금지. 다른 프로젝트·이전 시도를 포함한 실제 사용량을 기준값으로 반영.
 

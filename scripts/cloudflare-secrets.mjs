@@ -3,10 +3,11 @@ import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { CLOUDFLARE_SITE } from '../src/sites.mjs';
 
 const config = JSON.parse(readFileSync('config.local.json', 'utf8'));
 const target = JSON.parse(readFileSync('data/cloudflare-sync.secret', 'utf8'));
-if (target.endpoint !== 'https://jc-live.xgfox54.workers.dev/api/sync') throw new Error('Unexpected archive endpoint');
+if (target.endpoint !== CLOUDFLARE_SITE + '/api/sync') throw new Error('Unexpected archive endpoint');
 const db = new DatabaseSync(config.database, { readOnly: true });
 const row = db.prepare('SELECT document FROM cloud_control WHERE endpoint=?').get(createHash('sha256').update(target.endpoint).digest('hex'));
 db.close();

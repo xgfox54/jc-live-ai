@@ -1,12 +1,11 @@
 import './display.mjs';
 import { retryWithJitter } from './polling.mjs';
 import { speakerText, speakerColor, speakerKey } from './speakers.mjs';
-import { newestMeetingsFirst, engineFromStatus, showEngineStatus } from './client-state.mjs';
+import { newestMeetingsFirst, engineFromStatus, showEngineStatus, clockTime as time } from './client-state.mjs';
 import { createLiveTransport } from './live-transport.mjs';
 const $ = selector => document.querySelector(selector);
 let selected = ''; let request = 0; let view = 'chapter'; let current = null; let replay = null;
 const element = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
-const time = ms => { const s = Math.floor(ms / 1000); return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(n => String(n).padStart(2, '0')).join(':'); };
 const wide = window.matchMedia('(min-width: 1280px)');
 const get = path => retryWithJitter(async () => {
   const response = await fetch(path);

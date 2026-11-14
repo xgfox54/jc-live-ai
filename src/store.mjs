@@ -21,14 +21,17 @@ export class Store extends EventEmitter {
       CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, created_ms INTEGER NOT NULL, document TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS corrections(id INTEGER PRIMARY KEY, segment_id TEXT NOT NULL,
         version INTEGER NOT NULL, document TEXT NOT NULL);`);
-    this.db.exec(`CREATE INDEX IF NOT EXISTS correction_origin ON corrections(segment_id,json_extract(document,'$.origin'));
-      UPDATE segments SET document=json_set(document,'$.ai_corrected',json(CASE WHEN EXISTS
+    this.db.exec("CREATE INDEX IF NOT EXISTS correction_origin ON corrections(segment_id,json_extract(document,'$.origin'));");
+    // One-time fill of ai_corrected for data written before the flag existed. user_version 1 records that it ran, so later
+    // starts skip two full-table scans; a database without it (an older backup) still gets the fill.
+    if (this.db.prepare('PRAGMA user_version').get().user_version < 1) this.db.exec(`UPDATE segments SET document=json_set(document,'$.ai_corrected',json(CASE WHEN EXISTS
         (SELECT 1 FROM corrections c WHERE c.segment_id=segments.id AND json_extract(c.document,'$.origin')='ai')
         THEN 'true' ELSE 'false' END)) WHERE json_type(document,'$.ai_corrected') IS NULL;
       UPDATE events SET payload=json_set(payload,'$.ai_corrected',json('true')) WHERE kind='segment'
         AND json_type(payload,'$.ai_corrected') IS NULL AND EXISTS
         (SELECT 1 FROM corrections c WHERE c.segment_id=json_extract(events.payload,'$.segment_id')
-          AND c.version<=json_extract(events.payload,'$.version') AND json_extract(c.document,'$.origin')='ai');`);
+          AND c.version<=json_extract(events.payload,'$.version') AND json_extract(c.document,'$.origin')='ai');
+      PRAGMA user_version=1;`);
     this.db.exec("CREATE INDEX IF NOT EXISTS segment_published_stream ON segments(stream_id) WHERE json_extract(document,'$.ai_corrected')=1 "
       + "AND trim(coalesce(json_extract(document,'$.corrected_text'),''))<>'';");
     this.db.exec("CREATE INDEX IF NOT EXISTS segment_live_preview ON segments(stream_id,json_extract(document,'$.preview_updated_ms')) WHERE json_extract(document,'$.live_preview')=1");
@@ -168,7 +171,8 @@ export class Store extends EventEmitter {
   snapshot(ids, broadcasts = {}, published = false) {
     const pages = ids.map(stream => ({ stream, ...this.segments({ stream, broadcast: broadcasts[stream], published }) }));
     const gaps = ids.flatMap(stream => {
-      const row = this.db.prepare("SELECT payload FROM events WHERE stream_id=? AND kind='gap' ORDER BY id DESC LIMIT 1").get(stream);
+      // "+id" lets SQLite use the partial gap index (created by BroadcastRegistry) instead of reading every event from the end.
+      const row = this.db.prepare("SELECT payload FROM events WHERE stream_id=? AND kind='gap' ORDER BY +id DESC LIMIT 1").get(stream);
       return row ? [JSON.parse(row.payload)] : [];
     });
     return { event_id: this.cursor(), streams: this.streams().filter(s => ids.includes(s.stream_id)),

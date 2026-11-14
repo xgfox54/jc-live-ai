@@ -79,11 +79,14 @@ export function voiceCandidates(rows, features, assignments, { threshold = .8, m
 const digest = async file => { const h = createHash('sha256'); for await (const part of createReadStream(file)) h.update(part); return h.digest('hex'); };
 const busy = scheduler => scheduler?.states().some(s => ['running', 'draining', 'degraded', 'reconnecting'].includes(s.state));
 
+// The speaker-review environment (worker/speaker-review-requirements.txt) also provides numpy for the video alignment script.
+export const speakerReviewPython = config =>
+  resolve(config.speakerReviewPython ?? resolve(config.speakerReviewDirectory ?? 'bin/speaker-review') + '/venv/Scripts/python.exe');
 export class SpeakerAcoustics {
   constructor({ registry, review, audioReview, config, scheduler }) { Object.assign(this, { registry, review, audioReview, config, scheduler }); }
   paths() {
     const root = resolve(this.config.speakerReviewDirectory ?? 'bin/speaker-review');
-    return { python: resolve(this.config.speakerReviewPython ?? root + '/venv/Scripts/python.exe'),
+    return { python: speakerReviewPython(this.config),
       segmentation: resolve(root, 'sherpa-onnx-pyannote-segmentation-3-0/model.onnx'), embedding: resolve(root, 'embedding.onnx') };
   }
   async prepare(id, rows, sourceHash, signal, progress = () => {}) {

@@ -9,7 +9,6 @@ import { FileInputs } from './files.mjs';
 import { createService } from './server.mjs';
 import { initializeCommitteeChannels } from './committees.mjs';
 import { LiveDiarization } from './live-diarization.mjs';
-import { AltEngine } from './alt-engine.mjs';
 import { AcousticVad } from './acoustic-vad.mjs';
 import { assertSupportedRuntime } from '../web/lib/runtime.mjs';
 
@@ -64,7 +63,6 @@ scheduler.exclusive = true;
 if (config.liveDiarization === true) {
   scheduler.diarizer = new LiveDiarization(store, config); scheduler.metrics.diarization = scheduler.diarizer.metrics;
 }
-if (config.altRecognizer === true) scheduler.alt = new AltEngine(config);
 if (config.acousticVad) scheduler.vad = new AcousticVad(config.acousticVad);
 const inputs = new FileInputs(scheduler, config);
 const service = createService({ store, scheduler, inputs, config, configPath, shutdown: () => stop().catch(error => {
@@ -84,7 +82,7 @@ async function stop() {
   clearInterval(standbyTimer);
   // New collection stops first, so no audio is taken after a handover while the other services close.
   await service.monitor.close(); await service.discovery.close(); await inputs.close();
-  await service.finalSpeakers.close(); await service.videoAlignment.close(); await service.discovery.close(); await service.schedule.close(); await service.speakerDirectory.close(); await service.monitor.close(); await service.review.close(); await service.audioReview.close(); await service.modelManager.close(); await service.liveCorrection.close(); await service.correctionAI.close(); await inputs.close(); await scheduler.close();
+  await service.retention.close(); await service.finalSpeakers.close(); await service.videoAlignment.close(); await service.schedule.close(); await service.speakerDirectory.close(); await service.review.close(); await service.audioReview.close(); await service.modelManager.close(); await service.liveCorrection.close(); await service.correctionAI.close(); await inputs.close(); await scheduler.close();
   service.minutes.flush(); await service.cloudSync.flush({ force: true });
   if (service.server.listening) await service.close(); else { await service.desktopLive?.close(); service.minutes.close(); } store.close();
 }
@@ -98,16 +96,15 @@ try {
   await engine.start();
   await scheduler.vad?.start();
   await scheduler.diarizer?.start();
-  await scheduler.alt?.start();
   scheduler.exclusive = false; scheduler.pump();
   if (!stopping) {
     service.server.listen(config.port ?? 4320, '127.0.0.1'); await once(service.server, 'listening');
     await service.desktopLive?.start();
     service.schedule.start();
     if (!config.manualMode) service.speakerDirectory.start(); else await service.speakerDirectory.load();
-    if (!config.manualMode) { service.monitor.start(); service.discovery.start(); service.cloudSync.start(); }
+    if (!config.manualMode) { service.monitor.start(); service.discovery.start(); service.cloudSync.start(); service.retention.start(); }
     process.stdout.write(JSON.stringify({ event: 'service.ready', url: 'http://127.0.0.1:' + service.server.address().port,
-      engine: engine.metadata, diarization: scheduler.diarizer?.engine.metadata ?? null, alt: scheduler.alt?.metadata ?? null, manual: config.manualMode === true }) + '\n');
+      engine: engine.metadata, diarization: scheduler.diarizer?.engine.metadata ?? null, manual: config.manualMode === true }) + '\n');
   }
 } catch (error) {
   await stop(); process.stderr.write(error.message + '\n'); process.exitCode = 1;

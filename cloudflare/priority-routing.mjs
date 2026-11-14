@@ -15,7 +15,7 @@ const validKey = (received, expected) => /^[a-f0-9]{64}$/.test(received ?? '') &
   && expected.length === 64 && timingSafeEqual(Buffer.from(received), Buffer.from(expected));
 
 // true: the desktop engine answers. false: the desktop is unreachable or its engine is stopped. null: unknown.
-export async function desktopAvailable(env, origin) {
+async function desktopAvailable(env, origin) {
   if (!env.DESKTOP_LIVE) return null;
   try {
     const response = await env.DESKTOP_LIVE.fetch(new Request(DESKTOP + '/api/viewer/snapshot?text_streams=', {
@@ -86,7 +86,7 @@ export function protectedArchive(storage) {
 // The desktop publishes its own minutes index, which does not know the restored meeting; viewers see both
 // until the merged desktop record is published.
 export function archiveViewer(storage, summarize) {
-  return { async read(path) {
+  return { readView: path => storage.readView(path), saveView: (path, etag, body) => storage.saveView(path, etag, body), async read(path) {
     const row = await storage.read(path);
     if (path !== 'site.json' || !row) return row;
     if (row.value.minutes_index.some(item => item.id === MERGED_MINUTES_ID && item.session_count >= 3)) return row;

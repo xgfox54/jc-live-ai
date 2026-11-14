@@ -41,6 +41,7 @@ Windows x64, CPython 3.14, uv 필요. 별도 Python 환경이며 Whisper·Nemotr
 | `speakerReview` | `true` |
 | `speakerReviewPython` | `bin/speaker-review/venv/Scripts/python.exe` |
 | `speakerReviewDirectory` | `bin/speaker-review` |
+| `alignmentPython` | 미설정. `speakerReviewPython`이 있으면 그 Python, 없으면 `diarizationPython` 사용. 영상 시간 대조 스크립트에 numpy 필요 |
 | 실행 장치·스레드 | CPU, 2개 |
 | 화자 그룹 수 | 자동 결정 |
 | 처리 상한 | 세션당 6시간, 작업당 2시간 |

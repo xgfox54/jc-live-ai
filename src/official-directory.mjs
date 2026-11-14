@@ -3,6 +3,8 @@ import { councilPage, parseCouncilPlayer } from './council.mjs';
 
 export const CHANNEL = 'UChRn5ybNcNv55_x9QGW-xXg';
 export const DIRECTORY_URLS = ['https://www.council.jeju.kr/broadcast/index.do', 'https://www.council.jeju.kr/broadcast/schedule.do'];
+// Comments and scripts can hold markup that looks like list rows, so the list parsers read the page without them.
+export const withoutScripts = html => html.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>/gi, '');
 export function plain(value) {
   return value.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ')
@@ -25,7 +27,7 @@ export async function councilHtml(url, signal) {
   return html;
 }
 export function parseCouncilDirectory(html) {
-  const clean = html.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>/gi, '');
+  const clean = withoutScripts(html);
   const items = new Map();
   for (const block of clean.match(/<(?:p|tr)\b[^>]*>[\s\S]*?<\/(?:p|tr)>/gi) ?? []) {
     const link = block.match(/<a\b[^>]*href\s*=\s*["']([^"']*schedule\.do[^"']*)["'][^>]*>([\s\S]*?)<\/a>/i);

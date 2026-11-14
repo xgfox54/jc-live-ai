@@ -10,6 +10,8 @@ import { Store } from '../src/store.mjs';
 import { BroadcastRegistry } from '../src/broadcast-registry.mjs';
 import { MinutesService } from '../src/minutes.mjs';
 import { CloudPublisher, cloudSettings } from '../src/cloud-publisher.mjs';
+import { ALIGNMENT_METHOD } from '../src/video-alignment.mjs';
+import { archiveOnly } from '../cloudflare/worker.mjs';
 import { syncRequest, viewerRequest } from '../web/lib/http.mjs';
 import { pollSnapshots } from '../public/polling.mjs';
 import { buildWeb, assets } from '../scripts/build-web.mjs';
@@ -24,7 +26,7 @@ class MemoryStorage {
     this.rows.set(path, { value: structuredClone(value), etag: String(++this.writes) });
   }
 }
-function fixture(t, { desktop = false } = {}) {
+function fixture(t, { desktop = false, validate } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'jc-cloud-'));
   const config = { adminToken: 'a'.repeat(64), viewerToken: 'b'.repeat(64), minutesDirectory: join(dir, 'minutes') };
   if (desktop) config.desktopLive = { enabled: true };
@@ -35,7 +37,7 @@ function fixture(t, { desktop = false } = {}) {
   const context = { config, store, registry, minutes, scheduler: { states: () => [] }, settings, now: () => now,
     fetcher: async (url, options) => {
       if (broken) throw new Error('private-network-diagnostic');
-      return syncRequest(new Request(url, options), { storage, secret, now: () => now });
+      return syncRequest(new Request(url, options), { storage, secret, now: () => now, ...(validate ? { validate } : {}) });
     } };
   const publisher = new CloudPublisher(context);
   t.after(async () => { await publisher.close(); minutes.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -346,4 +348,70 @@ test('desktop mode preserves an unconfirmed old live outbox and blocks automatic
   await next.flush({ force: true });
   assert.equal(next.view().mode_transition_blocked, true); assert.equal(f.storage.writes, 0);
   assert.deepEqual(next.control.outbox('site'), pending);
+});
+
+test('an archive sent just after its meeting ended is listed as ended, so the archive-only index is accepted', async t => {
+  const f = fixture(t, { desktop: true, validate: archiveOnly }); const record = f.attach(1); f.segments(1, 0, 2);
+  f.store.saveSession({ session_id: 'session1', stream_id: 'ch1', state: 'stopped', input_end_reason: 'eof', queue_length: 0 });
+  f.minutes.flush();
+  // 2026-11-13: the archive pass listed the meeting while it was still collecting and reached it after the end.
+  const stored = JSON.parse(f.store.db.prepare('SELECT document FROM minutes WHERE broadcast_id=?').get(record.id).document);
+  f.registry.saveMinutes({ ...stored, status: 'in_progress' });
+  const stale = 'e'.repeat(64);
+  f.publisher.remember(stale, { summary: { id: stale, title: '수집 중 회의', scheduled_at: '', status: 'in_progress', updated_ms: 1,
+    segment_count: 0, session_count: 1, publication_policy: 'ai-corrected-v1' }, hash: 'stale', published_ms: 1 });
+  for (let n = 0; n < 2; n++) { f.tick(); await f.publisher.flush(); }
+  assert.equal(f.publisher.control.load().blocked, null);
+  assert.equal(f.storage.rows.get('minutes/' + record.id + '.json').value.document.status, 'draft');
+  assert.deepEqual(f.storage.rows.get('site.json').value.minutes_index.map(item => [item.id, item.status]), [[record.id, 'draft']]);
+});
+
+test('a restart keeps publishing when only an archive index request is pending', async t => {
+  const f = fixture(t, { desktop: true }); f.broken(true); await f.publisher.flush();
+  assert.ok(f.publisher.control.outbox('site'));
+  await f.publisher.close(); f.broken(false); f.tick();
+  const next = new CloudPublisher(f); t.after(() => next.close());
+  assert.equal(next.view().mode_transition_blocked, false);
+  await next.flush();
+  assert.equal(next.control.outbox('site'), undefined); assert.ok(f.storage.rows.has('site.json'));
+});
+test('saving an ended meeting without changes keeps its minutes time and does not send it again', async t => {
+  // 2026-11-14: the broadcast monitor saved the same record every 30 seconds. Each save rebuilt the minutes with a new
+  // time, and the new time sent the whole archive again every 5 minutes while no meeting was running.
+  const f = fixture(t, { desktop: true }); const record = f.attach(1); f.segments(1, 0, 2);
+  f.store.saveSession({ session_id: 'session1', stream_id: 'ch1', state: 'stopped', input_end_reason: 'eof', queue_length: 0 });
+  for (let n = 0; n < 2; n++) { f.tick(); await f.publisher.flush(); }
+  assert.ok(f.storage.rows.get('site.json').value.minutes_index.some(item => item.id === record.id));
+  const writes = f.storage.writes; const updated = f.registry.minutes(record.id).updated_ms;
+  await new Promise(resolve => setTimeout(resolve, 5));
+  for (let n = 0; n < 7; n++) { f.registry.save(f.registry.get(record.id)); f.tick(); await f.publisher.flush(); }
+  assert.equal(f.registry.minutes(record.id).updated_ms, updated);
+  assert.equal(f.storage.writes, writes);
+  f.segments(1, 2, 1); for (let n = 0; n < 6; n++) f.tick(); await f.publisher.flush();
+  assert.equal(f.storage.rows.get('minutes/' + record.id + '.json').value.document.segment_count, 3);
+});
+test('the minutes list and the minutes report the same update time after a speaker review', t => {
+  const f = fixture(t); const record = f.attach(1); f.segments(1, 0, 1); f.minutes.flush();
+  f.store.db.exec('CREATE TABLE IF NOT EXISTS review_state(id TEXT PRIMARY KEY,document TEXT NOT NULL)');
+  const later = f.registry.minutes(record.id).updated_ms + 60_000;
+  f.store.db.prepare('INSERT INTO review_state VALUES(?,?)').run('final-speakers:' + record.id, JSON.stringify({ phase: 'partial', updated_ms: later }));
+  assert.equal(f.registry.minutes(record.id).updated_ms, later);
+  assert.equal(f.registry.minuteList().find(item => item.id === record.id).updated_ms, later);
+});
+test('a meeting whose archive fails the public data check does not hold back the meetings after it', async t => {
+  // 2026-11-14: the public check refused a replay link filed under 455END, and the error ended the whole archive pass,
+  // so no meeting listed after that one was sent.
+  const f = fixture(t, { desktop: true }); f.attach(1); f.segments(1, 0, 2); f.attach(2); f.segments(2, 0, 2);
+  for (const n of [1, 2]) f.store.saveSession({ session_id: 'session' + n, stream_id: 'ch1', state: 'stopped', input_end_reason: 'eof', queue_length: 0 });
+  f.minutes.flush();
+  const [refused, other] = f.registry.minuteList().map(item => item.id);
+  const session = f.registry.sessions(refused)[0].session_id;
+  f.store.db.exec('CREATE TABLE IF NOT EXISTS review_state(id TEXT PRIMARY KEY,document TEXT NOT NULL);');
+  f.store.db.prepare('INSERT INTO review_state VALUES(?,?)').run('video-alignment:' + refused, JSON.stringify({ phase: 'complete',
+    method: ALIGNMENT_METHOD, source: 'council_vod', media_url: 'https://evil.test/vod/_definst_//2026/455/a/playlist.m3u8',
+    page_url: null, video_id: null, sessions: { [session]: { offset_ms: 60000 } } }));
+  for (let n = 0; n < 2; n++) { f.tick(); await f.publisher.flush(); }
+  assert.ok(f.storage.rows.has('minutes/' + other + '.json'));
+  assert.equal(f.storage.rows.has('minutes/' + refused + '.json'), false);
+  assert.equal(f.publisher.view().archive_phase, 'retry');
 });

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { HttpError } from './validate.mjs';
 import { finalReadiness } from './final-speakers.mjs';
 import { councilReplay, downloadReplayAudio } from './council.mjs';
+import { speakerReviewPython } from './speaker-acoustics.mjs';
 
 export const ALIGNMENT_METHOD = 'audio-match-v1';
 // The official council replay is preferred because the council's YouTube copies are made private after the meeting.
@@ -75,6 +76,9 @@ export class VideoAlignment {
     for (const record of registry.list()) {
       const previous = review.get('video-alignment:' + record.id);
       if (previous?.phase === 'running') review.save('video-alignment:' + record.id, previous.replaces ?? { ...previous, phase: 'interrupted', updated_ms: 0 });
+      // A merged record keeps one collection clock and is never aligned; a measurement left from before the merge no longer
+      // describes it (a6713355 kept a failure from 13 November).
+      else if (record.merged_from && previous && previous.phase !== 'complete') review.remove('video-alignment:' + record.id);
     }
     this.timer = setInterval(() => this.auto(), 600_000); this.timer.unref();
   }
@@ -123,7 +127,9 @@ export class VideoAlignment {
       await run(resolve(this.config.ffmpeg ?? 'bin/ffmpeg.exe'), ['-hide_banner', '-loglevel', 'error', '-y', ...(job.media_url ? ['-f', 'aac'] : []),
         '-i', input, '-ac', '1', '-ar', '16000', '-f', 's16le', resolve(directory, 'video.pcm')], { signal });
       const files = this.sessionFiles(id); const output = resolve(directory, 'alignment.json');
-      await run(this.config.alignmentPython ?? this.config.diarizationPython ?? 'python',
+      // The script needs numpy, which the diarization Python did not have on 2026-11-14; alignments run with it failed.
+      const review = speakerReviewPython(this.config);
+      await run(this.config.alignmentPython ?? (existsSync(review) ? review : this.config.diarizationPython ?? 'python'),
         [resolve('scripts/verify-video-alignment.py'), resolve(directory, 'video.pcm'), output, ...Object.values(files)], { signal });
       const sessions = acceptedOffsets(JSON.parse(readFileSync(output, 'utf8')), files);
       const complete = Object.keys(sessions).length > 0;

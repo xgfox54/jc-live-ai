@@ -7,13 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { StandbyPolicy } from './standby-policy.mjs';
+import { CLOUDFLARE_SITE } from '../../src/sites.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const configPath = resolve(root, process.argv[2] ?? 'config.local.json');
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
 if (config.cloudSyncFile || config.cloudSyncFiles?.length) throw new Error('Standby engine must not publish archives automatically');
 if (!config.standbyLeaseFile) throw new Error('Set standbyLeaseFile in the standby engine configuration');
-const site = process.env.JC_LIVE_SITE ?? 'https://jc-live.xgfox54.workers.dev';
+const site = process.env.JC_LIVE_SITE ?? CLOUDFLARE_SITE;
 const state = resolve(root, 'data/standby'); mkdirSync(state, { recursive: true });
 const token = JSON.parse(readFileSync(resolve(root, config.tokenFile), 'utf8')).adminToken;
 const secret = readFileSync(resolve(state, 'gateway.secret'), 'utf8').trim();

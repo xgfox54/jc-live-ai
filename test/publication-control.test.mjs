@@ -77,6 +77,8 @@ test('permanent errors block repeated force attempts, retain local writes and pe
     assert.equal(f.publisher.view().queued, 1); assert.equal(f.store.streams()[0].name, '변경 19');
     assert.doesNotMatch(JSON.stringify(f.publisher.view()), /cccccccc|private-response/);
     f.publisher.control.resume(); f.time(60000); await f.publisher.flush();
+    // The refused request queued before the stop is never sent; the first request after resuming is the current content.
+    assert.equal(f.bodies[0].snapshot.streams[0].name, '변경 19');
     f.time(1000); await f.publisher.flush();
     assert.equal(f.rows.get('site.json').value.snapshot.streams[0].name, '변경 19');
   });
@@ -177,12 +179,13 @@ test('operator command reports no secrets and resumes without deleting identity 
   f.publisher.fetcher = async () => Response.json({ code: 'quota' }, { status: 503 });
   await f.publisher.flush();
   const before = publicationState(f.store.db, f.context.settings);
-  const id = f.publisher.control.outbox('site').payload.publication.request_id;
+  const publisher = f.publisher.control.load().publisher_id;
   assert.equal(before.blocked_reason, 'quota');
   assert.doesNotMatch(JSON.stringify(before), /cccccccc|secret|payload|text/);
   const after = publicationState(f.store.db, f.context.settings, { resume: true });
-  assert.equal(after.blocked_reason, null); assert.equal(after.queued, 1);
-  assert.equal(f.publisher.control.outbox('site').payload.publication.request_id, id);
+  // The refused request is dropped (2026-11-14); the next pass sends the current content under the same publisher identity.
+  assert.equal(after.blocked_reason, null); assert.equal(after.queued, 0); assert.equal(f.publisher.control.outbox('site'), undefined);
+  assert.equal(f.publisher.control.load().publisher_id, publisher);
   assert.equal(f.store.streams()[0].name, '보존할 회의');
 });
 

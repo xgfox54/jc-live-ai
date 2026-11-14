@@ -1,9 +1,9 @@
 // Keyword alerts run only in this browser: settings stay in localStorage and only AI-corrected sentences received
 // after the page opened are matched, so past sentences and drafts never raise an alert.
 export const KEYWORD_LIMIT = 20;
-export const KEYWORD_LENGTH = 40;
+const KEYWORD_LENGTH = 40;
 const STORAGE_KEY = 'jc-keyword-alerts';
-export const normalizeKeyword = value => String(value).normalize('NFC').toLocaleLowerCase('ko-KR').replace(/\s+/g, '');
+const normalizeKeyword = value => String(value).normalize('NFC').toLocaleLowerCase('ko-KR').replace(/\s+/g, '');
 
 export function parseKeywords(input) {
   const seen = new Set(); const keywords = [];

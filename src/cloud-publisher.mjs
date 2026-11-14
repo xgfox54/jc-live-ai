@@ -49,7 +49,12 @@ export class CloudPublisher {
     this.status.phase = 'waiting';
     if (this.archiveOnly) {
       const pending = this.store.db.prepare('SELECT document FROM cloud_outbox WHERE endpoint=?').all(this.key).map(row => JSON.parse(row.document));
-      this.modeBlocked = pending.some(row => row.payload.kind === 'snapshot' || row.payload.document?.status === 'in_progress');
+      // Only a request the archive-only Worker refuses as live data (cloudflare/worker.mjs) blocks the switch. A pending
+      // archive index with empty live lists and ended meetings is ordinary publication, for example after a failed POST.
+      const live = payload => payload.kind === 'snapshot' ? payload.snapshot.event_id !== 0 || Boolean(payload.snapshot.schedule)
+        || ['streams', 'segments', 'live_segments', 'live_pending', 'states', 'health', 'gaps'].some(key => payload.snapshot[key]?.length)
+        || payload.minutes_index.some(item => item.status !== 'draft') : payload.document?.status === 'in_progress';
+      this.modeBlocked = pending.some(row => live(row.payload));
       if (this.modeBlocked) this.status = { phase: 'blocked', error: '이전 실시간 게시 요청이 남아 있습니다. 게시 상태를 확인한 후 전달 방식을 전환해 주세요.' };
     }
   }
@@ -165,16 +170,25 @@ export class CloudPublisher {
       if (scan) this.lastArchiveScan = this.now();
       let pendingPhase;
       for (const summary of summaries) {
-        if (this.archiveOnly && finalReadiness(this.registry, summary.id, this.getCorrectionAI?.() ?? {}, this.now()) !== 'ready') continue;
         if (!scan && !this.archiveDirty.has(summary.id)) continue;
         const previous = this.known.get(summary.id);
+        // An archive identical to the published one is skipped before the readiness check (about 12 ms per meeting).
         if (previous?.segment_schema === 3 && previous.summary.publication_policy === 'ai-corrected-v1' && previous.summary.updated_ms === summary.updated_ms
           && !this.control.outbox(summary.id)) { this.archiveDirty.delete(summary.id); continue; }
+        if (this.archiveOnly && finalReadiness(this.registry, summary.id, this.getCorrectionAI?.() ?? {}, this.now()) !== 'ready') continue;
         if (previous?.segment_schema === 3 && previous.summary.publication_policy === 'ai-corrected-v1' && previous.summary.status === summary.status && summary.segment_count - previous.summary.segment_count <= 100
           && this.now() - previous.sent_ms < this.settings.minutes_interval_ms && !this.control.outbox(summary.id)) continue;
-        const document = viewerMinutes(this.registry, summary.id); const segments = this.registry.segments(summary.id).map(viewerSegment).filter(Boolean);
-        const outcome = await this.deliver(summary.id, { kind: 'minutes', document, segments }, signal,
-          { summary, sent_ms: this.now(), segment_schema: 3 }, summary.status !== 'in_progress');
+        let outcome;
+        // A meeting whose archive cannot be built or fails the public data check waits for the next pass without holding
+        // back the meetings listed after it (2026-11-14: one refused replay link ended every pass before the later archives).
+        try {
+          const document = viewerMinutes(this.registry, summary.id); const segments = this.registry.segments(summary.id).map(viewerSegment).filter(Boolean);
+          // The list is read before the pass and can still show a meeting that ended while earlier archives were sent;
+          // the document is rebuilt now, so the index entry takes its status from the document (2026-11-13).
+          const sent = { ...summary, status: document.status, updated_ms: document.updated_ms };
+          outcome = await this.deliver(summary.id, { kind: 'minutes', document, segments }, signal,
+            { summary: sent, sent_ms: this.now(), segment_schema: 3 }, sent.status !== 'in_progress');
+        } catch { pendingPhase = 'retry'; continue; }
         if (outcome === 'sent' || outcome === 'unchanged') { this.archiveDirty.delete(summary.id); changed ||= outcome === 'sent'; }
         else { pendingPhase = outcome === 'retry' ? 'retry' : 'waiting'; break; }
       }
@@ -226,7 +240,10 @@ export class CloudPublisher {
           health.message = health.status === 'stopped' ? '방송 기록 수집이 종료되었습니다.' : '최근 음성 처리를 마쳤습니다.';
         }
       }
-      const summaries = [...this.known.entries()].filter(([id]) => id !== 'site').map(([, value]) => value.summary);
+      // An archive-only Worker refuses an index that lists a meeting still being collected, and that refusal stops
+      // all publication, so such an entry waits until its ended archive has been sent.
+      const summaries = [...this.known.entries()].filter(([id]) => id !== 'site').map(([, value]) => value.summary)
+        .filter(summary => !this.archiveOnly || summary.status === 'draft');
       const value = { kind: 'snapshot', snapshot, minutes_index: summaries.sort((a, b) => b.updated_ms - a.updated_ms) };
       const result = await this.deliver('site', value, signal);
       this.status.published_ms = this.known.get('site')?.published_ms;

@@ -6,7 +6,9 @@ export class EventFeed {
     this.project = options.project ?? (event => event);
     this.heartbeatPayload = options.heartbeatPayload;
     this.metrics = { sent: 0, bytes: 0, slow_disconnects: 0, high_water_bytes: 0, peak_clients: 0 };
-    this.onEvent = () => { for (const client of this.clients) this.schedule(client); };
+    // Clients share the events read after one cursor (until the next event) and the projected wire text of each event.
+    this.recent = new Map(); this.wires = new Map();
+    this.onEvent = () => { this.recent.clear(); for (const client of this.clients) this.schedule(client); };
     store.on('event', this.onEvent);
     this.heartbeat = setInterval(() => {
       const payload = this.clients.size && this.heartbeatPayload ? this.heartbeatPayload() : null;
@@ -20,10 +22,17 @@ export class EventFeed {
     client.scheduled = true;
     setImmediate(() => { client.scheduled = false; this.pump(client); });
   }
-  send(client, event) {
+  wire(event) {
+    if (this.wires.has(event.event_id)) return this.wires.get(event.event_id);
+    const projected = this.project(event);
+    const wire = projected ? 'id: ' + event.event_id + '\ndata: ' + JSON.stringify(projected) + '\n\n' : null;
+    this.wires.set(event.event_id, wire); if (this.wires.size > 2048) this.wires.delete(this.wires.keys().next().value);
+    return wire;
+  }
+  send(client, event, wire) {
     if (client.res.destroyed) { this.clients.delete(client); return false; }
-    const projected = this.project(event); if (!projected) return true;
-    const wire = 'id: ' + event.event_id + '\ndata: ' + JSON.stringify(projected) + '\n\n';
+    if (wire === undefined) { const projected = this.project(event); wire = projected ? 'id: ' + event.event_id + '\ndata: ' + JSON.stringify(projected) + '\n\n' : null; }
+    if (!wire) return true;
     if (client.res.writableLength + Buffer.byteLength(wire) > this.maxBytes) {
       this.metrics.slow_disconnects++; client.res.destroy(); this.clients.delete(client); return false;
     }
@@ -43,10 +52,11 @@ export class EventFeed {
   }
   pump(client) {
     if (client.res.destroyed || client.waiting || !this.clients.has(client)) return;
-    const events = this.store.events(client.cursor, 64);
+    let events = this.recent.get(client.cursor);
+    if (!events) { events = this.store.events(client.cursor, 64); this.recent.set(client.cursor, events); }
     for (const event of events) {
       client.cursor = event.event_id;
-      if (event.kind !== 'metric' && client.ids.has(event.payload.stream_id) && !this.send(client, event)) return;
+      if (event.kind !== 'metric' && client.ids.has(event.payload.stream_id) && !this.send(client, event, this.wire(event))) return;
     }
     if (events.length === 64) this.schedule(client);
   }

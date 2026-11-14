@@ -1,3 +1,5 @@
+// Elapsed time as 00:00:00, shared by the minutes page and the minutes export.
+export const clockTime = ms => { const s = Math.floor(ms / 1000); return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(n => String(n).padStart(2, '0')).join(':'); };
 export function viewerHealthMessage(health, now = Date.now()) {
   if (health?.stages?.ingestion === 'stopped' && health.stages.transcription === 'stopped'
     && health.status === 'correction_delayed')
@@ -45,7 +47,7 @@ export function showEngineStatus(element, value) {
   element.querySelector('.engine-label').textContent = view.label;
 }
 
-export function durationText(milliseconds) {
+function durationText(milliseconds) {
   const total = Math.max(0, Math.round(milliseconds / 1000));
   if (total < 60) return total + '초';
   const minutes = Math.floor(total / 60); const seconds = total % 60;

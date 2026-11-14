@@ -1,11 +1,11 @@
-import { mkdirSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, renameSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { speakerText, speakerKey } from '../public/speakers.mjs';
 import { committeeForChannel } from '../public/committees.mjs';
+import { clockTime as time } from '../public/client-state.mjs';
 import { videoOffsets, videoShift } from './video-alignment.mjs';
 
 const clean = value => String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
-const time = ms => { const seconds = Math.floor(ms / 1000); return [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60].map(n => String(n).padStart(2, '0')).join(':'); };
 const seoul = ms => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(ms);
 const groupKey = item => item.speaker_id ? speakerKey(item) : item.speaker_state === 'multiple' ? 'multiple:' + (item.speaker_ids ?? []).join('.') : item.speaker_state ?? 'none';
 export function paragraphsOf(transcript) {
@@ -166,10 +166,15 @@ export class MinutesService {
         const value = buildMinutes(record, sessions, this.registry.segments(id), this.registry.gaps(id),
           { participants: this.registry.participants(id), summary: this.registry.summary(id), finalSpeakers: this.registry.finalSpeakers(id),
             videoAlignment: this.registry.reviewState('video-alignment:' + id) });
-        this.registry.saveMinutes(value);
-        const directory = resolve(this.config.minutesDirectory ?? 'data/minutes'); mkdirSync(directory, { recursive: true });
-        for (const [extension, data] of [['md', value.markdown], ['json', JSON.stringify(value, null, 2)]]) {
-          const path = resolve(directory, id + '.' + extension); writeFileSync(path + '.tmp', data, { mode: 0o600 }); renameSync(path + '.tmp', path);
+        // The build time alone is not a change: keeping the stored time stops unchanged minutes from being published again.
+        const stored = this.registry.db.prepare("SELECT document,json_extract(document,'$.updated_ms') AS updated_ms FROM minutes WHERE broadcast_id=?").get(id);
+        const directory = resolve(this.config.minutesDirectory ?? 'data/minutes');
+        if (!stored || JSON.stringify({ ...value, updated_ms: stored.updated_ms }) !== stored.document
+          || !existsSync(resolve(directory, id + '.md')) || !existsSync(resolve(directory, id + '.json'))) {
+          this.registry.saveMinutes(value); mkdirSync(directory, { recursive: true });
+          for (const [extension, data] of [['md', value.markdown], ['json', JSON.stringify(value, null, 2)]]) {
+            const path = resolve(directory, id + '.' + extension); writeFileSync(path + '.tmp', data, { mode: 0o600 }); renameSync(path + '.tmp', path);
+          }
         }
         this.dirty.delete(id); this.errors.delete(id);
       } catch (error) { this.errors.set(id, error.message); }

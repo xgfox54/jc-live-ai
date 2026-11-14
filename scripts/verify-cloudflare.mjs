@@ -5,8 +5,9 @@ import { publicMinutes } from '../web/lib/model.mjs';
 import { Store } from '../src/store.mjs';
 import { BroadcastRegistry } from '../src/broadcast-registry.mjs';
 import { viewerMinutes } from '../src/viewer-minutes.mjs';
+import { CLOUDFLARE_SITE, VERCEL_SITE } from '../src/sites.mjs';
 
-const origin = 'https://jc-live.xgfox54.workers.dev', vercel = 'https://jc-live-ykh1.vercel.app';
+const origin = CLOUDFLARE_SITE, vercel = VERCEL_SITE;
 const report = { checked_at: new Date().toISOString(), origin, checks: [], archives: [], sse: [] };
 function check(name, passed, detail = {}) { report.checks.push({ name, passed, ...detail }); if (!passed) process.exitCode = 1; }
 const get = (path, options) => fetch(origin + path, { redirect: 'manual', signal: AbortSignal.timeout(20000), ...options });
@@ -29,7 +30,8 @@ try {
   const list = await (await get('/api/viewer/minutes')).json();
   check('archive index', list.items.length === local.length && list.items.every(item => item.status === 'draft'), { count: list.items.length });
   for (const row of local) {
-    const response = await get('/api/viewer/minutes/' + row.id); const document = await response.json();
+    // Archives reach 650 KB compressed; at the 40 KB/s measured from the desktop on 2026-11-14 one took 16 seconds.
+    const response = await get('/api/viewer/minutes/' + row.id, { signal: AbortSignal.timeout(120000) }); const document = await response.json();
     const actual = hash(JSON.stringify(document)), expected = hash(JSON.stringify(publicMinutes(viewerMinutes(registry, row.id))));
     const passed = response.status === 200 && actual === expected;
     report.archives.push({ id: row.id, passed, sha256: actual, segments: document.segment_count });

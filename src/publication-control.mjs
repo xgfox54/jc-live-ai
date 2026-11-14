@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 // A lane lease outlasts the longest POST time limit (120 s, cloud-publisher.mjs), so another process cannot publish
 // the same lane while a large archive upload is still in flight.
 const LANE_LEASE_MS = 150_000;
+// The server refused these requests, so nothing was stored and the request is not retried as it is.
+const REFUSED = ['credentials', 'quota', 'suspended', 'conflict', 'invalid', 'size'];
 export const publicationDefaults = {
   interval_ms: 60000, minutes_interval_ms: 300000, min_snapshot_ms: 1000,
   burst_limit: 128, burst_window_ms: 60000, retry_base_ms: 1000, retry_max_ms: 60000, retry_limit: 5,
@@ -82,7 +84,7 @@ export class PublicationControl {
   release(id) { this.change(state => { const lane = id === 'site' ? 'live' : 'archive'; if (state.lanes[lane]?.owner === this.instance) delete state.lanes[lane]; }); }
   failure(id, error) {
     const pending = this.outbox(id); if (!pending) return;
-    const terminal = ['credentials', 'quota', 'suspended', 'conflict', 'invalid', 'size'].includes(error.code);
+    const terminal = REFUSED.includes(error.code);
     pending.next_ms = this.now() + Math.max(error.retry_ms ?? 0,
       Math.min(this.settings.retry_max_ms, this.settings.retry_base_ms * 2 ** Math.min(20, pending.attempts - 1)) * (.5 + this.random()));
     pending.error = terminal ? error.code : 'temporary'; this.put(id, pending);
@@ -94,9 +96,13 @@ export class PublicationControl {
       state.blocked = terminal ? error.code : 'retry_exhausted'; });
   }
   // An operator must explicitly resume after fixing the cause; force publication never clears a breaker.
+  // A refused request is dropped rather than retried, so the next pass sends the current content and never a payload
+  // queued before the stop (2026-11-14: the suspended Vercel queue still held 4 November minutes and index).
   resume() { this.change(state => { state.blocked = null; });
     for (const row of this.store.db.prepare('SELECT id,document FROM cloud_outbox WHERE endpoint=?').all(this.key)) {
-      const value = JSON.parse(row.document); value.attempted ||= value.attempts > 0;
+      const value = JSON.parse(row.document);
+      if (REFUSED.includes(value.error)) { this.remove(row.id); continue; }
+      value.attempted ||= value.attempts > 0;
       value.attempts = 0; value.next_ms = 0; delete value.error; this.put(row.id, value);
     }
   }

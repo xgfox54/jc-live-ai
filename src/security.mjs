@@ -27,7 +27,7 @@ export class Security {
     const minute = Math.floor(now / 60_000);
     const record = this.requests.get(key) ?? { minute, count: 0 };
     if (record.minute !== minute) { record.minute = minute; record.count = 0; }
-    if (++record.count > (isAdmin ? 6000 : 6000)) throw new HttpError(429, 'Request limit');
+    if (++record.count > 6000) throw new HttpError(429, 'Request limit');
     this.requests.set(key, record); return isAdmin;
   }
 }

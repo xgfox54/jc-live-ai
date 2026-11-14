@@ -121,3 +121,23 @@ test('replay lookup reads the official replay from the detail page or the archiv
     requested.length = 0; assert.deepEqual(await enricher.run(), []); assert.deepEqual(requested, []);
   } finally { store.close(); }
 });
+test('a hearing whose title adds its subject in parentheses finds the committee replay', async () => {
+  // 2026-11-05 문화관광체육위원회 (제주관광공사 사장 예정자 인사청문회): the archive lists the committee name only.
+  // The replay of a meeting between sessions is filed under 455END.
+  const replay = 'https://vod.council.jeju.kr/vod/_definst_//2026/455END/20261105_3_moon/playlist.m3u8';
+  const detail = 'https://www.council.jeju.kr/broadcast/broad.do?act=view&seq=10044';
+  const pages = { 'https://www.council.jeju.kr/broadcast/broad.do': '<table><tr><td>1</td><td>13대</td><td>2026-11-05</td><td>455회</td><td>임시회 폐회중</td><td>3차</td><td>문화관광체육위원회</td>'
+      + '<td><a href="/broadcast/broad.do?act=view&amp;seq=10044">방송보기</a></td><td></td></tr></table>',
+    [detail]: '<ul><li><b>일시 : </b>2026-11-05 10:00</li><li><b>회차 : </b>제455회(3차)</li></ul><video><source src="' + replay + '" type="application/x-mpegURL" /></video>' };
+  const store = new Store(':memory:'); const registry = new BroadcastRegistry(store);
+  try {
+    const committee = '문화관광체육위원회 (제주관광공사 사장 예정자 인사청문회)';
+    const source = 'https://www.council.jeju.kr/broadcast/schedule.do?act=view&seq=7048';
+    const record = registry.upsert({ kind: 'council', title: '3차 ' + committee, committee, meeting_round: '제455회(3차)', page_url: source, sources: [source] });
+    registry.attach({ stream_id: 'ch6', broadcast_id: record.id }, { session_id: 'hearing' });
+    store.saveSession({ stream_id: 'ch6', session_id: 'hearing', state: 'stopped', started_ms: Date.parse('2026-11-05T01:00:00Z') });
+    const enricher = new ArchiveEnricher({ registry, now: () => Date.parse('2026-11-14T03:00:00Z'), fetchHtml: async url => pages[url] ?? '<table></table>' });
+    assert.deepEqual(await enricher.run(), [record.id]);
+    assert.equal(registry.get(record.id).replay_url, replay); assert.equal(registry.get(record.id).replay_page, detail);
+  } finally { store.close(); }
+});

@@ -229,3 +229,19 @@ test('test-run recordings are excluded from public minutes and automatic correct
   assert.equal(viewerMinuteList(f.registry).length, 0); assert.equal(viewerMinutes(f.registry, f.id), null);
   assert.equal(f.registry.minuteList().length, 1);
 });
+test('a candidate for an earlier version of the sentence is closed once instead of being read every pass', async t => {
+  // 2026-11-14: 199 such candidates stayed pending and were read again every 30 seconds.
+  const f = fixture(t); const row = f.add();
+  f.ai.start(f.id); await f.ai.pending; assert.equal(f.ai.list(f.id).items[0].status, 'pending');
+  f.store.correct(row.segment_id, { version: 1, text: '직접 확인한 발언' });
+  assert.deepEqual(await f.ai.applySafe(f.id), { applied: 0, skipped: 1 });
+  const closed = f.ai.list(f.id).items[0]; assert.equal(closed.status, 'rejected'); assert.equal(closed.issue, 'superseded');
+  assert.equal(f.store.snapshot(['ch1']).segments[0].corrected_text, '직접 확인한 발언');
+});
+test('a failed automatic application is recorded instead of being ignored', async t => {
+  const f = fixture(t); f.add(); f.ai.start(f.id); await f.ai.pending;
+  f.ai.saveSettings({ model: 'fixture-model', automatic: true });
+  f.ai.applySafe = async () => { throw new Error('database is locked'); };
+  f.ai.auto(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.ai.view().auto_apply.failures, 1); assert.match(f.ai.view().auto_apply.error, /locked/);
+});

@@ -147,7 +147,7 @@ export class AITools {
       card.append(element('p', status[item.status], 'help'));
       let check;
       if (item.issue) {
-        card.append(element('p', item.issue === 'numbers' ? '숫자가 바뀌었습니다. 원음을 확인해 주세요.' : item.issue === 'hallucination' ? '방송 대기 화면 등에서 생기는 환각 의심 문장이라 공개하지 않았습니다. 실제 발언이면 원음을 확인한 뒤 직접 수정해 주세요.' : '문장 길이가 크게 바뀌었습니다. 원음을 확인해 주세요.'));
+        card.append(element('p', item.issue === 'numbers' ? '숫자가 바뀌었습니다. 원음을 확인해 주세요.' : item.issue === 'hallucination' ? '방송 대기 화면 등에서 생기는 환각 의심 문장이라 공개하지 않았습니다. 실제 발언이면 원음을 확인한 뒤 직접 수정해 주세요.' : item.issue === 'superseded' ? '후보를 만든 뒤 문장이 다시 바뀌어 적용하지 않았습니다.' : '문장 길이가 크게 바뀌었습니다. 원음을 확인해 주세요.'));
         const label = element('label', '', 'check'); check = document.createElement('input'); check.type = 'checkbox';
         label.append(check, document.createTextNode('원음과 변경 내용을 확인했습니다.')); card.append(label);
       }

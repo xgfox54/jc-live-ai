@@ -73,11 +73,14 @@ async function readJson(response, limit = 1_000_000) {
 export class CorrectionService {
   constructor({ store, registry, scheduler, config = {}, aiFetch = fetch, now = Date.now }) {
     Object.assign(this, { store, registry, scheduler, config, now }); this.fetcher = aiFetch; this.closed = false;
+    // ai_candidate_pending serves the 30-second automatic pass, which reads only pending candidates; without it the pass
+    // read every stored candidate (150 MB, 2026-11-14).
     store.db.exec('CREATE TABLE IF NOT EXISTS ai_settings(id TEXT PRIMARY KEY, document TEXT NOT NULL);'
       + 'CREATE TABLE IF NOT EXISTS ai_jobs(id TEXT PRIMARY KEY, document TEXT NOT NULL);'
       + 'CREATE TABLE IF NOT EXISTS ai_candidates(id TEXT PRIMARY KEY, broadcast_id TEXT NOT NULL, segment_id TEXT NOT NULL,'
       + ' source_version INTEGER NOT NULL, context TEXT NOT NULL, document TEXT NOT NULL);'
-      + 'CREATE INDEX IF NOT EXISTS ai_candidate_lookup ON ai_candidates(broadcast_id,segment_id,source_version,context);');
+      + 'CREATE INDEX IF NOT EXISTS ai_candidate_lookup ON ai_candidates(broadcast_id,segment_id,source_version,context);'
+      + "CREATE INDEX IF NOT EXISTS ai_candidate_pending ON ai_candidates(broadcast_id) WHERE json_extract(document,'$.status')='pending';");
     for (const job of this.jobs().filter(job => ['queued', 'running'].includes(job.phase)))
       this.save('ai_jobs', job.id, { ...job, phase: 'interrupted', error: '서버가 재시작되었습니다. 후보 생성을 다시 시작해 주세요.' });
     this.timer = setInterval(() => this.auto(), 30000); this.timer.unref();
@@ -138,7 +141,12 @@ export class CorrectionService {
   }
   jobs() { return this.store.db.prepare('SELECT document FROM ai_jobs ORDER BY rowid DESC').all().map(row => JSON.parse(row.document)); }
   busy() { return this.scheduler.states().some(state => ['running', 'draining', 'degraded', 'reconnecting'].includes(state.state)); }
-  view() { return { settings: this.settings(), jobs: this.jobs(), broadcasts: this.registry.minuteList(),
+  // A failed automatic application does not stop the pass; it stays visible in the AI view and the error log.
+  autoApplyFailed(id, error) {
+    this.autoApply = { failures: (this.autoApply?.failures ?? 0) + 1, broadcast_id: id, error: error.message.slice(0, 200), failed_ms: this.now() };
+    process.stderr.write(JSON.stringify({ level: 'error', event: 'ai.auto_apply_failed', broadcast_id: id, error: error.message }) + '\n');
+  }
+  view() { return { settings: this.settings(), jobs: this.jobs(), broadcasts: this.registry.minuteList(), auto_apply: this.autoApply ?? null,
     catalog: glossaryCatalog, collecting: this.busy(), collection_blocks: this.settings().provider !== 'proxy' && this.busy() }; }
   async models() {
     const settings = this.settings(); const proxy = settings.provider === 'proxy';
@@ -293,7 +301,12 @@ export class CorrectionService {
         this.store.db.prepare('UPDATE ai_candidates SET document=? WHERE id=?').run(JSON.stringify({ ...candidate, status: 'rejected', issue: 'hallucination' }), candidate.id);
         skipped++; continue;
       }
-      if (this.store.db.prepare('SELECT version FROM segments WHERE id=?').get(candidate.segment_id)?.version !== candidate.source_version) { skipped++; continue; }
+      // A candidate written for an earlier version of the sentence can never be applied. It is closed instead of being
+      // read again every 30 seconds (199 such candidates on 2026-11-14).
+      if (this.store.db.prepare('SELECT version FROM segments WHERE id=?').get(candidate.segment_id)?.version !== candidate.source_version) {
+        this.store.db.prepare('UPDATE ai_candidates SET document=? WHERE id=?').run(JSON.stringify({ ...candidate, status: 'rejected', issue: 'superseded' }), candidate.id);
+        skipped++; continue;
+      }
       if (candidate.issue) { skipped++; continue; }
       try { this.apply(candidate.id); applied++; } catch (error) { if (error.status !== 409) throw error; skipped++; }
     }
@@ -304,7 +317,7 @@ export class CorrectionService {
     const settings = this.settings(); if (!settings.automatic || !settings.model || (settings.provider !== 'proxy' && this.busy())) return;
     // Candidates generated before automatic application was enabled are published on the next cycle.
     for (const { broadcast_id } of this.store.db.prepare("SELECT DISTINCT broadcast_id FROM ai_candidates WHERE json_extract(document,'$.status')='pending' "
-      + "AND json_extract(document,'$.issue') IS NULL").all()) this.applySafe(broadcast_id).catch(() => {});
+      + "AND json_extract(document,'$.issue') IS NULL").all()) this.applySafe(broadcast_id).catch(error => this.autoApplyFailed(broadcast_id, error));
     // Failed jobs retry after 1, 2, 4 ... minutes (30 minutes at most); administrator cancellation stays stopped.
     const ready = job => !job || ['completed', 'interrupted'].includes(job.phase) || (job.phase === 'failed'
       && this.now() - (job.ended_ms ?? 0) >= Math.min(1_800_000, 60_000 * 2 ** Math.max(0, (job.failures ?? 1) - 1)));

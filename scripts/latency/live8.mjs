@@ -11,7 +11,6 @@ import { LiveDiarization } from '../../src/live-diarization.mjs';
 import { BroadcastRegistry } from '../../src/broadcast-registry.mjs';
 import { CorrectionService } from '../../src/ai-correction.mjs';
 import { LiveCorrection } from '../../src/live-correction.mjs';
-import { AltEngine } from '../../src/alt-engine.mjs';
 import { committees } from '../../public/committees.mjs';
 import { cer, referenceText } from '../accuracy/metrics.mjs';
 
@@ -27,13 +26,12 @@ const manifest = JSON.parse(await readFile(join(set, 'manifest.json'), 'utf8')).
 const speakerGlossary = options.glossary ? JSON.parse(await readFile(options.glossary, 'utf8')) : {};
 const store = new Store(config.database); const engine = new EnginePool(config); const scheduler = new Scheduler(store, engine, config);
 if (config.liveDiarization) scheduler.diarizer = new LiveDiarization(store, config);
-if (options.alt) scheduler.alt = new AltEngine({ ...config, altLog: join(out, 'alt.log'), altThreads: Number(options.altThreads ?? 4) });
 const registry = new BroadcastRegistry(store);
 const ai = new CorrectionService({ store, registry, scheduler, config });
 ai.saveSettings({ model: options.model, refine_model: options.refine ?? '', automatic: true, auto_apply_safe: true, provider: 'proxy', base: options.base ?? 'http://127.0.0.1:10100/v1' });
 const live = new LiveCorrection({ store, registry, ai, hedgeMs: Number(options.hedge ?? 3500) });
 clearInterval(ai.timer);
-await engine.start(); await scheduler.diarizer?.start(); await scheduler.alt?.start();
+await engine.start(); await scheduler.diarizer?.start();
 const streams = [];
 for (const [index, item] of manifest.entries()) {
   const committee = committees.find(c => item.title.replace(/\s+/g, '').includes(c.name));
@@ -101,11 +99,10 @@ const accuracy = streams.map(s => {
 });
 const pooled = key => { let e = 0; let n = 0; for (const a of accuracy) { const x = a[key]; e += x.substitutions + x.insertions + x.deletions; n += x.reference_chars - x.excluded_deletions; } return 1 - e / n; };
 const summary = { started: new Date(begin).toISOString(), minutes, streams: streams.length, config: { model: config.model, workers: config.workers, segmentSeconds: config.segmentSeconds,
-  ai: options.model, refine: options.refine ?? null, alt: Boolean(options.alt), hedge_ms: live.hedgeMs }, raw_latency_ms: stat(raw), public_latency_ms: stat(latency),
+  ai: options.model, refine: options.refine ?? null, hedge_ms: live.hedgeMs }, raw_latency_ms: stat(raw), public_latency_ms: stat(latency),
   replaced_latency_ms: stat(replaced), replaced_within_view: replaced.filter(value => value <= viewDelay).length, unpublished, live: live.metrics,
-  scheduler: { jobs: scheduler.metrics.jobs, gaps: scheduler.metrics.gaps, errors: scheduler.metrics.errors, alt_errors: scheduler.metrics.alt_errors ?? 0 },
+  scheduler: { jobs: scheduler.metrics.jobs, gaps: scheduler.metrics.gaps, errors: scheduler.metrics.errors },
   latency_basis: 'paced source sample start, including segment buffering and EOF drain',
-  alt_corrupt_segments: rows.filter(row => row.alt_text?.includes('\uFFFD')).length,
   diarization: scheduler.diarizer?.metrics ?? null,
   accuracy_public: pooled('public'), accuracy_at_view: pooled('view'), accuracy_raw: pooled('raw'),
   max_queue: Math.max(...samples.flatMap(s => s.queues)), cpu_max: Math.max(...samples.map(s => s.cpu)) };

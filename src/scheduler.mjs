@@ -209,15 +209,7 @@ export class Scheduler {
           const acoustic_activity = gate && this.vad ? await this.vad.process(job) : undefined;
           const activity = gate ? speechActivity(job.pcm, speakers, { ...job, acoustic_activity }) : { state: 'unknown', method: 'disabled' };
           const silent = activity.state === 'silence';
-          const alternativeTask = Object.hasOwn(job, 'alt_result') ? Promise.resolve(job.alt_result)
-            : !job.partial && !silent && this.alt ? this.alt.transcribe(job) : Promise.resolve(null);
-          const [recognition, alternative] = await Promise.allSettled([
-            silent ? Promise.resolve({ spans: [], inference_ms: 0 }) : this.recognize(job), alternativeTask]);
-          job.alt_result = alternative.status === 'fulfilled' ? alternative.value : null;
-          if (recognition.status === 'rejected') throw recognition.reason;
-          const result = recognition.value;
-          const alt = job.alt_result;
-          if (alternative.status === 'rejected') this.metrics.alt_errors = (this.metrics.alt_errors ?? 0) + 1;
+          const result = silent ? { spans: [], inference_ms: 0 } : await this.recognize(job);
           const evidence = { ...(speakers ?? {}), speech_activity: activity };
           if (speakers) c.diarization = { state: speakers.speaker_state, scope: speakers.speaker_scope,
             processed_until_ms: speakers.processed_until_ms, error: speakers.diarization_error ?? null };
@@ -236,23 +228,20 @@ export class Scheduler {
           c.total_processed_s += job.unique_s;
           if (job.epoch === c.timeline_epoch) c.audio_processed_until = job.end_ms;
           let main_text = result.spans.map(s => s.text).join('').trim();
-          let alt_text = alt?.text.trim() ?? '';
-          if ((main_text && nonSpeech(main_text, evidence)) || (alt_text && nonSpeech(alt_text, evidence)))
+          if (main_text && nonSpeech(main_text, evidence))
             this.store.db.prepare('INSERT INTO recognition_suppressed(session_id,start_ms,end_ms,document) VALUES(?,?,?,?)')
-              .run(job.session_id, job.start_ms, job.end_ms, JSON.stringify({ raw_text: main_text, alt_text, evidence }));
+              .run(job.session_id, job.start_ms, job.end_ms, JSON.stringify({ raw_text: main_text, evidence }));
           if (nonSpeech(main_text, evidence)) { main_text = ''; this.metrics.silence_artifacts = (this.metrics.silence_artifacts ?? 0) + 1; }
-          if (nonSpeech(alt_text, evidence)) alt_text = '';
           // Music under real speech makes Whisper append invented phrases ("…부르겠습니다. 찬송가 2장"). They are cut out
           // and the recognized text is kept with the segment.
-          const recognized_text = main_text; main_text = stripInvented(main_text); alt_text = stripInvented(alt_text);
-          const raw_text = main_text || (alt_text.length >= 2 ? alt_text : '');
+          const recognized_text = main_text; main_text = stripInvented(main_text);
+          const raw_text = main_text;
           if (c.partial && c.partial.timeline_epoch === job.epoch && c.partial.start_ms <= job.start_ms) c.partial = null;
           if (raw_text && !(Number.isFinite(c.resume_floor_ms) && Number.isFinite(c.video_offset_ms) && job.end_ms + c.video_offset_ms <= c.resume_floor_ms)) {
             this.store.segment({ stream_id: c.stream_id, session_id: c.session_id,
               timeline_epoch: job.epoch, start_ms: job.start_ms, end_ms: job.end_ms, raw_text,
               video_offset_ms: c.video_offset_ms ?? null, video_id: c.video_id ?? null,
               ...(main_text !== recognized_text ? { recognized_text } : {}),
-              ...(alt ? { alt_text, alt_ms: alt.inference_ms, raw_source: main_text ? 'main' : 'alt' } : {}),
               live_preview: Boolean(main_text), preview_updated_ms: Date.now(),
               ready_ms: Date.now(), audio_received_ms: job.received_ms, timestamp_quality: 'chunk-envelope',
               latency_ms: Date.now() - job.received_ms + job.unique_s * 1000, ...evidence });
@@ -285,7 +274,7 @@ export class Scheduler {
     const deadline = Date.now() + 95_000;
     while ((this.busy || this.finishes.size) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
     this.closed = true; clearTimeout(this.wakeTimer);
-    await this.diarizer?.close(); await this.alt?.stop(); await this.vad?.stop(); await this.engine.stop();
+    await this.diarizer?.close(); await this.vad?.stop(); await this.engine.stop();
   }
   async background(job) {
     if (!this.accepting || !this.engine.ready || this.busy || this.states().some(state => ['running', 'draining', 'degraded', 'reconnecting'].includes(state.state)))

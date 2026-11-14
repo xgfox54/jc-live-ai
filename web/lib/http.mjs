@@ -1,7 +1,6 @@
 import { assertSupportedRuntime } from './runtime.mjs';
 import { BlobStore } from './blob-store.mjs';
 import { syncRequest as sync, viewerRequest as view } from './http-core.mjs';
-export { edgeCache } from './http-core.mjs';
 
 const defaultStorage = new BlobStore();
 export function syncRequest(request, options = {}) {

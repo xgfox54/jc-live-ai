@@ -5,7 +5,7 @@ import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { gzipSync } from 'node:zlib';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { D1Store } from '../cloudflare/d1-store.mjs';
 import { handleRequest } from '../cloudflare/worker.mjs';
 import { publicationContentHash } from '../web/lib/publication-protocol.mjs';
@@ -72,7 +72,7 @@ test('Worker stores only ended public archives and empty index, with idempotent 
   assert.equal((await send(env, downgrade)).status, 400);
   const foreign = envelope(); foreign.publication.publisher_id = randomUUID();
   assert.equal((await send(env, foreign)).status, 409);
-  assert.equal(sql.prepare('SELECT count(*) AS n FROM documents').get().n, 2);
+  assert.equal(sql.prepare("SELECT count(*) AS n FROM documents WHERE path NOT LIKE '%.view'").get().n, 2);
 });
 
 test('Worker rejects foreign origins, cookies, methods, traversal and secret disclosure', async t => {
@@ -170,4 +170,20 @@ test('pushed health refreshes labels without moving the transcript event cursor'
   assert.equal(state.cursor, 10); assert.equal(state.health.get('ch1').status, 'processing');
   assert.equal(state.apply({ event_id: 11, kind: 'segment', payload: { segment_id: 'one', stream_id: 'ch1', version: 1 } }), true);
   assert.equal(state.cursor, 11);
+});
+test('minutes are answered from the stored compressed document without decoding the archive', async t => {
+  // 2026-11-13: decoding and re-encoding a whole archive on a cold Worker exceeded the free plan's CPU time (503).
+  const { env, sql } = fixture(t); const path = 'minutes/' + minuteId;
+  const get = gzip => handleRequest(new Request('https://jc-live.unit.workers.dev/api/viewer/' + path, gzip ? { headers: { 'Accept-Encoding': 'gzip' } } : {}), env);
+  const view = () => sql.prepare('SELECT v.etag FROM documents d JOIN documents v ON v.path = ? AND v.etag = d.etag WHERE d.path = ?').get(path + '.view', path + '.json');
+  assert.equal((await send(env, envelope(minutes()))).status, 200); assert.ok(view());
+  const expected = await (await get(false)).json();
+  // An archive stored before views existed gets its view at the first compressed read
+  sql.prepare("DELETE FROM documents WHERE path LIKE '%.view'").run();
+  const first = await get(true); assert.equal(first.headers.get('content-encoding'), 'gzip');
+  assert.deepEqual(JSON.parse(gunzipSync(Buffer.from(await first.arrayBuffer()))), expected); assert.ok(view());
+  // The view alone answers: the archive body is not read
+  sql.prepare('UPDATE documents SET body = ? WHERE path = ?').run(Buffer.from('not gzip'), path + '.json');
+  const fast = await get(true); assert.equal(fast.status, 200);
+  assert.deepEqual(JSON.parse(gunzipSync(Buffer.from(await fast.arrayBuffer()))), expected);
 });

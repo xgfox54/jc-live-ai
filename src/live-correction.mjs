@@ -92,7 +92,7 @@ export class LiveCorrection {
     try { this.ai.apply(candidate.id); this.metrics.applied++; } catch (error) { if (error.status !== 409) throw error; this.metrics.skipped++; }
   }
   input(segment) {
-    return { id: 'S0', text: segment.raw_text, ...(segment.alt_text && segment.alt_text !== segment.raw_text ? { alt: segment.alt_text } : {}) };
+    return { id: 'S0', text: segment.raw_text };
   }
   // Each segment is refined once the next segment of the same stream arrives (or after nextWaitMs), so the refinement
   // model can repair words cut at the chunk boundary. Its result replaces the fast correction (or fills a held one)

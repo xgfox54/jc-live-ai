@@ -20,12 +20,14 @@ const source = value => {
   return url.href;
 };
 const video = value => typeof value === 'string' && /^[A-Za-z0-9_-]{11}$/.test(value) ? value : fail();
-// Official council replay playlists only (the same rule as src/council.mjs councilReplay).
+// Official council replay playlists only; src/council.mjs councilReplay uses the same path rule.
+// Meetings held between sessions are filed under the session number with END ("/2026/455END/20261105_3_moon/").
+export const REPLAY_PATH = /^\/vod\/_definst_\/\/?\d{4}\/\d{1,4}(?:END)?\/[A-Za-z0-9_-]+\/playlist\.m3u8$/;
 const replayUrl = value => {
   let url;
   try { url = new URL(str(value, 1000)); } catch { fail(); }
   if (url.protocol !== 'https:' || url.hostname !== 'vod.council.jeju.kr' || url.port || url.username || url.password || url.search || url.hash
-    || !/^\/vod\/_definst_\/\/?\d{4}\/\d{1,4}\/[A-Za-z0-9_-]+\/playlist\.m3u8$/.test(url.pathname)) fail();
+    || !REPLAY_PATH.test(url.pathname)) fail();
   return url.href;
 };
 // A replay that covers only the meeting can start after the recording, so its offset may be negative.

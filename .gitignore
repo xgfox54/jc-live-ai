@@ -28,3 +28,4 @@ __pycache__/
 /cloudflare/wrangler.json
 /cloudflare/wrangler.local.json
 /scripts/standby/*.exe
+/scripts/autostart/*.exe

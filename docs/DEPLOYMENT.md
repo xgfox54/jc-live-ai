@@ -2,6 +2,8 @@
 
 ## GitLab 배포 범위
 
+현재 원본 배포는 GitHub(xgfox54/jc-live-ai). GitLab 원격(gitlab.aigov.go.kr)은 2026-10-24 이후 사용하지 않았고 2026-11-14 확인 때 저장소 주소가 응답하지 않음. 아래는 GitLab을 다시 쓸 때의 구성.
+
 저장소에 소스·테스트·설정 예시·운영 안내 게시. GitLab CI에서 테스트와 보안 검사 수행, 소스 ZIP 생성 구성. GitLab Pages나 외부 실행 서버의 자동 배포 대상은 미설정.
 
 애플리케이션은 상시 실행 Node.js 서버·SQLite·음원 수집 프로세스·GPU 전사 워커 필요. 정적 웹 호스팅만으로 실행 불가.
@@ -32,8 +34,6 @@ CUDA 워커는 NVIDIA CUDA 13.3.1 재배포 압축파일(cuda_nvcc, cuda_crt, li
 scripts/build-worker.ps1 -Backend cuda -VisualStudioEnvironment '개발자 환경 배치 경로' -CudaPath 'CUDA 압축 해제 경로' -ClangDirectory 'LLVM bin 경로' -TargetDirectory 'C:\jcbc'
 Copy-Item 'C:\jcbc\release\jc-live-worker.exe' 'bin/cuda/jc-live-worker.exe'
 ```
-
-보조 음성 인식: SenseVoiceSmall 2024-07-17(sherpa-onnx 1.13.8, CPU). bin/sensevoice/에 model.onnx, tokens.txt, LICENSE와 가상환경(venv, sherpa-onnx·numpy) 배치. 서버 시작 시 model.onnx SHA-256(src/alt-engine.mjs) 검사. config의 altRecognizer true로 사용. 결과는 문장의 alt_text로 저장하고 정밀 후보정 입력에만 사용. 공개 화면에는 표시하지 않음.
 
 후보정 2단계: 관리자 AI 설정의 후보정 모델(1차, 즉시 공개)과 정밀 후보정 모델(2차). 2차는 같은 방송의 다음 문장이 나오거나 10초가 지나면 실행하고 검사를 통과한 결과로 공개 문장 교체.
 
@@ -67,6 +67,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-live.ps1
 - 녹음 저장 한도 도달 또는 저장 오류는 자동 감지 중단 사유. 관리자 화면의 안내 확인 후 조치.
 - 서버 중지·PC 절전·전원 종료 중에는 방송 감지 불가.
 - 방송 주소를 변경할 때 수집 중지 후 등록. 등록·수정 내용은 이용자 화면에 실시간 반영.
+- 보존 기간: `retentionDays`(기본 21일, 7~365일). 엔진 시작 2분 뒤와 그 뒤 하루마다 기간이 지난 운영 자료 삭제(`src/retention.mjs`). 수동 시험 모드(`--manual`)에서는 실행 안 함.
+  - 삭제: 누락 기록을 뺀 이벤트 기록, 결정에 더 쓰이지 않는 AI 후보정 후보, 이전 발언자 검토 판, 기간이 지난 세션의 음성 특징과 원음 녹음, 기간이 지난 DB 백업 파일(가장 최근 백업 1개는 유지).
+  - 유지: 받아쓰기, 보정 이력, 회의록, 요약, 최종 발언자 결과, 누락 기록, 수집 중인 세션의 자료.
+  - 결과: 관리자 `/api/admin/discovery` 응답의 `retention`과 감사 기록 `retention.run`. DB 파일 크기는 VACUUM 전까지 줄지 않고, 비운 공간을 새 자료가 다시 사용.
 
 ## 업데이트·백업
 
@@ -80,6 +84,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-live.ps1
 ~~~
 
 로컬 변경이 있으면 pull 전에 변경 내용을 별도 보존·통합. 강제 덮어쓰기 금지.
+
+## 운영 보조 스크립트
+
+| 스크립트 | 용도 |
+|---|---|
+| `scripts/check-osv.mjs` | 웹(npm)·워커(crates.io) 잠금 파일의 패키지를 OSV 취약점 DB에서 조회 |
+| `scripts/package-backup.mjs <준비 폴더> <이전 인계 폴더>` | Google Drive 인계용 백업 묶음(소스, git bundle, 비공개 상태, 목록) 생성 |
+| `scripts/web-licenses.mjs` | web/package-lock.json 기준 라이선스 고지를 licenses/web에 다시 생성 |
+| `scripts/verify-deployed-web.mjs [Vercel 주소]` | Vercel 배포본의 화면 파일과 응답 확인 |
 
 ## GitLab 검사·배포본
 

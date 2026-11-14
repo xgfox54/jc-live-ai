@@ -30,6 +30,7 @@ import { reviewRequest } from './review-http.mjs';
 import { importAudio } from './import-audio.mjs';
 import { CaptureRecording } from './capture-recording.mjs';
 import { ModelManager } from './model-manager.mjs';
+import { Retention } from './retention.mjs';
 import { committees, CHANNEL_IDS } from '../public/committees.mjs';
 import { namedCommitteeStream } from './committees.mjs';
 import { HttpError, identifier, integer, text, sourcePage, videoId, body, jsonBody } from './validate.mjs';
@@ -74,6 +75,7 @@ export function createService(context) {
   const videoAlignment = review.videoAlignment = new VideoAlignment({ registry, review, store, config, scheduler });
   const captureRecording = new CaptureRecording(context);
   const modelManager = new ModelManager(correctionAI);
+  const retention = new Retention({ store, registry, config });
   const states = () => [...new Map([...store.states(), ...scheduler.states()].map(item => [item.stream_id, item])).values()];
   const visibleStream = ({ approval_note, prompt, ...stream }) => stream;
   const server = createServer(async (req, res) => {
@@ -140,7 +142,7 @@ export function createService(context) {
         switch (url.pathname) {
           case '/api/admin/streams': json(res, { streams: store.streams(), states: states(), monitoring: monitor.states() }); return;
           case '/api/admin/settings': json(res, settingsView(config)); return;
-          case '/api/admin/discovery': json(res, { ...discovery.view(), minutes_error: minutes.error ?? null, cloud_sync: cloudSync.view(), schedule: schedule.adminView() }); return;
+          case '/api/admin/discovery': json(res, { ...discovery.view(), minutes_error: minutes.error ?? null, cloud_sync: cloudSync.view(), schedule: schedule.adminView(), retention: retention.view() }); return;
           case '/api/streams': json(res, { streams: store.streams().map(visibleStream), states: states() }); return;
           case '/api/snapshot': {
             const snapshot = store.snapshot(ids); snapshot.streams = snapshot.streams.map(visibleStream);
@@ -202,8 +204,8 @@ export function createService(context) {
         if (previous?.broadcast_id) registry.suspend(previous.broadcast_id, true);
         monitor.invalidate(id); store.saveStream(stream); store.event('stream', viewerStream(stream)); json(res, stream, 201); return;
       }
-      const match = url.pathname.match(/^\/api\/admin\/streams\/(ch(?:[0-9]|1[0-2]))\/(start|stop|epoch|pcm|auto)$/);
-      if (match) {
+      const match = url.pathname.match(/^\/api\/admin\/streams\/(ch\d{1,2})\/(start|stop|epoch|pcm|auto)$/);
+      if (match && CHANNEL_IDS.includes(match[1])) {
         const [, id, action] = match;
         const stream = store.streams().find(s => s.stream_id === id);
         if (!stream) throw new HttpError(404, 'Register source first');
@@ -248,9 +250,9 @@ export function createService(context) {
     }
   });
   server.maxConnections = 400; server.requestTimeout = 15_000; server.headersTimeout = 10_000;
-  return { server, feed, viewerFeed: viewer.feed, desktopLive, monitor, discovery, schedule, registry, minutes, cloudSync, correctionAI, liveCorrection, speakerDirectory, review, finalSpeakers, videoAlignment, audioReview, modelManager, async close() {
+  return { server, feed, viewerFeed: viewer.feed, desktopLive, monitor, discovery, schedule, registry, minutes, cloudSync, correctionAI, liveCorrection, speakerDirectory, review, finalSpeakers, videoAlignment, audioReview, modelManager, retention, async close() {
     await desktopLive?.close();
-    await finalSpeakers.close(); await videoAlignment.close(); await review.close(); await audioReview.close(); await modelManager.close();
+    await retention.close(); await finalSpeakers.close(); await videoAlignment.close(); await review.close(); await audioReview.close(); await modelManager.close();
     await discovery.close(); await monitor.close(); await handoff.close(); await correctionAI.close(); await cloudSync.close(); minutes.close();
     feed.close(); viewer.feed.close(); server.closeAllConnections();
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

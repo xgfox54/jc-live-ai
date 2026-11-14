@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { assets } from './build-web.mjs';
+import { VERCEL_SITE } from '../src/sites.mjs';
 
-const base = new URL(process.argv[2] ?? 'https://jc-live-ykh1.vercel.app');
+const base = new URL(process.argv[2] ?? VERCEL_SITE);
 assert.equal(base.protocol, 'https:');
 assert.ok(base.hostname.endsWith('-ykh1.vercel.app'));
 const results = [];

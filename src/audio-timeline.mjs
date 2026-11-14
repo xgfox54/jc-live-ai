@@ -1,4 +1,4 @@
-import { openSync, closeSync, writeFileSync, fsyncSync, renameSync, unlinkSync, readFileSync, statSync } from 'node:fs';
+import { openSync, closeSync, writeFileSync, fsyncSync, renameSync, unlinkSync } from 'node:fs';
 export class AudioTimeline {
   constructor() { this.pending = ''; this.samples = 0; this.frames = 0; this.spans = []; this.invalid = false; }
   write(text) {
@@ -66,12 +66,4 @@ export function saveAudioTimeline(path, value) {
     if (fd !== undefined) closeSync(fd);
     try { unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-}
-
-export function readAudioTimeline(path, pcmPath) {
-  const value = JSON.parse(readFileSync(path, 'utf8'));
-  const bytes = statSync(pcmPath).size;
-  if (!Number.isSafeInteger(value.pcm_bytes) || bytes < value.pcm_bytes || sourceTimeAt(value, 0) === null)
-    return { ...value, status: 'unverified' };
-  return value;
 }

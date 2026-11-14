@@ -74,8 +74,10 @@ export class BroadcastRegistry {
     return this.db.prepare('SELECT s.document,s.rowid AS sequence FROM segments s JOIN broadcast_sessions b ON b.session_id=s.session_id WHERE b.broadcast_id=? ORDER BY s.rowid')
       .all(id).map(row => ({ ...JSON.parse(row.document), sequence: row.sequence }));
   }
+  // "+e.id" keeps SQLite on the partial index broadcast_gap_session. Ordering by the bare rowid made it scan every event
+  // instead (about 130 ms per call with 97,000 events, 2026-11-14).
   gaps(id) {
-    return this.db.prepare("SELECT e.payload FROM events e JOIN broadcast_sessions b ON json_extract(e.payload,'$.session_id')=b.session_id WHERE b.broadcast_id=? AND e.kind='gap' ORDER BY e.id")
+    return this.db.prepare("SELECT e.payload FROM events e JOIN broadcast_sessions b ON json_extract(e.payload,'$.session_id')=b.session_id WHERE b.broadcast_id=? AND e.kind='gap' ORDER BY +e.id")
       .all(id).map(row => JSON.parse(row.payload));
   }
   saveMinutes(value) {
@@ -112,6 +114,13 @@ export class BroadcastRegistry {
     if (current) current = { ...current, review_decision_version: current.decision_version };
     return decisionOverlay(current, decisions, this.publishedSegments(id));
   }
+  // The fields that decide whether a stored speaker review is still current, read without parsing the whole result.
+  finalSpeakersHead(id) {
+    if (!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='review_state'").get()) return null;
+    return this.db.prepare("SELECT json_extract(document,'$.phase') AS phase,json_extract(document,'$.method') AS method,"
+      + "json_extract(document,'$.source_guard') AS source_guard,json_extract(document,'$.decision_version') AS decision_version,"
+      + "json_extract(document,'$.people_hash') AS people_hash FROM review_state WHERE id=?").get('final-speakers:' + id) ?? null;
+  }
   structuredCurrent(id, structured) {
     if (!structured) return false;
     if (structured.scope === 'published') return JSON.stringify(structured.revision) === JSON.stringify(this.publishedRevision(id));
@@ -143,9 +152,10 @@ export class BroadcastRegistry {
     const read = key => { const row = this.db.prepare('SELECT document FROM review_state WHERE id=?').get(key + ':' + id); return row ? JSON.parse(row.document) : null; };
     const structured = read('structured'); const manual = read('manual');
     const current = this.structuredCurrent(id, structured);
+    const reviewed = this.db.prepare("SELECT json_extract(document,'$.updated_ms') AS time FROM review_state WHERE id=?").get('final-speakers:' + id)?.time;
     return { ...value, structured: structured ? { ...structured, stale: !current } : null, manual,
       method: manual?.markdown ? 'manual_review' : current ? 'grounded_ai' : value.method,
-      updated_ms: Math.max(value.updated_ms, structured?.updated_ms ?? 0, manual?.updated_ms ?? 0, this.reviewState('final-speakers:' + id)?.updated_ms ?? 0),
+      updated_ms: Math.max(value.updated_ms, structured?.updated_ms ?? 0, manual?.updated_ms ?? 0, reviewed ?? 0),
       markdown: manual?.markdown || (current && !this.finalSpeakers(id) ? structured.markdown : value.markdown) };
   }
   minuteList() {
@@ -154,8 +164,9 @@ export class BroadcastRegistry {
       + "json_extract(document,'$.status') AS status,json_extract(document,'$.updated_ms') AS updated_ms,json_extract(document,'$.segment_count') AS segment_count,"
       + "json_extract(document,'$.session_count') AS session_count FROM minutes ORDER BY rowid DESC").all().map(value => {
       if (reviewExists) {
-        const updated = this.db.prepare("SELECT max(json_extract(document,'$.updated_ms')) AS time FROM review_state WHERE id IN (?,?)")
-          .get('structured:' + value.id, 'manual:' + value.id).time;
+        // The same sources as minutes(), so an unchanged meeting keeps the time it was last published with.
+        const updated = this.db.prepare("SELECT max(json_extract(document,'$.updated_ms')) AS time FROM review_state WHERE id IN (?,?,?)")
+          .get('structured:' + value.id, 'manual:' + value.id, 'final-speakers:' + value.id).time;
         value.updated_ms = Math.max(value.updated_ms, updated ?? 0);
       }
       return { id: value.id, title: value.title, scheduled_at: value.scheduled_at, status: value.status,

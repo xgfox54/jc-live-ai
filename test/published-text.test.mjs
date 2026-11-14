@@ -103,7 +103,7 @@ test('legacy AI correction history restores provenance without modifying origina
   try {
     const row = store.segment({ stream_id: 'ch1', session_id: 's1', start_ms: 0, end_ms: 1, raw_text: '원문 보존' });
     store.correct(row.segment_id, { version: 1, origin: 'ai', text: 'AI 후보정' });
-    store.db.exec("UPDATE segments SET document=json_remove(document,'$.ai_corrected'); UPDATE events SET payload=json_remove(payload,'$.ai_corrected');");
+    store.db.exec("UPDATE segments SET document=json_remove(document,'$.ai_corrected'); UPDATE events SET payload=json_remove(payload,'$.ai_corrected'); PRAGMA user_version=0;");
     store.close(); store = new Store(path); const recovered = store.segments({ stream: 'ch1' }).items[0];
     assert.equal(recovered.ai_corrected, true); assert.equal(recovered.raw_text, '원문 보존'); assert.equal(recovered.version, 2);
     const events = store.events(0).filter(e => e.kind === 'segment'); assert.equal(events[0].payload.ai_corrected, undefined); assert.equal(events[1].payload.ai_corrected, true);

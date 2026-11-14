@@ -10,7 +10,7 @@ import { Scheduler } from '../src/scheduler.mjs';
 import { BroadcastRegistry } from '../src/broadcast-registry.mjs';
 import { BroadcastDiscovery } from '../src/broadcast-discovery.mjs';
 import { createService } from '../src/server.mjs';
-import { publicSnapshot } from '../web/lib/model.mjs';
+import { publicSnapshot, channelId } from '../web/lib/model.mjs';
 
 const config = { chunkSeconds: 5, queueChunks: 4, silenceRms: 0 };
 const engine = () => ({ ready: true, metadata: { fixture: true }, transcribe: async () => ({ spans: [], inference_ms: 0 }), stop: async () => {} });
@@ -98,4 +98,9 @@ test('public and admin HTTP support ch0 and ch12 while pending channels cannot s
     assert.equal((await fetch(base + '/api/admin/streams/ch0/start', { method: 'POST', headers })).status, 409);
     assert.equal((await fetch(base + '/api/admin/streams', { headers })).status, 200);
   } finally { await scheduler.close(); await service.close(); store.close(); }
+});
+test('the web channel check accepts exactly the committee channel list', () => {
+  // web/lib is deployed without the committee data, so it keeps its own pattern; this keeps the two lists equal.
+  for (const id of CHANNEL_IDS) assert.equal(channelId(id), id);
+  for (const id of ['ch13', 'ch01', 'ch-1', 'CH1']) assert.throws(() => channelId(id));
 });

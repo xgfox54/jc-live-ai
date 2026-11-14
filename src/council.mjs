@@ -1,6 +1,7 @@
 import { open } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { sourcePage, videoId } from './validate.mjs';
+import { REPLAY_PATH } from '../web/lib/model.mjs';
 
 export function councilPage(value) {
   const url = new URL(sourcePage(value));
@@ -27,7 +28,7 @@ export function parseCouncilPlayer(html) {
       sources.push({ resolved_kind: 'youtube', video_id: videoId(url.href), media_url: null });
     }
     if (tag.toLowerCase().startsWith('<source') && url.hostname === 'vod.council.jeju.kr'
-      && /^\/(?:live\/[A-Za-z0-9_-]+|vod\/_definst_\/\/?\d{4}\/\d{1,4}\/[A-Za-z0-9_-]+)\/playlist\.m3u8$/.test(url.pathname) && !url.search && !url.hash) {
+      && /^\/(?:live\/[A-Za-z0-9_-]+|vod\/_definst_\/\/?\d{4}\/\d{1,4}(?:END)?\/[A-Za-z0-9_-]+)\/playlist\.m3u8$/.test(url.pathname) && !url.search && !url.hash) {
       sources.push({ resolved_kind: 'hls', video_id: null, media_url: url.href });
     }
   }
@@ -49,7 +50,7 @@ export async function resolveCouncil(value, signal) {
 }
 
 // Official council replay (다시보기) playlists only: HTTPS on the council VOD host without query, port or credentials.
-const REPLAY_PATH = /^\/vod\/_definst_\/\/?\d{4}\/\d{1,4}\/[A-Za-z0-9_-]+\/playlist\.m3u8$/;
+// The path rule is shared with the public data check (web/lib/model.mjs), so a replay accepted here can be published.
 export function councilReplay(value) {
   const url = new URL(value);
   if (url.protocol !== 'https:' || url.hostname !== 'vod.council.jeju.kr' || url.port || url.username || url.password

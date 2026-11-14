@@ -1,12 +1,12 @@
-import { councilHtml, plain } from './official-directory.mjs';
+import { councilHtml, plain, withoutScripts } from './official-directory.mjs';
 import { matchCommittee } from './committees.mjs';
 
 export const SCHEDULE_URL = 'https://www.council.jeju.kr/broadcast/schedule.do';
 const STATUS = [[/방송종료/, 'ended'], [/방송중|생방송/, 'live'], [/방송예정/, 'scheduled']];
-const seoulDate = (ms = Date.now()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(ms);
+export const seoulDate = (ms = Date.now()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(ms);
 
 export function parseBroadcastSchedule(html) {
-  const clean = html.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>/gi, '');
+  const clean = withoutScripts(html);
   if (!/생방송 일정/.test(plain(clean))) throw new Error('의회 생방송 일정 형식을 확인해 주세요.');
   const items = [];
   for (const table of clean.match(/<table\b[^>]*class=["']s-list["'][^>]*>[\s\S]*?<\/table>/gi) ?? []) {

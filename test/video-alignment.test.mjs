@@ -78,6 +78,10 @@ test('replay alignment is published in its own field and only for council replay
   assert.deepEqual(publicMinutes(value).replay, { media_url: REPLAY, page_url: alignment.page_url, sessions: [{ session_number: 1, offset_ms: 60000 }] });
   for (const media_url of ['https://evil.test/vod/_definst_//2026/455/a/playlist.m3u8', 'javascript:alert(1)', REPLAY + '?token=1',
     'https://vod.council.jeju.kr/live/XHC011/playlist.m3u8']) assert.throws(() => publicMinutes({ ...value, replay: { ...value.replay, media_url } }));
+  // A meeting held between sessions is filed under the session number with END, and both rules accept it (2026-11-14).
+  const filed = REPLAY.replace('/455/', '/455END/');
+  assert.equal(councilReplay(filed), filed);
+  assert.equal(publicMinutes({ ...value, replay: { ...value.replay, media_url: filed } }).replay.media_url, filed);
 });
 
 // Patterns measured on Session 455: a recording that began 85 minutes before a replay covering only the meeting,
@@ -131,7 +135,9 @@ test('a record merged from another PC keeps its collection clock', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'jc-align-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
   mkdirSync(join(directory, 'rec', 'ch0', 'one'), { recursive: true }); writeFileSync(join(directory, 'rec', 'ch0', 'one', 'audio.pcm'), Buffer.alloc(32));
   const id = 'f'.repeat(64); const record = { id, video_id: 'pwvxi_rX3ao', sources: [], merged_from: ['1'.repeat(64)] }; const states = new Map();
-  const review = { get: key => states.get(key) ?? null, save: (key, value) => { states.set(key, value); return value; }, record: () => record, store: {} };
+  const review = { get: key => states.get(key) ?? null, save: (key, value) => { states.set(key, value); return value; }, remove: key => states.delete(key), record: () => record, store: {} };
+  // A failure measured before the records were merged is cleared at start.
+  states.set('video-alignment:' + id, { phase: 'failed', error: '공식 영상을 내려받거나 음성을 대조하지 못했습니다.' });
   const registry = { list: () => [record], sessions: () => [{ session_id: 'one', stream_id: 'ch0' }] };
   const alignment = new VideoAlignment({ registry, review, store: { emit() {} }, config: { recordings: join(directory, 'rec'), alignmentDirectory: join(directory, 'work') } });
   t.after(() => alignment.close());

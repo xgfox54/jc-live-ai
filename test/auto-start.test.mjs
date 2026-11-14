@@ -200,3 +200,13 @@ test('connection failures retry with increasing delay and one collector at a tim
   assert.equal(f.monitor.states()[0].failures, 2);
   assert.equal(f.monitor.states()[0].next_check_ms - f.monitor.states()[0].checked_ms, 60000);
 });
+test('a check that finds the same broadcast phase does not save the broadcast again', async t => {
+  // 2026-11-14: every 30-second check saved the unchanged record, and each save rebuilt and republished its minutes.
+  const saved = []; let phase = 'offline';
+  const registry = { get: () => saved.at(-1) ?? { id: 'b1', phase: 'offline', completed: true }, save: value => { saved.push(value); return value; } };
+  const f = fixture(t, async () => result(phase), registry);
+  f.store.saveStream({ ...stream, broadcast_id: 'b1' });
+  await f.monitor.tick(); f.advance(); await f.monitor.tick(); assert.equal(saved.length, 0);
+  phase = 'waiting'; f.advance(); await f.monitor.tick();
+  assert.deepEqual(saved, [{ id: 'b1', phase: 'waiting', completed: true }]);
+});

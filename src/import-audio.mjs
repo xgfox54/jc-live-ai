@@ -2,6 +2,7 @@ import { mkdir, open, unlink } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { HttpError, text } from './validate.mjs';
+import { CHANNEL_IDS } from '../public/committees.mjs';
 
 export function mediaSignature(extension, head) {
   if (head.length < 12) return false;
@@ -21,7 +22,7 @@ export function mediaSignature(extension, head) {
 export async function importAudio(context, req, url) {
   const { scheduler, store, registry, inputs, minutes, config } = context;
   const id = url.searchParams.get('stream'); const name = text(url.searchParams.get('name'), 150);
-  if (!/^ch(?:[0-9]|1[0-2])$/.test(id) || url.searchParams.get('approved') !== '1') throw new HttpError(400, '방송 슬롯과 파일 사용 권한을 확인해 주세요.');
+  if (!CHANNEL_IDS.includes(id) || url.searchParams.get('approved') !== '1') throw new HttpError(400, '방송 슬롯과 파일 사용 권한을 확인해 주세요.');
   const extension = extname(name).toLowerCase();
   if (!['.wav', '.mp3', '.m4a', '.mp4', '.webm', '.ogg', '.flac', '.aac'].includes(extension)) throw new HttpError(400, '지원하는 음성·영상 파일을 선택해 주세요.');
   if (!scheduler.accepting || !scheduler.engine.ready || ['running', 'draining'].includes(scheduler.channels.get(id)?.state) || inputs.isActive?.(id)) throw new HttpError(409, '사용할 방송 슬롯의 처리를 먼저 마쳐 주세요.');

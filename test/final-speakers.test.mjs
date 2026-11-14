@@ -228,6 +228,9 @@ test('a meeting with no corrected public sentence is reported empty', async () =
   try {
     f.store.segment({ stream_id: 'ch2', session_id: 'one', start_ms: 0, end_ms: 10000, raw_text: '감사합니다.' });
     assert.equal(finalReadiness(f.registry, f.id), 'empty');
+    // A listed broadcast that was never collected (2026-11-06 정책세미나) is empty too, not still transcribing.
+    const listed = f.registry.upsert({ title: '정책세미나', page_url: 'https://www.youtube.com/watch?v=bcdefghijkl', sources: [], kind: 'youtube' });
+    assert.equal(finalReadiness(f.registry, listed.id), 'empty');
   } finally { await f.close(); }
 });
 
@@ -337,3 +340,69 @@ test('introductions and invitations split across two groups are read together wi
   assert.deepEqual(candidatesFor(8, rows, anchors).map(candidate => candidate.name), ['김혜지']);
 });
 
+test('plenary questioners called to ask and the governor called to answer are named; the governor needs a named mention', () => {
+  const record = { stream_id: 'ch0', committee: '본회의' };
+  const roster = [...peopleCandidates(record), { name: '위성곤', role: 'official', title: '제주특별자치도지사' }, { name: '박천수', role: 'official', title: '행정부지사' }];
+  const rows = [row(0, '그러면 순서에 따라 양영수 의원 발언대로 나오셔서 1문 1답 방식으로 질문해 주시기 바랍니다.', 1), row(1, '도민 여러분 안녕하십니까.', 2),
+    row(2, '양영수 의원 수고하셨습니다. 답변하신 위성곤 도지사도 수고하셨습니다. 순서에 따라 한동수 의원.', 1), row(3, '일괄질문 시작하도록 하겠습니다.', 3),
+    row(4, '그러면 한동수 의원의 질문에 대한 도지사의 답변을 듣도록 하겠습니다. 도지사께서는 단상 앞에 있는 발언대로 나오셔서 답변해 주시기 바랍니다.', 1),
+    row(5, '존경하는 한동수 의원님께서 질문해 주셨습니다.', 4), row(6, '김대진 의원님의 서면 질문에 대한 답변서를 5일 이내에 제출해 주시기 바랍니다.', 1), row(7, '산회를 선포합니다.', 1),
+    row(8, '나중에 양영수 의원님 질문하시겠지만 먼저 말씀드리겠습니다.', 4)];
+  const anchors = identityAnchors(rows, roster, record);
+  assert.deepEqual(anchors.filter(anchor => anchor.kind === 'floor').map(anchor => [anchor.index, anchor.name]), [[0, '양영수'], [2, '한동수'], [4, '위성곤']]);
+  assert.deepEqual([1, 3, 5].map(index => candidatesFor(index, rows, anchors).map(candidate => candidate.name)), [['양영수'], ['한동수'], ['위성곤']]);
+  // The title alone names nobody when the meeting never says the governor's name with it.
+  const unnamed = rows.map(item => ({ ...item, corrected_text: item.corrected_text.replace('위성곤 도지사', '도지사') }));
+  assert.ok(!identityAnchors(unnamed, roster, record).some(anchor => anchor.name === '위성곤'));
+});
+
+test('a call split after the name and a constituency introduction link the invited member past the chair and a mixed greeting', () => {
+  const record = { stream_id: 'ch0', committee: '본회의' };
+  const roster = peopleCandidates(record);
+  const unlabeled = (id, text) => ({ ...row(id, text), speaker_id: null, speaker_state: 'unknown' });
+  const rows = [row(0, '오전에 이어 질문을 계속하도록 하겠습니다. 순서에 따라 한동수 의원.', 6), unlabeled(1, '발언대로 나오셔서 일괄 질문하여 주시기 바랍니다. 감사합니다.'),
+    { ...unlabeled(2, '존경하는 도민 여러분, 선배·동료 의원 여러분!'), speaker_state: 'multiple',
+      speaker_turns: [{ speaker_id: 6, start_ms: 20000, end_ms: 21000 }, { speaker_id: 7, start_ms: 21000, end_ms: 28000 }] },
+    row(3, '안녕하십니까. 이도이동을 선거구 여러분의 비서 한동수 의원입니다.', 7),
+    row(4, '일괄질문 시작하도록 하겠습니다.', 7), row(5, '제주시 아라동을 지역구로 둔 양영수 의원입니다.', 3)];
+  const anchors = identityAnchors(rows, roster, record);
+  assert.deepEqual(anchors.filter(anchor => anchor.kind === 'self').map(anchor => [anchor.index, anchor.name]), [[3, '한동수'], [5, '양영수']]);
+  // The chair's second line is not the member's speech and the mixed greeting stays unresolved; the member's number 7 carries the turn.
+  assert.deepEqual([1, 2].map(index => candidatesFor(index, rows, anchors)), [[], []]);
+  assert.deepEqual([3, 4, 5].map(index => candidatesFor(index, rows, anchors).map(candidate => candidate.name)), [['한동수'], ['한동수'], ['양영수']]);
+  // Without the introduction, the call alone still reaches the member's later speech under number 7.
+  const called = rows.slice(0, 5).map((item, index) => index === 3 ? { ...item, corrected_text: '안녕하십니까. 오늘 질문을 드리겠습니다.' } : item);
+  assert.deepEqual(candidatesFor(4, called, identityAnchors(called, roster, record)).map(candidate => candidate.name), ['한동수']);
+});
+
+test('a voice match never names a member other than the one whose turn it is; officials answer in any turn', async () => {
+  // Given: 이경심 speaks twice, 정다운 is called, and an official answers. The fifth line sounds like 이경심.
+  const f = fixture({ count: 0 });
+  try {
+    const lines = [['이경심입니다. 질의합니다.', 1, 0], ['이경심입니다. 추가로 묻겠습니다.', 1, 0], ['순서에 따라 정다운 의원.', 2, 2],
+      ['정다운입니다. 질의합니다.', 3, 3], ['그 부분을 다시 묻겠습니다.', 4, 0],
+      ['특별자치행정국장 홍길동입니다.', 5, 1], ['특별자치행정국장 홍길동입니다.', 6, 1], ['답변드리겠습니다.', 7, 1]];
+    const ids = lines.map(([text, speaker], i) => {
+      const segment = f.store.segment({ ...row(i, text, speaker), stream_id: 'ch2', raw_text: text });
+      f.store.correct(segment.segment_id, { version: 1, text, origin: 'ai' }); return segment.segment_id;
+    });
+    const voice = new Map(ids.map((id, i) => [id, lines[i][2]]));
+    f.final.acoustics = { prepare: async () => ({ phase: 'complete', features: ids.map(id => ({ segment_id: id, cluster: 'one:voice-' + voice.get(id),
+      purity: 1, voiced_s: 6, mixed: false, vector: Array.from({ length: 256 }, (_, i) => +(i === voice.get(id))) })) }) };
+    // When: the final review runs.
+    f.final.start(f.id); await f.final.pending;
+    // Then: 이경심's voice does not name the line in 정다운's turn; the official's answer keeps its voice name.
+    const result = f.registry.finalSpeakers(f.id);
+    assert.deepEqual(ids.map(id => result.assignments[id]?.name ?? null), ['이경심', '이경심', null, '정다운', null, '홍길동', '홍길동', '홍길동']);
+    assert.equal(result.voice_assigned, 1);
+  } finally { await f.close(); }
+});
+test('a current review is not repeated; a new administrator decision starts it again', async () => {
+  const f = fixture({ count: 1 });
+  try {
+    f.final.auto(); await f.final.pending; assert.equal(f.calls.length, 1);
+    f.final.auto(); assert.ok(!f.final.pending); assert.equal(f.calls.length, 1);
+    f.review.save('speaker-decisions:' + f.id, { version: 1, entries: {}, updated_ms: Date.now() });
+    f.final.auto(); await f.final.pending; assert.equal(f.registry.finalSpeakers(f.id).review_decision_version, 1);
+  } finally { await f.close(); }
+});

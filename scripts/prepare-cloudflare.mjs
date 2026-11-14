@@ -3,10 +3,11 @@ import { resolve, dirname, join } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { Store } from '../src/store.mjs';
 import { CloudPublisher } from '../src/cloud-publisher.mjs';
+import { CLOUDFLARE_SITE, VERCEL_SITE } from '../src/sites.mjs';
 
 const configPath = resolve(process.argv[2] ?? 'config.local.json');
 const endpoint = process.argv[3];
-if (endpoint !== 'https://jc-live.xgfox54.workers.dev/api/sync') throw new Error('Review the Cloudflare deployment endpoint');
+if (endpoint !== CLOUDFLARE_SITE + '/api/sync') throw new Error('Review the Cloudflare deployment endpoint');
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
 const backupDir = resolve('data/cloudflare-migration-' + new Date().toISOString().replace(/[:.]/g, '-'));
 mkdirSync(backupDir, { recursive: true });
@@ -31,7 +32,7 @@ try {
   if (!owner || publisher.key !== key) throw new Error('Cloudflare publisher identity was not prepared');
   config.cloudSyncFiles = [...new Set([...(config.cloudSyncFiles ?? []), path])];
   config.desktopLive = { enabled: true, port: 4321, publicOrigin: new URL(endpoint).origin,
-    allowedOrigins: ['https://jc-live-ykh1.vercel.app', new URL(endpoint).origin] };
+    allowedOrigins: [VERCEL_SITE, new URL(endpoint).origin] };
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
   console.log(JSON.stringify({ backupDir, prepared: true, targets: config.cloudSyncFiles.length + (config.cloudSyncFile ? 1 : 0),
     publicOrigin: config.desktopLive.publicOrigin, publisher_id: owner }));
