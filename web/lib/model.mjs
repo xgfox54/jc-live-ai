@@ -167,7 +167,10 @@ export function minutesSummary(value) {
   if (!['in_progress', 'draft'].includes(s.status)) fail();
   return { id: broadcastId(s.id), title: str(s.title, 300), scheduled_at: str(s.scheduled_at ?? '', 300),
     status: s.status, updated_ms: int(s.updated_ms), segment_count: s.publication_policy === 'ai-corrected-v1' ? int(s.segment_count) : 0,
-    session_count: int(s.session_count), publication_policy: 'ai-corrected-v1' };
+    session_count: int(s.session_count), publication_policy: 'ai-corrected-v1',
+    // Broadcast time the minutes cover (src/viewer-minutes.mjs). Left out when absent, so a publisher that does not send it and
+    // a reader that knows it compute the same publication hash.
+    ...(s.duration_ms === undefined || s.duration_ms === null ? {} : { duration_ms: int(s.duration_ms) }) };
 }
 export function publicMinutes(value) {
   const s = obj(value); const summary = minutesSummary(s);
@@ -209,6 +212,31 @@ export function publicMinutes(value) {
         start_ms: optional(g.start_ms, num), end_ms: optional(g.end_ms, num),
         reason: reasons.has(g.reason) ? g.reason : 'input_discontinuity' };
     }), markdown: safe ? str(s.markdown, 16000000) : 'AI 후보정이 완료된 공개 자료를 기다립니다.\n' };
+}
+// The minutes page shows these fields. The .json and .md downloads keep the whole document; the page copy leaves out the
+// sentence-level transcript, the Markdown text, the internal notes and the summary sources, about 70% of a meeting's size
+// (2026-11-16: 364 KB of 5차 본회의 compressed, of which the page used 102 KB).
+const PAGE_FIELDS = ['id', 'title', 'scheduled_at', 'status', 'updated_ms', 'segment_count', 'session_count', 'duration_ms', 'publication_policy',
+  'sources', 'meeting_round', 'meeting_type', 'committee', 'agenda', 'warnings', 'gaps', 'participants', 'final_speakers', 'video_alignment', 'replay'];
+export function minutesPage(document) {
+  const paragraphs = document.paragraphs?.length ? document.paragraphs : document.transcript ?? [];
+  // A citation names a recognition segment. It is pointed at the paragraph that contains the segment, so the page finds it by
+  // the paragraph id and the paragraphs' segment lists stay out of the page copy.
+  const holder = new Map();
+  for (const item of paragraphs) for (const id of item.segment_ids ?? []) if (item.segment_id) holder.set(id, item.segment_id);
+  const cite = items => (items ?? []).map(item => holder.has(item.segment_id) ? { ...item, segment_id: holder.get(item.segment_id) } : item);
+  const digest = document.digest ? { ...document.digest,
+    ...(document.digest.overview ? { overview: { ...document.digest.overview, evidence: cite(document.digest.overview.evidence) } } : {}),
+    topics: (document.digest.topics ?? []).map(topic => ({ ...topic, items: (topic.items ?? []).map(item => ({ ...item, evidence: cite(item.evidence) })) })) } : null;
+  return { ...Object.fromEntries(PAGE_FIELDS.filter(key => document[key] !== undefined).map(key => [key, document[key]])),
+    summary: document.summary ? { updated_ms: document.summary.updated_ms } : null, digest,
+    // A minutes page opened before 2026-11-16 draws a meeting only when it carries a transcript list. An empty list lets such a
+    // page draw the paragraphs, which publicMinutes has already limited to AI-corrected text. Without paragraphs the list is
+    // left out, so both the older and the current page keep showing that the minutes are being prepared.
+    ...(paragraphs.length ? { transcript: [] } : {}),
+    timeline: (document.timeline ?? []).map(group => ({ ...group, items: cite(group.items) })),
+    // The speaker scope is needed only where it names the participant, that is without a speaker_key.
+    paragraphs: paragraphs.map(({ segment_ids, speaker_scope, ...item }) => item.speaker_key || !item.speaker_id ? item : { ...item, speaker_scope }) };
 }
 export function publicUpdate(value) {
   const s = obj(value); const published_ms = int(s.published_ms);

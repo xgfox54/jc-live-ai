@@ -300,7 +300,8 @@ Cloudflare 회의록 게시 중단 원인과 조치:
 - 등록: `powershell -ExecutionPolicy Bypass -File scripts/autostart/register-autostart.ps1`. 실행기는 등록 때 .NET Framework 4 컴파일러로 만들며 git 제외. 해제는 같은 명령에 `-Unregister`.
 - 동작: 엔진이 이미 실행 중이면 새로 시작하지 않음. 반복 실행이 없어 수동으로 멈춘 엔진을 다시 켜지 않음. 실행 결과는 `data/autostart.log`, `data/cloudflare-start.log`에 기록.
 - 조건: Windows 자동 로그인이 꺼져 있어(`AutoAdminLogon` 0) 재부팅 뒤 사용자가 로그인해야 시작. 로그인 전 백그라운드 실행은 GPU 전사 동작이 확인되지 않아 미적용.
-- 시험(2026-11-13 08:39): 엔진 정지 뒤 작업을 직접 실행. 08:39:09 엔진 시작, 작업과 실행기가 끝난 뒤에도 엔진 유지, 공개 상태 응답 desktop·running. 실제 재부팅·로그인 시험은 미실시.
+- 시험(2026-11-13 08:39): 엔진 정지 뒤 작업을 직접 실행. 08:39:09 엔진 시작, 작업과 실행기가 끝난 뒤에도 엔진 유지, 공개 상태 응답 desktop·running.
+- 실제 재부팅(2026-11-17): 07:29:34 부팅, 로그인 뒤 07:30:54 작업 실행(결과 0), 07:30:58 엔진·터널, 07:31:00 GPU 전사 프로세스 시작. 공개 상태 응답 `running`. 작업 폴더의 현재 코드를 실행하므로 Worker 배포 전의 게시 형식 변경이 있으면 게시 차단 발생(2026-11-16 절 참조).
 
 ## 2026-11-13 Cloudflare ID 분리
 
@@ -336,6 +337,25 @@ Cloudflare 회의록 게시 중단 원인과 조치:
 - 운영 배포: 2026-11-14 17:46 Worker 버전 `35c4c012-2d20-49c1-b0da-99f2a015939e`. 열린 수집 세션 0개 확인 후 17:47 엔진 재시작. 17:48 `49a560fc` 재게시와 압축본 행 생성, 게시 상태 `published`.
 - 확인: 운영 응답의 다시보기 정보(1·2·3·6회차 시간 차이)와 로컬 공개 문서 SHA-256 일치. `scripts/verify-cloudflare.mjs` 31개 항목 통과(2026-11-14 17:52), 회의록 14건 일치. 이 스크립트의 회의록 내려받기 제한 시간을 120초로 조정. 데스크탑 회선이 초당 약 40KB일 때 650KB 회의록 1건에 16초 소요.
 
+## 2026-11-16 회의록 화면용 사본과 회의 길이
+
+- 문제: 회의록 화면이 회의 1건을 열 때 문장 단위 받아쓰기, Markdown 본문, 요약 근거까지 포함한 공개 문서 전체를 수신(압축 기준 5차 본회의 364KB, 3차 본회의 649KB). 화면이 쓰는 양은 약 22%. 응답이 `Cache-Control: no-store`라 같은 회의도 매번 다시 수신. 수신 중 표시와 제한 시간이 없어 느린 회선에서 첫 안내 문구("열람할 회의를 선택해 주세요")에 멈춘 것처럼 보임. 운영 측정(데스크탑 회선, 이전 코드): 회의 1건 응답 1.3~6.9초, 첫 회의 표시 8.4초.
+- 화면용 사본: 화면이 읽는 항목만 포함한 사본(`web/lib/model.mjs`의 `minutesPage`)을 게시 때 D1 `minutes/<id>.page` 행에 저장. 회의록 조회는 이 사본으로 응답하고 `.json`·`.md` 내려받기는 전체 문서 유지. `ETag "page1-<보관본 etag>"`와 `Cache-Control: no-cache`로 바뀌지 않은 회의는 304 응답.
+- 이전 보관본: 사본이 없는 보관본은 첫 조회 때 사본 생성. 같은 회의를 동시에 여러 번 조회해도 생성은 1회(모의 300건: 수정 전 300회·8.7초, 수정 후 1회·0.15초). 배포 직후 운영자가 `scripts/verify-cloudflare.mjs`로 전체 회의록을 조회해 이용자 접속 전에 사본 생성.
+- 배포 전에 열린 화면: 문단이 있는 사본에 빈 `transcript` 목록 포함. 이전 화면 코드(`87278a0`)는 이 목록이 있어야 회의를 표시함. 이전 화면 코드로 시험한 회의 5건 모두 표시, 근거 이동 정상. 목록을 빼면 5건 모두 '회의록 준비 중' 표시.
+- 화면 동작: 회의를 고르면 제목과 불러오는 중 표시. 다른 회의를 고르면 이전 요청 취소. 최근 4건은 메모리에 보관해 바로 표시. 실패하면 이용자 조작 없이 자동 재시도(1회 최대 60초, 대기 약 2초에서 1분까지 무작위 분산, 숨긴 화면은 다시 보일 때 재개). 404는 '회의록을 준비하고 있습니다' 표시. 다시 시도 버튼 없음.
+- 목록 문구: 'AI 회의록 초안 · 00시간 00분'(작성 중이면 'AI 회의록 작성 중'). 회의 길이(`duration_ms`)는 녹음 세션·시간축마다 게시된 첫 문장 시작부터 마지막 문장 끝까지의 방송 위치를 합산. 이미 게시된 회의는 보관본 재전송 없이 목록에만 반영.
+- 크기(계산): 운영 회의록 15건 합계 압축 4,000KB에서 895KB. 1건 기준 13~27%. 5차 본회의 364KB에서 79KB, 3차 본회의 649KB에서 150KB.
+- 확인: 자동 테스트 388개 중 387개 통과, 1개 건너뜀. `deploy --dry-run` 통과(56.06 KiB, gzip 14.81 KiB). 로컬 Chromium 시험: 첫 회의 0.9초 표시, 503 응답 3회 뒤 조작 없이 12.8초 만에 표시, 404 상태에서 게시 후 1.4초 만에 표시, 숨긴 화면 12초 동안 요청 0건.
+- 회의 길이 한계: 겹친 녹음 구간이 있으면 길게 계산될 수 있음. 공식 방송 길이와 대조하지 않음. 예: 3차 문화관광체육위원회 인사청문회 9시간 12분, 같은 날 녹음 시각 범위 약 8시간 51분.
+- 배포 순서: Worker 배포 후 엔진 재시작. 새 엔진은 목록(`site.json`)에 `duration_ms`를 넣어 게시하므로 이전 Worker에서는 해시 불일치(400)로 Cloudflare 게시 전체가 막힘. 사본 생성 뒤 D1에서 회의록마다 `.page` 행과 같은 etag 확인.
+- 롤백 순서: 엔진 코드를 `87278a0`으로 원복해 재시작한 뒤 Worker를 `35c4c012-2d20-49c1-b0da-99f2a015939e`로 롤백. 반대 순서면 같은 해시 불일치 발생. `.page` 행은 이전 Worker에서 쓰이지 않고 남음. 이전 `.view` 행 15개(약 4MB)는 새 Worker에서 쓰이지 않으며 삭제는 별도 승인 대상.
+- Vercel: 정지 상태 유지. 게시를 다시 시작하려면 Vercel에도 같은 코드를 먼저 배포해야 함. 랩탑 대기 엔진(`93acd95`)은 `duration_ms`를 보내지 않아 새 Worker와 호환.
+- 운영 배포: 2026-11-17 08:01 Worker 버전 `63d55ed6-aa29-4d1a-87e7-73837b6e031c`. 직전 판 `35c4c012-2d20-49c1-b0da-99f2a015939e`.
+- 배포 전 게시 차단: 2026-11-17 07:29 데스크탑 재부팅 뒤 자동 실행이 07:30:58에 새 엔진 코드로 시작. 이전 Worker가 회의 길이를 포함한 목록 요청 1건을 거부(400, `invalid`)해 Cloudflare 게시 차단. 열린 수집 세션 0개. Worker 배포 뒤 08:02 엔진 정상 종료, `publication-state.mjs --db data/live.sqlite --settings data/cloudflare-sync.secret --resume`으로 차단 해제(거부된 요청 1건 삭제, 해제 전 상태 사본은 작업 기록 폴더 `outputs/minutes-loading-20261116/publication-before-resume-20261117.json`), 08:02:44 엔진 재시작. 08:03 게시 상태 `published`, 응답 200, 대기열 0건.
+- 운영 확인: `scripts/verify-cloudflare.mjs` 33개 항목 통과(08:04). 목록의 회의록 15건 모두 화면용 사본 생성, 원본과 etag 일치. 사본 합계 895KB(이전 압축본 행 4,000KB). 운영 목록 15건 모두 회의 길이 표시. 브라우저 시험(데스크탑 회선): 첫 회의 표시 4.8초(이전 8.4초), 3차 본회의 선택 후 0.8초(이전 2.1초), 회의 1건 수신량 5차 본회의 80KB·3차 본회의 151KB(이전 364KB·649KB). 모바일 조건(1.6Mbps, 지연 150ms, CPU 4배 감속) 첫 회의 3.3초. 엔진 상태 표시 '정상', 페이지 오류 0건.
+- 재부팅 영향: 운영 엔진과 자동 실행은 이 작업 폴더의 현재 코드를 실행. 게시 형식이 바뀌는 엔진 변경을 커밋한 상태에서 Worker 배포 전에 재부팅하면 같은 차단 발생. 형식 변경은 Worker 배포 일정과 함께 진행.
+
 ## 중지·복구·롤백
 
 - 조회 서버·터널만 중지: `./scripts/stop-cloudflare.ps1`. 기록·회의록·공급자 데이터 삭제 없음. 기록된 PID와 명령줄이 JC-LIVE용 프로세스인지 확인 후 종료.
@@ -344,7 +364,7 @@ Cloudflare 회의록 게시 중단 원인과 조치:
 - 2026-11-05 기록 복구 전 DB 백업: `data/backups/live-20261105-before-resume-repair.sqlite`. 복원하면 10:50 이후 기록이 사라지므로 운영자 판단 필요.
 - 운영 설정 백업: `data/cloudflare-migration-2026-10-25T12-14-40-280Z/`. 설정·SQLite 일관 사본·기존 Vercel 설정 보존. 백업에는 비밀이 있으므로 공개 업로드 금지.
 - Cloudflare 게시 중지: 서비스 종료 후 설정의 Cloudflare 추가 경로 제거. Vercel 원래 설정 복원은 해당 백업의 비밀 설정을 사용. 데이터 복원 전에 현재 DB를 다시 백업하고 현재 작업 결과를 보존.
-- 웹 코드 롤백: `scripts/cloudflare-cli.mjs rollback <검증된 이전 버전 ID>`. 코드 롤백은 D1 데이터 복원이 아님. 첫 정상 배포 이전에는 사용할 이전 버전이 없을 수 있음. 2026-11-05 11:10 배포의 직전 판은 `cbc31c07-36e3-4ba9-8514-4d6dbe1a6cb7`. 2026-11-07 07:42 배포의 직전 판은 `1e093456-263c-41ef-9ffd-67f2df3b2499`. 2026-11-11 02:49 배포의 직전 판은 `ae3c678b-2c4b-446c-82a6-846de82b3a31`. 2026-11-12 10:28 랩탑 배포 판 `eb901621-eb26-4f83-ab14-ca61380e360f`의 직전 판은 `804429eb-c5a1-440c-97f6-fda05e8ba125`. `ac69adf9-9525-40e5-b4ac-5a6d254f3df9`로 롤백하면 랩탑 대기와 전사 인계 경로가 빠짐. 2026-11-13 07:46 배포 판 `1ded5377-4012-4d97-a3f9-52404a064038`의 직전 판은 `eb901621-eb26-4f83-ab14-ca61380e360f`. 2026-11-14 17:31 배포 판 `b9cdd1c7-941b-4540-af06-6e591aa0e874`의 직전 판은 `1ded5377-4012-4d97-a3f9-52404a064038`. 17:46 배포 판 `35c4c012-2d20-49c1-b0da-99f2a015939e`의 직전 판은 `b9cdd1c7-941b-4540-af06-6e591aa0e874`. 17:46 이전 판으로 롤백하면 455END 다시보기가 들어간 `49a560fc` 회의록이 이전 공개 검증에 걸림. `b9cdd1c7`은 압축본 행을 쓰지 않는 조회(gzip 미사용, 내려받기)에서, `1ded5377`은 모든 조회에서 400 예상(코드 기준, 미시험).
+- 웹 코드 롤백: `scripts/cloudflare-cli.mjs rollback <검증된 이전 버전 ID>`. 코드 롤백은 D1 데이터 복원이 아님. 첫 정상 배포 이전에는 사용할 이전 버전이 없을 수 있음. 2026-11-05 11:10 배포의 직전 판은 `cbc31c07-36e3-4ba9-8514-4d6dbe1a6cb7`. 2026-11-07 07:42 배포의 직전 판은 `1e093456-263c-41ef-9ffd-67f2df3b2499`. 2026-11-11 02:49 배포의 직전 판은 `ae3c678b-2c4b-446c-82a6-846de82b3a31`. 2026-11-12 10:28 랩탑 배포 판 `eb901621-eb26-4f83-ab14-ca61380e360f`의 직전 판은 `804429eb-c5a1-440c-97f6-fda05e8ba125`. `ac69adf9-9525-40e5-b4ac-5a6d254f3df9`로 롤백하면 랩탑 대기와 전사 인계 경로가 빠짐. 2026-11-13 07:46 배포 판 `1ded5377-4012-4d97-a3f9-52404a064038`의 직전 판은 `eb901621-eb26-4f83-ab14-ca61380e360f`. 2026-11-14 17:31 배포 판 `b9cdd1c7-941b-4540-af06-6e591aa0e874`의 직전 판은 `1ded5377-4012-4d97-a3f9-52404a064038`. 17:46 배포 판 `35c4c012-2d20-49c1-b0da-99f2a015939e`의 직전 판은 `b9cdd1c7-941b-4540-af06-6e591aa0e874`. 2026-11-17 08:01 배포 판 `63d55ed6-aa29-4d1a-87e7-73837b6e031c`의 직전 판은 `35c4c012-2d20-49c1-b0da-99f2a015939e`. 이 판으로 롤백하려면 먼저 엔진 코드를 `87278a0` 상태로 원복해 재시작(반대 순서면 목록 게시 400). 11-14 17:46 이전 판으로 롤백하면 455END 다시보기가 들어간 `49a560fc` 회의록이 이전 공개 검증에 걸림. `b9cdd1c7`은 압축본 행을 쓰지 않는 조회(gzip 미사용, 내려받기)에서, `1ded5377`은 모든 조회에서 400 예상(코드 기준, 미시험).
 - 2026-11-11 받아쓰기 수정 원복: 커밋 `df29197`(4.3 표기), `4de7fea`(무음·지어낸 문구) 순서로 `git revert` 후 위 엔진 종료·시작 절차로 재시작. 화면 파일 변경이 없어 Cloudflare 재배포 불필요. 11-10 1차 본회의 96.7초 구간은 같은 관리자 경로로 이전 문장을 다시 저장해 복원(수정 이력은 `corrections` 표에 보존).
 - 연결 문제 진단: `data/cloudflare-viewer.*.log`, `data/cloudflare-tunnel.*.log` 확인. 토큰 파일 내용 출력 금지.
 
@@ -375,6 +395,7 @@ Cloudflare 회의록 게시 중단 원인과 조치:
 - 2026-11-10: `src/viewer.mjs`·`src/desktop-live.mjs`·`cloudflare/live-proxy.mjs`(엔진 상태 값과 상태 경로), `public/app.mjs`·`public/minutes.mjs`·`public/client-state.mjs`·`public/live-transport.mjs`·`public/display.mjs`·`public/index.html`·`public/minutes.html`·`public/style.css`(머리글 상태 표시), `test/desktop-live.test.mjs`·`test/cloudflare.test.mjs`·`test/viewer-health-display.test.mjs`.
 - 2026-11-11: `src/speech-activity.mjs`(거의 무음 판정), `src/silence-filter.mjs`·`src/scheduler.mjs`·`src/viewer.mjs`·`src/broadcast-registry.mjs`(지어낸 문구 제거와 공개 문장 정리), `src/ai-correction.mjs`·`src/correction-prompt.mjs`·`src/glossary-packs.json`(4.3 표기와 숫자 점검), `test/silence-filter.test.mjs`·`test/speech-evidence.test.mjs`·`test/live-preview.test.mjs`·`test/realtime-pipeline.test.mjs`·`test/ai-correction.test.mjs`.
 - 2026-11-13: `cloudflare/priority-routing.mjs`·`cloudflare/handoff.mjs`·`cloudflare/live-proxy.mjs`·`cloudflare/worker.mjs`·`cloudflare/wrangler.json`(우선순위 중계, 인계, 복구 회의록 보호, `keep_vars`), `src/handoff.mjs`·`src/files.mjs`·`src/broadcast-monitor.mjs`·`src/scheduler.mjs`·`src/server.mjs`·`src/viewer.mjs`·`src/minutes.mjs`·`src/audio-timeline.mjs`(엔진 인계), `src/main.mjs`·`src/acoustic-vad.mjs`·`src/speech-activity.mjs`·`worker/speech_gate.py`(대기 임대, 음성 감지 게이트), `scripts/standby/`(랩탑 대기 실행), `test/handoff.test.mjs`·`test/failover.test.mjs`·`test/speech-evidence.test.mjs`·`test/cloudflare.test.mjs`, `docs/LAPTOP-STANDBY.md`. 회의록 합치기: `src/minutes.mjs`·`src/video-alignment.mjs`·`cloudflare/priority-routing.mjs`, `test/failover.test.mjs`·`test/video-alignment.test.mjs`. ID 분리: `cloudflare/wrangler.example.json`(이전 `cloudflare/wrangler.json`), `scripts/cloudflare-cli.mjs`, `cloudflare/package.json`, `.gitignore`. 게시 중단 수정: `src/cloud-publisher.mjs`, `test/cloud.test.mjs`.
+- 2026-11-16: `web/lib/model.mjs`(화면용 사본 `minutesPage`, 목록 `duration_ms`), `web/lib/http-core.mjs`·`cloudflare/d1-store.mjs`·`src/minutes-http.mjs`·`src/viewer.mjs`(사본 응답·저장, 동시 생성 1회), `src/viewer-minutes.mjs`(회의 길이), `src/cloud-publisher.mjs`(게시된 회의의 길이 반영), `public/minutes.mjs`·`public/minutes.html`·`public/client-state.mjs`·`public/style.css`(불러오는 중 표시, 자동 재시도, 목록 문구), `scripts/verify-cloudflare.mjs`(사본 해시·304 검사), `test/cloud.test.mjs`·`test/cloudflare.test.mjs`·`test/minutes.test.mjs`·`test/review.test.mjs`.
 
 ## 공식 참고 자료
 

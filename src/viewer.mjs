@@ -6,6 +6,7 @@ import { viewerMinutesRegistry } from './viewer-minutes.mjs';
 import { publicSpeech, suspectText, publicText } from './silence-filter.mjs';
 import { deliveryHealth } from './delivery-health.mjs';
 import { selectSnapshotText, snapshotEtag, matchesEtag } from '../web/lib/snapshot-selection.mjs';
+import { minutesPage } from '../web/lib/model.mjs';
 
 // 'running' while this process's transcription worker accepts audio. The read-only viewer process has no engine,
 // and a stopping or restarting worker is not ready, so both report 'stopped'.
@@ -160,7 +161,7 @@ export function createViewer(context) {
   return {
     feed,
     handle(req, res, url) {
-      if (publicRegistry && minutesRequest(publicRegistry, req, res, url, '/api/viewer/minutes')) return;
+      if (publicRegistry && minutesRequest(publicRegistry, req, res, url, '/api/viewer/minutes', minutesPage)) return;
       if (!routes.has(url.pathname)) throw new HttpError(404, 'Route not found');
       if (req.method !== 'GET') throw new HttpError(405, 'Read-only endpoint');
       if (url.pathname === '/api/viewer/schedule') {

@@ -1,6 +1,7 @@
 import { HttpError } from './validate.mjs';
 
-export function minutesRequest(registry, req, res, url, prefix) {
+// page: the copy the minutes page reads (web/lib/model.mjs minutesPage); the .json and .md downloads keep the whole document.
+export function minutesRequest(registry, req, res, url, prefix, page = value => value) {
   if (!url.pathname.startsWith(prefix)) return false;
   if (req.method !== 'GET') throw new HttpError(405, 'Read-only endpoint');
   const suffix = url.pathname.slice(prefix.length);
@@ -16,6 +17,7 @@ export function minutesRequest(registry, req, res, url, prefix) {
       res.setHeader('Content-Type', match[2] === 'md' ? 'text/markdown; charset=utf-8' : 'application/json; charset=utf-8');
       res.end(match[2] === 'md' ? result.markdown : JSON.stringify(result, null, 2)); return true;
     }
+    result = page(result);
   }
   res.setHeader('Content-Type', 'application/json; charset=utf-8'); res.end(JSON.stringify(result)); return true;
 }

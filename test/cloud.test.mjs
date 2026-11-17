@@ -11,6 +11,8 @@ import { BroadcastRegistry } from '../src/broadcast-registry.mjs';
 import { MinutesService } from '../src/minutes.mjs';
 import { CloudPublisher, cloudSettings } from '../src/cloud-publisher.mjs';
 import { ALIGNMENT_METHOD } from '../src/video-alignment.mjs';
+import { viewerMinuteList } from '../src/viewer-minutes.mjs';
+import { minutesSummary } from '../web/lib/model.mjs';
 import { archiveOnly } from '../cloudflare/worker.mjs';
 import { syncRequest, viewerRequest } from '../web/lib/http.mjs';
 import { pollSnapshots } from '../public/polling.mjs';
@@ -290,8 +292,11 @@ test('ten-hour transcripts exceeding the old body limit publish and export compl
   const raw = JSON.stringify({ kind: 'minutes', published_ms: f.now(), document: f.registry.minutes(record.id), segments: f.registry.segments(record.id) });
   assert.ok(Buffer.byteLength(raw) > 3500000);
   await f.publisher.flush(); assert.equal(f.publisher.view().phase, 'published');
+  // The page copy holds every sentence in its paragraphs; the sentence list and the Markdown text stay in the downloads.
   const document = await (await f.read('minutes/' + record.id)).json();
-  assert.equal(document.transcript.length, 3600); assert.equal(document.transcript.at(-1).end_ms, 36000000);
+  assert.equal(document.segment_count, 3600); assert.equal(document.paragraphs[0].start_ms, 0);
+  assert.equal(document.paragraphs.at(-1).end_ms, 36000000); assert.match(document.paragraphs.at(-1).text, /발언 3599 /);
+  assert.deepEqual(document.transcript, []); assert.equal(document.markdown, undefined);
   const response = await viewerRequest(new Request('https://fixture.vercel.app/api/viewer/minutes/' + record.id + '.json',
     { headers: { 'Accept-Encoding': 'gzip' } }), { storage: f.storage });
   assert.equal(response.headers.get('content-encoding'), 'gzip');
@@ -414,4 +419,32 @@ test('a meeting whose archive fails the public data check does not hold back the
   assert.ok(f.storage.rows.has('minutes/' + other + '.json'));
   assert.equal(f.storage.rows.has('minutes/' + refused + '.json'), false);
   assert.equal(f.publisher.view().archive_phase, 'retry');
+});
+test('the minutes list gives the broadcast time a meeting covers, from the first to the last published sentence of each recording', async t => {
+  const f = fixture(t); const record = f.attach(1); f.segments(1, 0, 3);
+  // A second recording of the meeting caught up ten minutes of broadcast; a third has no published sentence.
+  for (const id of ['caught-up', 'silent']) { f.registry.attach({ stream_id: 'ch1', name: record.title, broadcast_id: record.id }, { session_id: id });
+    f.store.saveSession({ session_id: id, stream_id: 'ch1', state: 'stopped' }); }
+  for (const [start, end] of [[0, 5000], [595000, 600000]]) {
+    const row = f.store.segment({ session_id: 'caught-up', stream_id: 'ch1', start_ms: start, end_ms: end, raw_text: '비공개 원문' });
+    f.store.correct(row.segment_id, { version: 1, origin: 'ai', text: '따라잡은 발언' });
+  }
+  f.store.segment({ session_id: 'silent', stream_id: 'ch1', start_ms: 0, end_ms: 3600000, raw_text: '후보정 전 원문' });
+  f.minutes.flush();
+  const item = viewerMinuteList(f.registry).find(entry => entry.id === record.id);
+  assert.equal(item.segment_count, 5); assert.equal(item.duration_ms, 15000 + 600000); assert.equal(minutesSummary(item).duration_ms, 615000);
+  // A summary without the field keeps none, so an older publisher and this reader hash the same index.
+  const { duration_ms, ...older } = item; assert.equal('duration_ms' in minutesSummary(older), false);
+});
+test('a meeting published before meeting lengths existed gets its length in the index without its archive being sent again', async t => {
+  const f = fixture(t, { desktop: true }); const record = f.attach(1); f.segments(1, 0, 3);
+  f.store.saveSession({ session_id: 'session1', stream_id: 'ch1', state: 'stopped', input_end_reason: 'eof', queue_length: 0 });
+  for (let n = 0; n < 2; n++) { f.tick(); await f.publisher.flush(); }
+  // The summary kept with the archive as it was stored before 2026-11-16.
+  const known = f.publisher.known.get(record.id); const { duration_ms, ...older } = known.summary; assert.equal(duration_ms, 15000);
+  f.publisher.remember(record.id, { ...known, summary: older });
+  const archive = f.storage.rows.get('minutes/' + record.id + '.json').etag;
+  for (let n = 0; n < 2; n++) { f.tick(); await f.publisher.flush(); }
+  assert.equal(f.storage.rows.get('minutes/' + record.id + '.json').etag, archive);
+  assert.equal(f.storage.rows.get('site.json').value.minutes_index.find(item => item.id === record.id).duration_ms, 15000);
 });

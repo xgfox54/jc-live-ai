@@ -1,17 +1,53 @@
 import './display.mjs';
-import { retryWithJitter } from './polling.mjs';
 import { speakerText, speakerColor, speakerKey } from './speakers.mjs';
-import { newestMeetingsFirst, engineFromStatus, showEngineStatus, clockTime as time } from './client-state.mjs';
+import { newestMeetingsFirst, engineFromStatus, showEngineStatus, clockTime as time, hoursMinutes } from './client-state.mjs';
 import { createLiveTransport } from './live-transport.mjs';
 const $ = selector => document.querySelector(selector);
-let selected = ''; let request = 0; let view = 'chapter'; let current = null; let replay = null;
+let selected = ''; let request = 0; let view = 'chapter'; let current = null; let replay = null; let loading = null;
+// The last meetings opened stay in memory: going back to one shows it at once, and it is drawn again only when the server
+// has a newer version.
+const opened = new Map();
 const element = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 const wide = window.matchMedia('(min-width: 1280px)');
-const get = path => retryWithJitter(async () => {
-  const response = await fetch(path);
-  if (!response.ok) throw Object.assign(new Error('회의록을 불러오지 못했습니다. 다시 시도해 주세요.'), { retry: response.status >= 500 || response.status === 429 });
-  return response.json();
+// Viewers only read the page, so a load never asks them to act: it keeps trying by itself until it succeeds or another meeting
+// is chosen. One attempt stops after 60 seconds; the wait between attempts grows from about 2 seconds to a minute with random
+// spread, so viewers who failed together do not try again together, and a hidden page waits until it is shown. Before
+// 2026-11-16 a stalled download kept the page waiting without a message.
+const sleep = (ms, signal) => new Promise(resolve => {
+  const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
+  const timer = setTimeout(done, ms); signal?.addEventListener('abort', done);
 });
+const shown = signal => new Promise(resolve => {
+  const check = () => { if (document.visibilityState === 'hidden' && !signal?.aborted) return;
+    document.removeEventListener('visibilitychange', check); signal?.removeEventListener('abort', check); resolve(); };
+  document.addEventListener('visibilitychange', check); signal?.addEventListener('abort', check); check();
+});
+// onRetry receives 'missing' for 404 and 'failed' for other failures.
+async function get(path, { signal, onRetry } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    const controller = new AbortController(); const stop = () => controller.abort();
+    const timer = setTimeout(stop, 60_000); signal?.addEventListener('abort', stop);
+    try {
+      const response = await fetch(path, { signal: controller.signal });
+      if (response.ok) return await response.json();
+      onRetry?.(response.status === 404 ? 'missing' : 'failed');
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      onRetry?.('failed');
+    } finally { clearTimeout(timer); signal?.removeEventListener('abort', stop); }
+    await sleep(Math.round(Math.min(60_000, 2_000 * 2 ** (attempt - 1)) * (0.5 + Math.random())), signal);
+    await shown(signal);
+    if (signal?.aborted) throw new DOMException('Another meeting was chosen', 'AbortError');
+  }
+}
+const dots = () => { const node = element('span', undefined, 'processing-dots'); node.setAttribute('aria-hidden', 'true'); for (let i = 0; i < 3; i++) node.append(element('span', '.')); return node; };
+const titleOf = id => document.querySelector('[data-minutes="' + id + '"] strong')?.textContent || '회의록';
+// Loading and empty states replace the previous meeting at once, so a choice never leaves the page unchanged.
+function showState(heading, message, { busy = false } = {}) {
+  const line = element('p', message, 'help'); if (busy) line.append(dots());
+  $('#minutes-head').replaceChildren(element('h2', heading), line);
+  $('#minutes-tabs').hidden = true; $('#minutes-body').hidden = true; $('#replay-video').pause();
+}
 function speakerBadge(item, names) {
   const text = speakerText(item, names); if (!text) return null;
   const badge = element('span', text, 'speaker-label'); const color = speakerColor(item.speaker_id);
@@ -225,7 +261,8 @@ function selectView(next) {
 function render(value) {
   current = value;
   if (replay && replay.url !== replayUrl(value)) stopReplay();
-  if (value.publication_policy !== 'ai-corrected-v1' || !Array.isArray(value.transcript) || value.transcript.some(item => item.ai_corrected !== true)) {
+  const paragraphs = value.paragraphs?.length ? value.paragraphs : value.transcript;
+  if (value.publication_policy !== 'ai-corrected-v1' || !Array.isArray(paragraphs) || paragraphs.some(item => item.ai_corrected !== true)) {
     $('#minutes-head').replaceChildren(element('h2', '회의록 준비 중'), element('p', 'AI 후보정이 완료된 공개 자료를 기다립니다.'));
     $('#minutes-tabs').hidden = true; $('#minutes-body').hidden = true; return;
   }
@@ -234,31 +271,43 @@ function render(value) {
   $('#minutes-tabs').hidden = false; $('#minutes-body').hidden = false; selectView(view);
 }
 async function select(id) {
-  selected = id; const current = ++request;
+  selected = id; const ticket = ++request;
+  for (const button of document.querySelectorAll('[data-minutes]')) button.setAttribute('aria-pressed', String(button.dataset.minutes === id));
+  loading?.abort(); const controller = loading = new AbortController();
+  const known = opened.get(id);
+  if (known) render(known); else showState(titleOf(id), '회의록을 불러오는 중입니다', { busy: true });
+  $('#minutes-detail').setAttribute('aria-busy', String(!known));
+  const waiting = kind => { if (ticket === request && !known) showState(titleOf(id), kind === 'missing'
+    ? '회의록을 준비하고 있습니다. 준비되는 대로 이 화면에 표시합니다' : '연결이 원활하지 않아 자동으로 다시 불러오고 있습니다', { busy: true }); };
   try {
-    const value = await get('/api/viewer/minutes/' + id);
-    if (current !== request) return; render(value);
-    for (const button of document.querySelectorAll('[data-minutes]')) button.setAttribute('aria-pressed', String(button.dataset.minutes === id));
+    const value = await get('/api/viewer/minutes/' + id, { signal: controller.signal, onRetry: waiting });
+    if (ticket !== request) return;
+    opened.delete(id); opened.set(id, value); while (opened.size > 4) opened.delete(opened.keys().next().value);
+    if (known?.updated_ms !== value.updated_ms) render(value);
     $('#minutes-notice').textContent = '';
-  } catch (error) { if (current === request) $('#minutes-notice').textContent = error.message; }
+  } catch (error) {
+    // Only choosing another meeting ends a load; that choice shows its own state.
+    if (!controller.signal.aborted) throw error;
+  } finally { if (ticket === request) { loading = null; $('#minutes-detail').removeAttribute('aria-busy'); } }
 }
 async function refresh() {
   $('#reload').disabled = true;
   try {
-    const items = newestMeetingsFirst((await get('/api/viewer/minutes')).items); const list = $('#minutes-list'); list.replaceChildren();
-    if (!items.length) list.append(element('p', '작성된 회의록이 없습니다.', 'help'));
+    const items = newestMeetingsFirst((await get('/api/viewer/minutes', { onRetry: () => { if (!current && !selected)
+      showState('회의록을 불러오는 중입니다', '연결이 원활하지 않아 회의 목록을 자동으로 다시 받고 있습니다', { busy: true }); } })).items);
+    const list = $('#minutes-list'); list.replaceChildren();
+    if (!items.length) { list.append(element('p', '작성된 회의록이 없습니다.', 'help')); showState('열람할 회의록이 아직 없습니다', '방송이 등록되고 수집이 시작되면 회의록이 추가됩니다.'); }
     for (const item of items) {
       const button = element('button', undefined, 'secondary minutes-item'); button.dataset.minutes = item.id;
       button.setAttribute('aria-pressed', String(item.id === selected));
-      button.append(element('strong', item.title), element('span', (item.status === 'in_progress' ? '작성 중' : '검토용 초안')
-        + ' · ' + item.segment_count + '개 구간', 'help'));
+      button.append(element('strong', item.title), element('span', (item.status === 'in_progress' ? 'AI 회의록 작성 중' : 'AI 회의록 초안')
+        + (Number.isSafeInteger(item.duration_ms) ? ' · ' + hoursMinutes(item.duration_ms) : ''), 'help'));
       button.addEventListener('click', () => select(item.id)); list.append(button);
     }
     if (selected && items.some(item => item.id === selected)) await select(selected);
     else if (items.length) await select(items[0].id);
     $('#minutes-notice').textContent = items.length ? '회의록 ' + items.length + '건을 불러왔습니다.' : '수집이 시작되면 회의록을 자동으로 작성합니다.';
-  } catch (error) { $('#minutes-notice').textContent = error.message; }
-  finally { $('#reload').disabled = false; }
+  } finally { $('#reload').disabled = false; }
 }
 $('#reload').addEventListener('click', refresh); refresh();
 // The engine indicator is checked when the page opens and when it becomes visible again, at most once a minute.

@@ -5,7 +5,7 @@ import { parseCouncilArchive, ArchiveEnricher } from '../src/council-archive.mjs
 import { Store } from '../src/store.mjs';
 import { BroadcastRegistry } from '../src/broadcast-registry.mjs';
 import { ReviewService } from '../src/review.mjs';
-import { publicMinutes } from '../web/lib/model.mjs';
+import { publicMinutes, minutesPage } from '../web/lib/model.mjs';
 import { validateDigest } from '../src/meeting-digest.mjs';
 
 test('meeting digest drops only items with unsupported numbers and rejects an unsupported overview', () => {
@@ -140,4 +140,25 @@ test('a hearing whose title adds its subject in parentheses finds the committee 
     assert.deepEqual(await enricher.run(), [record.id]);
     assert.equal(registry.get(record.id).replay_url, replay); assert.equal(registry.get(record.id).replay_page, detail);
   } finally { store.close(); }
+});
+test('the minutes page copy leaves out the sentence list and exports, and each citation opens a paragraph it holds', () => {
+  const paragraph = (id, ids, extra = {}) => ({ session_number: 1, epoch: 0, start_ms: 0, end_ms: 1000, text: '발언 ' + id, ai_corrected: true,
+    segment_id: id, segment_ids: ids, speaker_key: null, speaker_id: null, speaker_scope: 'scope', ...extra });
+  const document = { id: 'a'.repeat(64), title: '시험', status: 'draft', updated_ms: 1, segment_count: 3, session_count: 1, duration_ms: 60000,
+    publication_policy: 'ai-corrected-v1', sources: [], warnings: [], gaps: [], participants: [], markdown: '# 전체 회의록', transcript: [{ text: '문장' }],
+    structured: { notes: [] }, discussion: [{ text: '발췌' }], summary: { updated_ms: 5, items: [{ text: '요약 근거' }] },
+    digest: { overview: { text: '개요', evidence: [{ segment_id: 's2', quote: '인용' }] },
+      topics: [{ title: '주제', items: [{ text: '항목', evidence: [{ segment_id: 's3', quote: '' }, { segment_id: null, quote: '근거 없음' }] }] }] },
+    timeline: [{ group: 0, title: '구간', session_number: 1, start_ms: 0, items: [{ text: '시간순', quote: '', segment_id: 's2' }] }],
+    paragraphs: [paragraph('s1', ['s1', 's2']), paragraph('s3', ['s3'], { speaker_id: 2 })] };
+  const page = minutesPage(document);
+  for (const key of ['markdown', 'structured', 'discussion']) assert.equal(page[key], undefined);
+  assert.deepEqual(page.transcript, []); assert.equal('transcript' in minutesPage({ ...document, paragraphs: [], transcript: [] }), false);
+  assert.deepEqual(page.summary, { updated_ms: 5 }); assert.equal(page.duration_ms, 60000); assert.equal(page.title, '시험');
+  // The page finds a citation by paragraph id, so a sentence inside a paragraph is cited by that paragraph.
+  assert.equal(page.digest.overview.evidence[0].segment_id, 's1'); assert.equal(page.timeline[0].items[0].segment_id, 's1');
+  assert.equal(page.digest.topics[0].items[0].evidence[0].segment_id, 's3'); assert.equal(page.digest.topics[0].items[0].evidence[1].segment_id, null);
+  assert.equal(page.paragraphs.some(item => 'segment_ids' in item), false);
+  // The speaker scope stays only where it names the participant.
+  assert.equal('speaker_scope' in page.paragraphs[0], false); assert.equal(page.paragraphs[1].speaker_scope, 'scope');
 });

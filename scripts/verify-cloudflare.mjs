@@ -1,7 +1,7 @@
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { publicMinutes } from '../web/lib/model.mjs';
+import { publicMinutes, minutesPage } from '../web/lib/model.mjs';
 import { Store } from '../src/store.mjs';
 import { BroadcastRegistry } from '../src/broadcast-registry.mjs';
 import { viewerMinutes } from '../src/viewer-minutes.mjs';
@@ -30,12 +30,19 @@ try {
   const list = await (await get('/api/viewer/minutes')).json();
   check('archive index', list.items.length === local.length && list.items.every(item => item.status === 'draft'), { count: list.items.length });
   for (const row of local) {
-    // Archives reach 650 KB compressed; at the 40 KB/s measured from the desktop on 2026-11-14 one took 16 seconds.
+    // Whole documents reached 650 KB compressed, and at the 40 KB/s measured from the desktop on 2026-11-14 one took 16 seconds.
+    // The page copy (minutesPage, 2026-11-16) is about a third of that.
     const response = await get('/api/viewer/minutes/' + row.id, { signal: AbortSignal.timeout(120000) }); const document = await response.json();
-    const actual = hash(JSON.stringify(document)), expected = hash(JSON.stringify(publicMinutes(viewerMinutes(registry, row.id))));
+    const actual = hash(JSON.stringify(document)), expected = hash(JSON.stringify(minutesPage(publicMinutes(viewerMinutes(registry, row.id)))));
     const passed = response.status === 200 && actual === expected;
     report.archives.push({ id: row.id, passed, sha256: actual, segments: document.segment_count });
     check('archive ' + row.id.slice(0, 12), passed);
+  }
+  // A browser keeps the page copy and asks again with its tag; an unchanged copy is confirmed with 304 and no body.
+  if (local[0]) {
+    const first = await get('/api/viewer/minutes/' + local[0].id, { signal: AbortSignal.timeout(120000) }); await first.arrayBuffer(); const tag = first.headers.get('etag') ?? '';
+    const again = await get('/api/viewer/minutes/' + local[0].id, { headers: { 'If-None-Match': tag } });
+    check('conditional minutes', first.headers.get('cache-control') === 'no-cache' && /^"page1-/.test(tag) && again.status === 304);
   }
   for (const path of ['/admin.html', '/data/access.secret', '/api/admin/settings', '/api/viewer/../../data/live.sqlite'])
     check('blocked route ' + path, (await get(path)).status === 404);

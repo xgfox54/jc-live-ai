@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { publicationContentHash } from './publication-protocol.mjs';
 import { readViewer, viewerModel, invalidateViewer, memoSnapshot } from './viewer-cache.mjs';
-import { CloudError, publicUpdate, channelId, broadcastId } from './model.mjs';
+import { CloudError, publicUpdate, channelId, broadcastId, minutesPage } from './model.mjs';
 import { selectSnapshotText, snapshotEtag, matchesEtag } from './snapshot-selection.mjs';
 
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
@@ -22,8 +22,23 @@ function deliver(request, value, responseHeaders) {
     Vary: 'Accept-Encoding, Origin', ...(gzip ? { 'Content-Encoding': 'gzip' } : {}) } });
 }
 const publicJson = (request, value) => deliver(request, JSON.stringify(value), { 'Content-Type': 'application/json; charset=utf-8' });
-const storedGzip = (request, body) => new Response(body, { headers: { ...headers, ...(!request.headers.has('authorization') && !request.headers.has('cookie') ? edgeCache : {}),
-  'Content-Type': 'application/json; charset=utf-8', Vary: 'Accept-Encoding, Origin', 'Content-Encoding': 'gzip' } });
+// The browser may keep a meeting's page copy and asks again with If-None-Match, which is answered with 304 while the copy is
+// unchanged. The tag names the page format, so a copy kept in an earlier format is not confirmed.
+const pageTag = etag => '"page1-' + String(etag).replace(/[^A-Za-z0-9:-]/g, '') + '"';
+function storedGzip(request, body, etag) {
+  const page = { ...headers, 'Cache-Control': 'no-cache', 'Content-Type': 'application/json; charset=utf-8', Vary: 'Accept-Encoding, Origin', ETag: pageTag(etag) };
+  if (matchesEtag(request.headers.get('if-none-match'), page.ETag)) return new Response(null, { status: 304, headers: page });
+  return new Response(body, { headers: { ...page, ...(!request.headers.has('authorization') && !request.headers.has('cookie') ? edgeCache : {}), 'Content-Encoding': 'gzip' } });
+}
+// Reads that arrive while a meeting's page copy is being built wait for that one build (2026-11-16: 300 simultaneous reads
+// of a meeting without its copy each built it, 8.7 seconds of CPU in a local Worker, enough for the free plan's limit to fail
+// them with 503).
+const pageBuilds = new WeakMap();
+function sharedPageBuild(storage, key, build) {
+  let builds = pageBuilds.get(storage); if (!builds) pageBuilds.set(storage, builds = new Map());
+  if (!builds.has(key)) builds.set(key, Promise.resolve().then(build).finally(() => builds.delete(key)));
+  return builds.get(key);
+}
 const fail = (status, message) => { throw new CloudError(status, message); };
 function sameOrigin(request) {
   const origin = request.headers.get('origin');
@@ -156,17 +171,22 @@ export async function viewerRequest(request, { storage, runtimeCheck = () => {} 
     const match = route.match(/^minutes\/([a-f0-9]{64})(?:\.(md|json))?$/);
     if (!match) fail(404, 'Route not found');
     const path = 'minutes/' + match[1] + '.json'; const gzip = acceptsGzip(request.headers.get('accept-encoding') ?? '');
-    // A store that keeps the compressed public document (Cloudflare D1) answers without decoding the archive.
-    if (!match[2] && gzip && storage.readView) { const body = await storage.readView(path); if (body) return storedGzip(request, body); }
+    // The page reads the page copy (minutesPage); the .json and .md downloads below keep the whole document. A store that
+    // keeps the compressed page copy (Cloudflare D1) answers without decoding the archive.
+    if (!match[2] && gzip && storage.readView) { const view = await storage.readView(path); if (view) return storedGzip(request, view.body, view.etag); }
     const stored = await readViewer(storage, path);
     if (!stored) fail(404, '회의록을 찾지 못했습니다.');
-    const value = viewerModel(storage, path, stored).document;
     if (!match[2] && gzip && storage.saveView && stored.etag) {
-      // An archive stored before its view existed gets the view at its first read.
-      const body = gzipSync(Buffer.from(JSON.stringify(value)));
-      await storage.saveView(path, stored.etag, body).catch(() => {}); return storedGzip(request, body);
+      // An archive stored before its page copy existed gets the copy at its first read. The archive is checked inside the
+      // shared build: an archive over 2 MB is not kept checked in memory, so each waiting read would otherwise repeat it.
+      const body = await sharedPageBuild(storage, path + ' ' + stored.etag, async () => {
+        const body = gzipSync(Buffer.from(JSON.stringify(minutesPage(viewerModel(storage, path, stored).document))));
+        await storage.saveView(path, stored.etag, body).catch(() => {}); return body;
+      });
+      return storedGzip(request, body, stored.etag);
     }
-    if (!match[2]) return publicJson(request, value);
+    const value = viewerModel(storage, path, stored).document;
+    if (!match[2]) return publicJson(request, minutesPage(value));
     return deliver(request, match[2] === 'md' ? value.markdown : JSON.stringify(value, null, 2), {
       'Content-Type': match[2] === 'md' ? 'text/markdown; charset=utf-8' : 'application/json; charset=utf-8',
       'Content-Disposition': 'attachment; filename="minutes-' + match[1].slice(0, 12) + '.' + match[2] + '"' });

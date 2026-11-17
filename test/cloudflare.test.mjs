@@ -61,7 +61,9 @@ test('Worker stores only ended public archives and empty index, with idempotent 
   assert.equal((await (await send(env, data)).json()).unchanged, true);
   assert.equal((await send(env, envelope(minutes()))).status, 200);
   const result = await handleRequest(new Request('https://jc-live.unit.workers.dev/api/viewer/minutes/' + minuteId), env);
-  assert.equal(result.status, 200); assert.equal((await result.json()).markdown, '후보정 완료 회의록');
+  assert.equal(result.status, 200); const page = await result.json(); assert.equal(page.title, '종료 회의'); assert.equal(page.markdown, undefined);
+  const markdown = await handleRequest(new Request('https://jc-live.unit.workers.dev/api/viewer/minutes/' + minuteId + '.md'), env);
+  assert.equal(await markdown.text(), '후보정 완료 회의록');
   assert.equal(result.headers.get('x-frame-options'), 'DENY');
   assert.equal(result.headers.get('vercel-cdn-cache-control'), null);
   const active = minutes(); active.document.status = 'in_progress';
@@ -72,7 +74,7 @@ test('Worker stores only ended public archives and empty index, with idempotent 
   assert.equal((await send(env, downgrade)).status, 400);
   const foreign = envelope(); foreign.publication.publisher_id = randomUUID();
   assert.equal((await send(env, foreign)).status, 409);
-  assert.equal(sql.prepare("SELECT count(*) AS n FROM documents WHERE path NOT LIKE '%.view'").get().n, 2);
+  assert.equal(sql.prepare("SELECT count(*) AS n FROM documents WHERE path NOT LIKE '%.page'").get().n, 2);
 });
 
 test('Worker rejects foreign origins, cookies, methods, traversal and secret disclosure', async t => {
@@ -171,19 +173,37 @@ test('pushed health refreshes labels without moving the transcript event cursor'
   assert.equal(state.apply({ event_id: 11, kind: 'segment', payload: { segment_id: 'one', stream_id: 'ch1', version: 1 } }), true);
   assert.equal(state.cursor, 11);
 });
-test('minutes are answered from the stored compressed document without decoding the archive', async t => {
+test('minutes are answered from the stored compressed page copy without decoding the archive', async t => {
   // 2026-11-13: decoding and re-encoding a whole archive on a cold Worker exceeded the free plan's CPU time (503).
   const { env, sql } = fixture(t); const path = 'minutes/' + minuteId;
-  const get = gzip => handleRequest(new Request('https://jc-live.unit.workers.dev/api/viewer/' + path, gzip ? { headers: { 'Accept-Encoding': 'gzip' } } : {}), env);
-  const view = () => sql.prepare('SELECT v.etag FROM documents d JOIN documents v ON v.path = ? AND v.etag = d.etag WHERE d.path = ?').get(path + '.view', path + '.json');
+  const get = (gzip, headers = {}) => handleRequest(new Request('https://jc-live.unit.workers.dev/api/viewer/' + path,
+    { headers: { ...(gzip ? { 'Accept-Encoding': 'gzip' } : {}), ...headers } }), env);
+  const view = () => sql.prepare('SELECT v.etag FROM documents d JOIN documents v ON v.path = ? AND v.etag = d.etag WHERE d.path = ?').get(path + '.page', path + '.json');
   assert.equal((await send(env, envelope(minutes()))).status, 200); assert.ok(view());
-  const expected = await (await get(false)).json();
-  // An archive stored before views existed gets its view at the first compressed read
-  sql.prepare("DELETE FROM documents WHERE path LIKE '%.view'").run();
+  const expected = await (await get(false)).json(); assert.equal(expected.markdown, undefined);
+  // An archive stored before its page copy existed gets the copy at its first compressed read
+  sql.prepare("DELETE FROM documents WHERE path LIKE '%.page'").run();
   const first = await get(true); assert.equal(first.headers.get('content-encoding'), 'gzip');
   assert.deepEqual(JSON.parse(gunzipSync(Buffer.from(await first.arrayBuffer()))), expected); assert.ok(view());
   // The view alone answers: the archive body is not read
   sql.prepare('UPDATE documents SET body = ? WHERE path = ?').run(Buffer.from('not gzip'), path + '.json');
   const fast = await get(true); assert.equal(fast.status, 200);
   assert.deepEqual(JSON.parse(gunzipSync(Buffer.from(await fast.arrayBuffer()))), expected);
+  // The browser may keep the copy and asks again with its tag: 304 without a body while the copy is unchanged. A tag of
+  // another page format is answered with the copy.
+  assert.equal(fast.headers.get('cache-control'), 'no-cache'); const tag = fast.headers.get('etag'); assert.equal(tag, '"page1-' + view().etag + '"');
+  const again = await get(true, { 'If-None-Match': tag }); assert.equal(again.status, 304); assert.equal((await again.arrayBuffer()).byteLength, 0);
+  assert.equal((await get(true, { 'If-None-Match': '"page0-' + view().etag + '"' })).status, 200);
+});
+test('simultaneous reads of a meeting without its page copy build the copy once', async t => {
+  // Many viewers pressing retry together right after a deploy must not each decode the archive and build the copy.
+  const { env, sql } = fixture(t); const path = 'minutes/' + minuteId;
+  assert.equal((await send(env, envelope(minutes()))).status, 200);
+  sql.prepare("DELETE FROM documents WHERE path LIKE '%.page'").run();
+  let builds = 0; const database = env.DB;
+  const counted = { ...env, DB: { prepare: text => { if (/^INSERT INTO documents\(path, etag, body, updated_ms\) SELECT/.test(text)) builds++; return database.prepare(text); } } };
+  const responses = await Promise.all(Array.from({ length: 20 }, () =>
+    handleRequest(new Request('https://jc-live.unit.workers.dev/api/viewer/' + path, { headers: { 'Accept-Encoding': 'gzip' } }), counted)));
+  assert.deepEqual([...new Set(responses.map(response => response.status))], [200]); assert.equal(builds, 1);
+  assert.equal(new Set(await Promise.all(responses.map(async response => Buffer.from(await response.arrayBuffer()).toString('base64')))).size, 1);
 });

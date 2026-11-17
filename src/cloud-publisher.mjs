@@ -174,7 +174,13 @@ export class CloudPublisher {
         const previous = this.known.get(summary.id);
         // An archive identical to the published one is skipped before the readiness check (about 12 ms per meeting).
         if (previous?.segment_schema === 3 && previous.summary.publication_policy === 'ai-corrected-v1' && previous.summary.updated_ms === summary.updated_ms
-          && !this.control.outbox(summary.id)) { this.archiveDirty.delete(summary.id); continue; }
+          && !this.control.outbox(summary.id)) {
+          // The index lists the summary kept with each published archive. A meeting length added or changed since then is taken
+          // into that summary; the archive itself is unchanged and is not sent again.
+          if (previous.summary.duration_ms !== summary.duration_ms)
+            this.remember(summary.id, { ...previous, summary: { ...previous.summary, duration_ms: summary.duration_ms } });
+          this.archiveDirty.delete(summary.id); continue;
+        }
         if (this.archiveOnly && finalReadiness(this.registry, summary.id, this.getCorrectionAI?.() ?? {}, this.now()) !== 'ready') continue;
         if (previous?.segment_schema === 3 && previous.summary.publication_policy === 'ai-corrected-v1' && previous.summary.status === summary.status && summary.segment_count - previous.summary.segment_count <= 100
           && this.now() - previous.sent_ms < this.settings.minutes_interval_ms && !this.control.outbox(summary.id)) continue;

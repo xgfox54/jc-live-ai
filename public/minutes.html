@@ -1,7 +1,8 @@
 <!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>JC-LIVE · 회의록</title><link rel="stylesheet" href="/style.css">
-<link rel="icon" type="image/png" sizes="1254x1254" href="/icon-192.png?v=e16bba8a"><script type="module" src="/minutes.mjs"></script></head>
+<link rel="icon" type="image/png" sizes="1254x1254" href="/icon-192.png?v=e16bba8a"><script type="module" src="/minutes.mjs"></script>
+<link rel="modulepreload" href="/display.mjs"><link rel="modulepreload" href="/speakers.mjs"><link rel="modulepreload" href="/client-state.mjs"><link rel="modulepreload" href="/live-transport.mjs"></head>
 <body><header><a class="brand" href="/" aria-label="JC-LIVE"><img src="/logo-jc-live.png?v=2caf416b" width="182" height="44" alt="JC-LIVE"></a><a href="/">방송 시청</a>
 <div class="header-end"><span id="engine-status" class="engine-status" role="status" hidden><span class="visually-hidden">실시간 받아쓰기 </span><span class="engine-label"></span><span class="engine-dot" aria-hidden="true"></span></span></div></header>
 <main><div class="intro"><div><p class="eyebrow">회의록</p><h1>방송별 회의록을 확인합니다</h1>
@@ -11,7 +12,7 @@
 <div class="minutes-shell">
 <nav class="surface minutes-nav" aria-label="회의 목록"><details class="minutes-fold" open><summary>회의 목록</summary><div id="minutes-list" class="minutes-list"></div></details></nav>
 <section id="minutes-detail" class="surface minutes-document" aria-label="선택한 회의록">
-<div id="minutes-head" class="minutes-head"><h2>열람할 회의를 선택해 주세요</h2><p>방송이 등록되고 수집이 시작되면 회의록이 추가됩니다.</p></div>
+<div id="minutes-head" class="minutes-head"><h2>회의록을 불러오는 중입니다</h2><p class="help">회의 목록을 받고 있습니다<span class="processing-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span></p></div>
 <div id="minutes-tabs" class="minutes-tabs" role="tablist" aria-label="회의록 보기" hidden>
 <button type="button" role="tab" id="tab-chapter" aria-controls="panel-chapter" aria-selected="true" data-view="chapter">1장 회의록</button>
 <button type="button" role="tab" id="tab-points" aria-controls="panel-points" aria-selected="false" tabindex="-1" data-view="points">핵심 내용 요약</button>

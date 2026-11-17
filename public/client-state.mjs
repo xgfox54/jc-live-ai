@@ -1,5 +1,7 @@
 // Elapsed time as 00:00:00, shared by the minutes page and the minutes export.
 export const clockTime = ms => { const s = Math.floor(ms / 1000); return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(n => String(n).padStart(2, '0')).join(':'); };
+// "02시간 05분": a meeting's length in the minutes list, in whole minutes.
+export const hoursMinutes = ms => { const minutes = Math.floor(ms / 60_000); return String(Math.floor(minutes / 60)).padStart(2, '0') + '시간 ' + String(minutes % 60).padStart(2, '0') + '분'; };
 export function viewerHealthMessage(health, now = Date.now()) {
   if (health?.stages?.ingestion === 'stopped' && health.stages.transcription === 'stopped'
     && health.status === 'correction_delayed')

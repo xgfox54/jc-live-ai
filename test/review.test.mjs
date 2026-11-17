@@ -197,14 +197,14 @@ test('speaker review confirms and reverses public identities behind administrato
   service.minutes.flush();
   // Then: the viewer receives the name, never private voice features, and undo restores unknown.
   const publicValue = await (await fetch(base + '/api/viewer/minutes/' + f.id)).json();
-  assert.equal(publicValue.transcript[0].speaker_name, '홍길동');
-  assert.equal(JSON.stringify(publicValue).includes('voice-vector-marker'), false);
+  assert.equal(publicValue.paragraphs[0].speaker_name, '홍길동');
+  for (const suffix of ['', '.json']) assert.equal((await (await fetch(base + '/api/viewer/minutes/' + f.id + suffix)).text()).includes('voice-vector-marker'), false);
   assert.equal(service.registry.segments(f.id)[0].raw_text, row.raw_text);
   assert.equal((await post('speaker-confirm', { ...input, confirmation: preview.confirmation })).status, 409);
   assert.equal((await post('speaker-undo', { broadcast_id: f.id, version: 1 })).status, 200);
   service.minutes.flush();
   const restored = await (await fetch(base + '/api/viewer/minutes/' + f.id)).json();
-  assert.equal(restored.transcript[0].speaker_name, undefined);
+  assert.equal(restored.paragraphs[0].speaker_name, undefined);
 });
 
 test('provisional inference remains outside final storage and final speech replaces the preview', async t => {

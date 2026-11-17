@@ -1,12 +1,13 @@
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
-import { CloudError } from '../web/lib/model.mjs';
+import { CloudError, minutesPage } from '../web/lib/model.mjs';
 
 const validPath = path => path === 'site.json' || /^minutes\/[a-f0-9]{64}\.json$/.test(path);
-const viewPath = path => path.replace(/\.json$/, '.view');
-// The public minutes document is also kept compressed in its own row (path .view, same etag as its archive), so a viewer
-// request is answered without decompressing and re-encoding the whole archive. That work exceeded the free plan's CPU
-// time on a cold Worker (503 on the first request after a deploy, 2026-11-13).
+const viewPath = path => path.replace(/\.json$/, '.page');
+// The minutes page copy (web/lib/model.mjs minutesPage) is also kept compressed in its own row (path .page, same etag as its
+// archive), so a page request is answered without decompressing and re-encoding the whole archive. That work exceeded the
+// free plan's CPU time on a cold Worker (503 on the first request after a deploy, 2026-11-13). Rows of the earlier whole-document
+// copy (path .view, 2026-11-14 to 2026-11-16) are no longer read.
 
 export class D1Store {
   constructor(db) { this.db = db; }
@@ -28,7 +29,7 @@ export class D1Store {
       : await this.db.prepare('UPDATE documents SET etag = ?, body = ?, updated_ms = ? WHERE path = ? AND etag = ?')
         .bind(next, Array.from(body), Date.now(), path, etag).run();
     if (result.meta.changes !== 1) throw new CloudError(409, 'Publication conflicts', 'conflict');
-    if (path !== 'site.json' && value.document) await this.saveView(path, next, gzipSync(Buffer.from(JSON.stringify(value.document))));
+    if (path !== 'site.json' && value.document) await this.saveView(path, next, gzipSync(Buffer.from(JSON.stringify(minutesPage(value.document)))));
   }
   // Stored only while the archive row still has this etag, so a view never outlives its archive.
   async saveView(path, etag, body) {
@@ -39,8 +40,8 @@ export class D1Store {
   }
   async readView(path) {
     if (!validPath(path) || path === 'site.json') throw new CloudError(400, 'Invalid document path');
-    const row = await this.db.prepare('SELECT v.body FROM documents d JOIN documents v ON v.path = ? AND v.etag = d.etag WHERE d.path = ?')
+    const row = await this.db.prepare('SELECT v.etag, v.body FROM documents d JOIN documents v ON v.path = ? AND v.etag = d.etag WHERE d.path = ?')
       .bind(viewPath(path), path).first();
-    return row ? new Uint8Array(row.body) : null;
+    return row ? { etag: row.etag, body: new Uint8Array(row.body) } : null;
   }
 }
