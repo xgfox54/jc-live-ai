@@ -43,6 +43,7 @@ export async function reviewRequest(context, req, res, url) {
       case '/speaker-review': send(res, review.speakerDecisions.state(id)); return true;
       case '/speaker-roster': send(res, review.speakerDecisions.roster(id)); return true;
       case '/video-alignment': send(res, review.videoAlignment.state(id)); return true;
+      case '/replay-recovery': review.record(id); send(res, review.replayRecovery.state(id)); return true;
       case '/model-status': send(res, modelManager.status); return true;
       default: throw new HttpError(404, '작업 경로를 찾지 못했습니다.');
     }
@@ -65,6 +66,7 @@ export async function reviewRequest(context, req, res, url) {
     case '/speaker-undo': send(res, review.speakerDecisions.undo(value.broadcast_id, value)); break;
     case '/speaker-roster': send(res, review.speakerDecisions.roster(value.broadcast_id, value)); break;
     case '/video-alignment': send(res, review.videoAlignment.start(value.broadcast_id), 202); break;
+    case '/replay-recovery': send(res, review.replayRecovery.start(value.broadcast_id, { dry: value.dry === true }), 202); break;
     case '/pause-final-speakers': send(res, review.finalSpeakers.pause(value.broadcast_id)); break;
     case '/profile-save': send(res, correctionAI.saveProfile(text(value.name, 100))); break;
     case '/profile-use': send(res, correctionAI.useProfile(text(value.id, 100))); break;

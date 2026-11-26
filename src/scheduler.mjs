@@ -212,7 +212,8 @@ export class Scheduler {
           // While the official list shows the meeting in recess, only clear sound is recognized (the recess watch rule: 5% of
           // 20 ms frames at -45 dBFS or louder). On 2026-11-26 the council streams kept a -52 to -64 dBFS floor in recess and
           // Whisper wrote '시청해주셔서 감사합니다.' or the agenda title in 357 chunks; 29 of them reached the public page.
-          const recess = this.inRecess?.(c.stream_id) === true;
+          // A replay recovery session (replay-recovery.mjs) holds the recesses of a whole meeting and sets sound_gate for the same rule.
+          const recess = this.inRecess?.(c.stream_id) === true || c.sound_gate === true;
           if (recess && activity.state !== 'silence' && !soundLevel(job.pcm).sound) activity = { state: 'silence', method: 'recess-quiet' };
           const silent = activity.state === 'silence';
           const result = silent ? { spans: [], inference_ms: 0 } : await this.recognize(job);

@@ -25,6 +25,7 @@ import { FinalSpeakerReview } from './final-speakers.mjs';
 import { SpeakerAcoustics } from './speaker-acoustics.mjs';
 import { SpeakerDecisions } from './speaker-decisions.mjs';
 import { VideoAlignment } from './video-alignment.mjs';
+import { ReplayRecovery } from './replay-recovery.mjs';
 import { AudioReview } from './audio-review.mjs';
 import { reviewRequest } from './review-http.mjs';
 import { importAudio } from './import-audio.mjs';
@@ -79,6 +80,7 @@ export function createService(context) {
   const acoustics = new SpeakerAcoustics({ registry, review, audioReview, config, scheduler });
   const finalSpeakers = review.finalSpeakers = new FinalSpeakerReview({ registry, review, ai: correctionAI, directory: speakerDirectory, acoustics });
   const videoAlignment = review.videoAlignment = new VideoAlignment({ registry, review, store, config, scheduler });
+  const replayRecovery = review.replayRecovery = new ReplayRecovery({ registry, review, store, config, scheduler, inputs: context.inputs, minutes, videoAlignment });
   const captureRecording = new CaptureRecording(context);
   const modelManager = new ModelManager(correctionAI);
   const retention = new Retention({ store, registry, config });
@@ -264,7 +266,7 @@ export function createService(context) {
   server.maxConnections = 400; server.requestTimeout = 15_000; server.headersTimeout = 10_000;
   return { server, feed, viewerFeed: viewer.feed, desktopLive, monitor, discovery, schedule, registry, minutes, cloudSync, correctionAI, liveCorrection, speakerDirectory, review, finalSpeakers, videoAlignment, audioReview, modelManager, retention, async close() {
     await desktopLive?.close();
-    await retention.close(); await finalSpeakers.close(); await videoAlignment.close(); await review.close(); await audioReview.close(); await modelManager.close();
+    await retention.close(); await finalSpeakers.close(); await replayRecovery.close(); await videoAlignment.close(); await review.close(); await audioReview.close(); await modelManager.close();
     await discovery.close(); await monitor.close(); await handoff.close(); await correctionAI.close(); await cloudSync.close(); minutes.close();
     feed.close(); viewer.feed.close(); server.closeAllConnections();
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
