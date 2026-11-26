@@ -5,7 +5,7 @@ const FILLER_ONLY = new RegExp('^(?:\\s*' + FILLER + '[.,!?…~\\s]*)+$');
 const HESITATION_ONLY = /^(?:\s*(?:그|저|어|음|아|으|흠|자|이)[.,!?…~\s]*)+$/;
 // Whole-segment outros Whisper learned from video endings; observed 528 times in the 2026-10-21 council broadcasts.
 const OUTROS = [/^(?:[A-Za-z가-힣]{2,10}\s*)?뉴스\s*[가-힣]{2,4}(?:\s*기자)?입니다\.?$/,
-  /^(?:\s*(?:시청|청취)해\s*주셔서\s*(?:정말\s*)?감사합니다[.!~\s]*)+$/, /^구독과\s*좋아요/];
+  /^(?:\s*(?:끝까지\s*)?(?:시청|청취)해\s*주셔서\s*(?:정말\s*)?감사합니다[.!~\s]*)+$/, /^구독과\s*좋아요/];
 const REPEATED_RUN = /((?:감사합니다|고맙습니다)[.,!?…~]?)(?:\s*(?:감사합니다|고맙습니다)[.,!?…~]?){2,}/g;
 // During a recess Whisper repeats one courtesy phrase over room noise or music in every chunk ("감사합니다." five times)
 // while the speaker check is still pending, or even reports voice. Three or more such phrases alone are not speech.
@@ -16,7 +16,9 @@ const COURTESY_LOOP = /^\s*(?:(?:감사합니다|고맙습니다|수고하셨습
 // also followed real sentences ("…상정합니다. MBC 뉴스 김성현입니다."). They are cut out of any segment, and a segment
 // left with nothing else is not speech. '찬송가' alone stays in sentences ("찬송가 소음 민원") and only a hymn number or
 // a bare segment counts. The sign-off needs a broadcaster and a three-syllable name, so "연합뉴스 변지철 기자입니다" stays.
-const INVENTED_PHRASE = '(?:아멘|찬송가\\s*\\d+\\s*장|(?:한글\\s*)?자막\\s*by\\s*[^\\s.,!?…~]+|다음\\s*영상에서\\s*만나요'
+// A YouTube sponsorship notice and a sign-off were invented over the 2026-11-26 recess noise as well.
+const INVENTED_PHRASE = '(?:아멘|찬송가\\s*\\d+\\s*장|(?:한글\\s*)?자막\\s*by\\s*[^\\s.,!?…~]+|다음\\s*(?:영상|시간)에서?\\s*만나요'
+  + '|(?:자막\\s*제공\\s*및\\s*)+광고를\\s*포함하고\\s*있습니다'
   + '|구독과\\s*좋아요(?:\\s*부탁\\s*(?:드립니다|드려요|해요))?|(?:MBC|KBS|SBS)\\s*뉴스\\s*[가-힣]{3}입니다)';
 const EDGE_BEFORE = '(?<=^|[\\s.,!?…~])'; const EDGE_AFTER = '(?=$|[\\s.,!?…~])';
 const INVENTED = new RegExp(EDGE_BEFORE + INVENTED_PHRASE + EDGE_AFTER + '[.,!?…~]*', 'giu');
@@ -34,6 +36,18 @@ export function stripInvented(text) {
   const value = String(text ?? '').trim();
   if (!HAS_INVENTED.test(value)) return value;
   return value.replace(INVENTED, ' ').replace(/\s+(?=[.,!?…~])/g, '').replace(/\s{2,}/g, ' ').trim();
+}
+// Whisper repeats its prompt (the agenda terms of the meeting, agenda-prompt.mjs) over noise: on 2026-11-26 '환경도시위원회,
+// 계수조정' 23 times in the recess of 환경도시위원회. A text made only of two or more prompt terms is that echo. One term
+// alone can be spoken ('제주특별자치도경제통상진흥원.'), so it counts only when `single` is set (in a recess).
+export function promptEcho(text, prompt, single = false) {
+  const terms = String(prompt ?? '').split(',').map(term => term.replace(/[\s.,·]/g, '')).filter(Boolean);
+  const value = String(text ?? '').replace(/[\s.,!?…~·]/g, '');
+  if (!value || !terms.length) return false;
+  const count = new Array(value.length + 1).fill(-1); count[0] = 0;
+  for (let i = 0; i < value.length; i++) if (count[i] >= 0)
+    for (const term of terms) if (value.startsWith(term, i)) count[i + term.length] = Math.max(count[i + term.length], count[i] + 1);
+  return count[value.length] >= 2 || (single && count[value.length] === 1 && value.length >= 4);
 }
 // Text made of invented phrases, alone or around filler words ("아멘 아멘 감사합니다."), is not speech.
 export function inventedOnly(text) {

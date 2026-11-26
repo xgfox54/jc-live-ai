@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { HttpError } from './validate.mjs';
 import { RecoveryQueue } from './recovery-queue.mjs';
 import { Segmenter } from './segmenter.mjs';
-import { nonSpeech, stripInvented, suspectText } from './silence-filter.mjs';
+import { nonSpeech, stripInvented, suspectText, promptEcho } from './silence-filter.mjs';
 import { speechActivity } from './speech-activity.mjs';
 import { soundLevel } from './recess-watch.mjs';
 
@@ -236,7 +236,7 @@ export class Scheduler {
           if (job.epoch === c.timeline_epoch) c.audio_processed_until = job.end_ms;
           let main_text = result.spans.map(s => s.text).join('').trim();
           // In a recess a phrase Whisper also invents over noise is dropped at once instead of waiting for the speaker check.
-          const dropped = nonSpeech(main_text, evidence) || (recess && suspectText(main_text));
+          const dropped = nonSpeech(main_text, evidence) || (recess && suspectText(main_text)) || promptEcho(main_text, job.prompt, recess);
           if (main_text && dropped)
             this.store.db.prepare('INSERT INTO recognition_suppressed(session_id,start_ms,end_ms,document) VALUES(?,?,?,?)')
               .run(job.session_id, job.start_ms, job.end_ms, JSON.stringify({ raw_text: main_text, evidence, recess }));

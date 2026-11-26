@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nonSpeech, collapseRepeats, publicSpeech, stripInvented, publicText } from '../src/silence-filter.mjs';
+import { nonSpeech, collapseRepeats, publicSpeech, stripInvented, publicText, inventedOnly, suspectText, promptEcho } from '../src/silence-filter.mjs';
 import { hallucination } from '../src/ai-correction.mjs';
 import { Store } from '../src/store.mjs';
 import { Scheduler } from '../src/scheduler.mjs';
@@ -88,4 +88,16 @@ test('scheduler cuts an invented sign-off from real speech and keeps the recogni
     const [row] = store.segments({ stream: 'ch2' }).items;
     assert.equal(row.raw_text, '다음 안건을 상정합니다.'); assert.equal(row.recognized_text, recognized);
   } finally { await scheduler.close(); store.close(); }
+});
+
+test('recess inventions of 26 November and echoes of the agenda prompt are not speech', () => {
+  for (const text of ['자막 제공 및 자막 제공 및 광고를 포함하고 있습니다.', '다음 시간에 만나요.']) assert.equal(inventedOnly(text), true, text);
+  assert.equal(suspectText('끝까지 시청해 주셔서 감사합니다.'), true);
+  assert.equal(inventedOnly('자막 제공 및 광고 문제는 다음 시간에 논의하겠습니다.'), false);
+  const prompt = '환경도시위원회, 계수조정';
+  assert.equal(promptEcho('환경도시위원회, 계수조정', prompt), true);
+  assert.equal(promptEcho('환경도시위원회 계수조정 결과를 보고하겠습니다.', prompt, true), false);
+  // One term alone can be spoken; it counts as an echo only in a recess
+  assert.equal(promptEcho('계수조정.', prompt), false); assert.equal(promptEcho('계수조정.', prompt, true), true);
+  assert.equal(promptEcho('환경도시위원회 계수조정', ''), false);
 });
