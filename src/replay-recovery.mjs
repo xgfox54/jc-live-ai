@@ -310,9 +310,10 @@ export class ReplayRecovery {
       const end_ms = after ? after.wall_start : to_ms >= videoMs - 3000 ? record.aired_until_ms ?? null : null;
       const own = rows.filter(row => row.session_id === session.session_id);
       const pieces = wallClock({ length_ms: to_ms - from_ms, cuts: recessCuts(own), start_ms, end_ms, spans: record.recess_spans ?? [], date });
-      const wallAt = at => { const piece = pieces.findLast(item => item.from_ms <= at) ?? pieces[0]; return Math.round(piece.wall_ms + at - piece.from_ms); };
+      // A sentence keeps the piece it starts in; its received time is its end on that piece's clock.
+      const received = row => { const piece = pieces.findLast(item => item.from_ms <= row.start_ms) ?? pieces[0]; return Math.round(piece.wall_ms + row.end_ms - piece.from_ms); };
       const update = this.store.db.prepare("UPDATE segments SET document=json_set(document,'$.audio_received_ms',?) WHERE id=?");
-      this.store.transaction(() => { for (const row of own) update.run(wallAt(row.end_ms), row.segment_id); });
+      this.store.transaction(() => { for (const row of own) update.run(received(row), row.segment_id); });
       const last = pieces.at(-1);
       this.store.saveSession({ ...session, started_ms: pieces[0].wall_ms, ended_ms: last.wall_ms + last.to_ms - last.from_ms, wall_clock: pieces });
     }
