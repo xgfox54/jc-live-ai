@@ -142,6 +142,11 @@ async function copyRange(sourcePath, targetPath, start, length) {
   } finally { await source.close(); await target.close(); }
 }
 const seoulMs = text => { const match = /^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2})/.exec(text ?? ''); return match ? Date.parse(match[1] + 'T' + match[2] + ':' + match[3] + ':00+09:00') : null; };
+// The recorded air start, unless a live session began before it (a mark taken after the meeting was already on air).
+const airedFrom = (record, sessions) => {
+  const first = Math.min(...sessions.filter(session => !session.replay_recovery && Number.isFinite(session.started_ms)).map(session => session.started_ms));
+  return Number.isFinite(record.aired_from_ms) && !(record.aired_from_ms > first) ? record.aired_from_ms : null;
+};
 
 export class ReplayRecovery {
   constructor({ registry, review, store, config, scheduler, inputs, minutes, videoAlignment, fetchHtml = councilHtml, download = downloadReplayAudio }) {
@@ -233,13 +238,23 @@ export class ReplayRecovery {
     const signal = this.controller.signal; const directory = resolve(this.config.replayRecoveryDirectory ?? 'data/replay-recovery', id);
     try {
       let record = this.registry.get(id);
-      const replay = await findReplay(record, { fetchHtml: this.fetchHtml, signal });
+      let replay = await findReplay(record, { fetchHtml: this.fetchHtml, signal });
       if (!replay) { this.save(id, { ...job, phase: 'waiting', error: '공식 다시보기 영상이 아직 없습니다.' }); return; }
       job.replay = replay;
       if (!record.replay_url) { this.registry.save({ ...record, replay_url: replay.media_url, replay_page: replay.page_url }); record = this.registry.get(id); }
       mkdirSync(directory, { recursive: true });
       const aac = resolve(directory, 'replay.aac'); const pcm = resolve(directory, 'replay.pcm');
-      job.media_seconds = (await this.download(replay.media_url, aac, { signal })).seconds;
+      try { job.media_seconds = (await this.download(replay.media_url, aac, { signal })).seconds; }
+      catch (error) {
+        // The council can rename a replay after publishing it (2026-11-27: 20261127_5_hang became 20261126_5_hang for
+        // 5차 행정자치위원회); a stored address that is gone is looked up again in the archive.
+        if (!/: 404$/.test(error.message)) throw error;
+        const found = await findReplay({ ...record, replay_url: null }, { fetchHtml: this.fetchHtml, signal });
+        if (!found || found.media_url === replay.media_url) throw error;
+        replay = job.replay = found;
+        this.registry.save({ ...this.registry.get(id), replay_url: found.media_url, replay_page: found.page_url }); record = this.registry.get(id);
+        job.media_seconds = (await this.download(replay.media_url, aac, { signal })).seconds;
+      }
       await runProcess(resolve(this.config.ffmpeg ?? 'bin/ffmpeg.exe'), ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'aac', '-i', aac, '-ac', '1', '-ar', '16000', '-f', 's16le', pcm], signal);
       const videoMs = Math.floor(statSync(pcm).size / BYTES_PER_MS);
       // Speech that could not be matched is left as it is; the replay is still recovered around the matched stretches.
@@ -254,7 +269,7 @@ export class ReplayRecovery {
         return entry.ranges.map(range => ({ replay_start: range.from_ms + range.offset_ms, wall_start: session.started_ms + range.from_ms,
           replay_end: range.to_ms + range.offset_ms, wall_end: session.started_ms + range.to_ms }));
       });
-      const start = record.aired_from_ms ?? seoulMs(record.scheduled_at) ?? Date.now();
+      const start = airedFrom(record, this.registry.sessions(id)) ?? seoulMs(record.scheduled_at) ?? Date.now();
       for (const part of job.parts) {
         if (this.closed) throw new Error('closed');
         if (speakingCapture(this.scheduler)) throw new HttpError(409, '발언 수집이 시작되어 복구를 멈췄습니다. 수집이 끝난 뒤 다시 시작해 주세요.');
@@ -316,7 +331,7 @@ export class ReplayRecovery {
   // It runs again on every recovery of the meeting, so later marks (a recorded broadcast end) correct earlier estimates.
   retime(id, replay, videoMs, stretches) {
     const record = this.registry.get(id); const date = String(record.scheduled_at ?? '').slice(0, 10);
-    const start = record.aired_from_ms ?? seoulMs(record.scheduled_at);
+    const start = airedFrom(record, this.registry.sessions(id)) ?? seoulMs(record.scheduled_at);
     const rows = this.registry.segments(id);
     for (const session of this.registry.sessions(id).filter(item => item.replay_recovery?.media_url === replay.media_url)) {
       const { from_ms, to_ms } = session.replay_recovery;

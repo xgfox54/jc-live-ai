@@ -113,7 +113,9 @@ export class BroadcastMonitor {
       if (current.broadcast_id && this.registry) {
         // Only a changed phase is saved: each save signals a broadcast change, which rebuilds and republishes its minutes.
         const record = this.registry.get(current.broadcast_id); const recordPhase = this.active(id) ? 'live' : result.phase;
-        if (record && record.phase !== recordPhase) this.registry.save({ ...record, phase: recordPhase });
+        // The official list drops a meeting once its broadcast ends, so the end of the broadcast is marked here (airTimes).
+        const offAir = ['offline', 'ended'].includes(recordPhase) && ['live', 'waiting'].includes(record?.phase) && !record?.aired_until_ms;
+        if (record && record.phase !== recordPhase) this.registry.save({ ...record, phase: recordPhase, ...(offAir ? { aired_until_ms: this.now() } : {}) });
       }
       if (['offline', 'ended', 'waiting'].includes(result.phase) && stream.auto_completed_key?.startsWith('hls:'))
         this.store.saveStream({ ...current, auto_completed_key: null });

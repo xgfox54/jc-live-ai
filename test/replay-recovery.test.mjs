@@ -67,4 +67,7 @@ test('the official list marks are kept as air and recess times', () => {
   record = { ...record, ...airTimes(record, { phase: 'offline' }, at('18:11')) };
   assert.deepEqual({ from: record.aired_from_ms, until: record.aired_until_ms, spans: record.recess_spans },
     { from: at('14:00'), until: at('18:11'), spans: [{ from_ms: at('14:03'), to_ms: at('18:08') }] });
+  // A meeting first seen in recess (on air before the marks were kept) has no air start; its resumption is not one.
+  const resumed = airTimes({ phase: 'waiting', recess: true }, { phase: 'live', recess: false }, at('23:57'));
+  assert.equal(resumed.aired_from_ms, undefined);
 });

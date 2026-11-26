@@ -9,7 +9,8 @@ import { createHash } from 'node:crypto';
 // were kept, and the evening resumption of a recovered meeting was shown at 14:02.
 export function airTimes(existing, candidate, now) {
   const times = {};
-  if (candidate.phase === 'live' && !existing?.aired_from_ms) times.aired_from_ms = now;
+  // Going on air out of a recess is a resumption: 5차 행정자치위원회 (on air since 14:00) was first marked at its 23:57 resumption.
+  if (candidate.phase === 'live' && !existing?.aired_from_ms && existing?.recess !== true) times.aired_from_ms = now;
   if (['offline', 'ended'].includes(candidate.phase) && existing && !['offline', 'ended'].includes(existing.phase)
     && (existing.aired_from_ms || existing.recess_spans?.length)) times.aired_until_ms = now;
   if (typeof candidate.recess === 'boolean' && candidate.recess !== (existing?.recess === true)) {
