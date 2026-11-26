@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { missingRanges, speechClusters, clusterOffset, recessCuts, announcedResume, wallClock } from '../src/replay-recovery.mjs';
+import { missingRanges, speechClusters, stretchPlacement, recessCuts, announcedResume, wallClock } from '../src/replay-recovery.mjs';
 import { airTimes } from '../src/broadcast-registry.mjs';
 
 const at = text => Date.parse('2026-11-26T' + text + ':00+09:00');
@@ -16,13 +16,15 @@ test('speech after an hour of recess forms its own stretch', () => {
   assert.deepEqual(speechClusters(rows), [{ from_ms: 10_000, to_ms: 25_000 }, { from_ms: 3_600_000, to_ms: 3_700_000 }]);
 });
 
-test('a stretch is placed only by agreeing matches that make up half of its voiced probes', () => {
-  const matched = offset_s => ({ status: 'matched', offset_s });
-  assert.equal(clusterOffset([matched(12.04)]), 12040);
-  assert.equal(clusterOffset([matched(12.04), matched(12.1), { status: 'silent' }]), 12100);
-  assert.equal(clusterOffset([matched(12.04), matched(40)]), null);
-  assert.equal(clusterOffset([matched(12.04), { status: 'ambiguous' }, { status: 'ambiguous' }]), null);
-  assert.equal(clusterOffset([{ status: 'silent' }]), null);
+test('a stretch is placed by agreeing probes and covered from the first to the last of them', () => {
+  const probe = (probe_ms, shift_ms, status = 'matched') => ({ status, probe_ms, shift_ms });
+  // 4차 보건복지안전위원회 of 26 November: the first probe fell on remarks the replay leaves out.
+  assert.deepEqual(stretchPlacement([probe(1_260_000, null, 'ambiguous'), probe(1_290_000, -1_224_756), probe(1_320_000, -1_224_756),
+    probe(1_350_000, -1_224_756), probe(1_380_000, -1_224_740)]), { shift_ms: -1_224_756, from_ms: 1_290_000, to_ms: 1_410_000 });
+  assert.equal(stretchPlacement([probe(0, 12_040)]).shift_ms, 12_040);
+  assert.equal(stretchPlacement([probe(0, 12_040), probe(10_000, 40_000)]), null);
+  assert.equal(stretchPlacement([probe(0, 12_040), probe(10_000, null, 'ambiguous'), probe(20_000, null, 'ambiguous')]), null);
+  assert.equal(stretchPlacement([probe(0, null, 'silent')]), null);
 });
 
 // 4차 문화관광체육위원회 of 26 November: the replay runs straight from the 14:02 recess into the evening resumption.

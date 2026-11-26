@@ -20,6 +20,8 @@ const MIN_PART_MS = 20_000;
 const BYTES_PER_MS = 32;
 const CLUSTER_GAP_MS = 60_000;
 const MARGIN_MS = 15_000;
+const PROBE_MS = 30_000;
+const MAX_PROBES = 600;
 const RESUME_GAP_MS = 120_000;
 const ACTIVE = ['running', 'draining', 'degraded', 'reconnecting'];
 
@@ -43,13 +45,18 @@ export function speechClusters(rows, gap = CLUSTER_GAP_MS) {
   }
   return clusters;
 }
-// The replay offset of one stretch: its matched probes agree within 100 ms and make up at least half of the voiced probes
-// (scripts/verify-video-alignment.py, one 30-second probe every 5 minutes from 15 seconds in).
-export function clusterOffset(probes) {
+// Where one speech stretch sits in the replay. Its 30-second probes (scripts/verify-video-alignment.py) are matched one by
+// one; the largest group whose offsets agree within 150 ms places the stretch when it holds at least two probes (one when
+// the stretch has a single probe) and half of the voiced ones. The stretch is covered from the first to the end of the last
+// probe of that group, so speech cut out of the replay stays outside: on 2026-11-26 the first probe of 보건복지안전위원회
+// fell on remarks before the resumption, which the replay leaves out, and the stretch was not placed at all.
+export function stretchPlacement(probes) {
   const voiced = probes.filter(probe => probe.status !== 'silent').length;
-  const matched = probes.filter(probe => probe.status === 'matched' && Number.isFinite(probe.offset_s)).map(probe => probe.offset_s).sort((a, b) => a - b);
-  if (!matched.length || matched.at(-1) - matched[0] > 0.1 || matched.length * 2 < voiced) return null;
-  return Math.round(matched[Math.floor(matched.length / 2)] * 1000);
+  const matched = probes.filter(probe => probe.status === 'matched' && Number.isFinite(probe.shift_ms)).sort((a, b) => a.shift_ms - b.shift_ms);
+  let best = [];
+  for (const first of matched) { const group = matched.filter(probe => probe.shift_ms >= first.shift_ms && probe.shift_ms - first.shift_ms <= 150); if (group.length > best.length) best = group; }
+  if (!best.length || best.length < Math.min(2, probes.length) || best.length * 2 < voiced) return null;
+  return { shift_ms: best[Math.floor(best.length / 2)].shift_ms, from_ms: Math.min(...best.map(probe => probe.probe_ms)), to_ms: Math.max(...best.map(probe => probe.probe_ms)) + PROBE_MS };
 }
 const DECLARED = /정회(?:를|을)?\s*(?:선포|하겠습니다|토록|하도록|합니다)/;
 const wording = row => (row.corrected_text ?? '') + ' ' + (row.raw_text ?? '');
@@ -163,7 +170,7 @@ export class ReplayRecovery {
   // Matches each speech stretch of the live sessions against the replay. Sessions recovered earlier from the same replay
   // cover the replay time they were cut from, so a second run adds nothing twice.
   async place(id, replay, pcm, directory, signal) {
-    const sessions = this.registry.sessions(id); const entries = {}; const covered = []; const unplaced = []; const pieces = [];
+    const sessions = this.registry.sessions(id); const entries = {}; const covered = []; const unplaced = []; const windows = []; const stretches = [];
     const rows = this.registry.segments(id).filter(row => row.ai_corrected === true && publicSpeech(row) && (row.timeline_epoch ?? 0) === 0);
     const recordings = resolve(this.config.recordings ?? 'data/recordings');
     for (const session of sessions) {
@@ -176,24 +183,33 @@ export class ReplayRecovery {
       if (!existsSync(source)) continue;
       const length = statSync(source).size / BYTES_PER_MS;
       for (const cluster of speechClusters(rows.filter(row => row.session_id === session.session_id))) {
-        const from = Math.max(0, Math.floor(cluster.from_ms - MARGIN_MS)); const to = Math.min(length, cluster.to_ms + MARGIN_MS);
-        if (to > from) pieces.push({ session, cluster, from, to, source, file: resolve(directory, 'cluster-' + pieces.length + '.pcm') });
+        // A probe every 10 seconds (every minute in a stretch over ten minutes). The script probes 15 seconds into each window.
+        const step = cluster.to_ms - cluster.from_ms <= 600_000 ? 10_000 : 60_000; const stretch = { session, cluster, windows: [] };
+        for (let probe = cluster.from_ms; probe <= Math.max(cluster.from_ms, cluster.to_ms - PROBE_MS) && windows.length < MAX_PROBES; probe += step) {
+          const start = Math.max(0, Math.floor(probe - MARGIN_MS)); const end = Math.min(length, start + MARGIN_MS + PROBE_MS + 1000);
+          if (end - start <= MARGIN_MS + PROBE_MS) continue;
+          const window = { start, end, probe_ms: start + MARGIN_MS, source, file: resolve(directory, 'probe-' + windows.length + '.pcm') };
+          windows.push(window); stretch.windows.push(window);
+        }
+        if (stretch.windows.length) stretches.push(stretch); else unplaced.push({ session_id: session.session_id, ...cluster });
       }
     }
-    if (pieces.length) {
-      for (const piece of pieces) await copyRange(piece.source, piece.file, piece.from * BYTES_PER_MS, Math.floor(piece.to - piece.from) * BYTES_PER_MS);
+    if (windows.length) {
+      for (const window of windows) await copyRange(window.source, window.file, window.start * BYTES_PER_MS, (window.end - window.start) * BYTES_PER_MS);
       const review = speakerReviewPython(this.config); const output = resolve(directory, 'clusters.json');
       await runProcess(this.config.alignmentPython ?? (existsSync(review) ? review : this.config.diarizationPython ?? 'python'),
-        [resolve('scripts/verify-video-alignment.py'), pcm, output, ...pieces.map(piece => piece.file)], signal);
+        [resolve('scripts/verify-video-alignment.py'), pcm, output, ...windows.map(window => window.file)], signal);
       const probes = JSON.parse(readFileSync(output, 'utf8')).probes ?? [];
-      for (const piece of pieces) {
-        const offset = clusterOffset(probes.filter(probe => probe.session === piece.file));
-        const { session_id } = piece.session; const { from_ms, to_ms } = piece.cluster;
-        if (offset === null) { unplaced.push({ session_id, from_ms, to_ms }); continue; }
-        // Collection time t of the session is replay time t + shift.
-        const shift = offset - piece.from;
-        covered.push([from_ms + shift, to_ms + shift]);
-        (entries[session_id] ??= { offset_ms: shift, ranges: [], live: true }).ranges.push({ from_ms, to_ms, offset_ms: shift });
+      for (const { session, cluster, windows: own } of stretches) {
+        // Collection time t of the session is replay time t + shift; offset_s is replay time minus time in the window file.
+        const placement = stretchPlacement(own.map(window => { const probe = probes.find(item => item.session === window.file) ?? { status: 'missing' };
+          return { status: probe.status, probe_ms: window.probe_ms, shift_ms: Number.isFinite(probe.offset_s) ? Math.round(probe.offset_s * 1000) - window.start : null }; }));
+        if (!placement) { unplaced.push({ session_id: session.session_id, ...cluster }); continue; }
+        const from_ms = placement.from_ms === own[0].probe_ms ? Math.min(cluster.from_ms, placement.from_ms) : placement.from_ms;
+        const to_ms = placement.to_ms - PROBE_MS === own.at(-1).probe_ms ? Math.max(cluster.to_ms, placement.to_ms) : placement.to_ms;
+        if (from_ms > cluster.from_ms + 1000) unplaced.push({ session_id: session.session_id, from_ms: cluster.from_ms, to_ms: from_ms });
+        covered.push([from_ms + placement.shift_ms, to_ms + placement.shift_ms]);
+        (entries[session.session_id] ??= { offset_ms: placement.shift_ms, ranges: [], live: true }).ranges.push({ from_ms, to_ms, offset_ms: placement.shift_ms });
       }
     }
     return { entries, covered, unplaced };
@@ -257,7 +273,7 @@ export class ReplayRecovery {
       if (this.closed) return;
       this.save(id, { ...job, phase: 'failed', error: error.status ? error.message : '다시보기 복구에 실패했습니다.', detail: String(error.message).slice(0, 200) });
     } finally {
-      if (existsSync(directory)) for (const name of readdirSync(directory)) if (/^(?:replay\.(?:aac|pcm)|part\.pcm|cluster-\d+\.pcm|clusters\.json)$/.test(name)) rmSync(resolve(directory, name), { force: true });
+      if (existsSync(directory)) for (const name of readdirSync(directory)) if (/^(?:replay\.(?:aac|pcm)|part\.pcm|(?:cluster|probe)-\d+\.pcm|clusters\.json)$/.test(name)) rmSync(resolve(directory, name), { force: true });
     }
   }
   async transcribe(record, pcm, part, started, directory) {
