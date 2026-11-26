@@ -1,4 +1,4 @@
-import { mkdirSync, statSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, statSync, existsSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -9,7 +9,8 @@ import { parseCouncilPlayer, councilReplay, downloadReplayAudio } from './counci
 import { normalize } from './committees.mjs';
 import { agendaPrompt } from './agenda-prompt.mjs';
 import { publicSpeech } from './silence-filter.mjs';
-import { speakingCapture } from './speaker-acoustics.mjs';
+import { speakerReviewPython, speakingCapture } from './speaker-acoustics.mjs';
+import { ALIGNMENT_METHOD } from './video-alignment.mjs';
 
 // Parts of a meeting that live collection missed are transcribed from the official council replay (다시보기) and added to the
 // same meeting record as collection sessions of their own (2026-11-26: six afternoon meetings were sent only over the council
@@ -17,6 +18,8 @@ import { speakingCapture } from './speaker-acoustics.mjs';
 // speaker diarization, the silence gates and the AI correction, so the minutes treat it like collected audio.
 const MIN_PART_MS = 20_000;
 const BYTES_PER_MS = 32;
+const CLUSTER_GAP_MS = 60_000;
+const MARGIN_MS = 15_000;
 const ACTIVE = ['running', 'draining', 'degraded', 'reconnecting'];
 
 // The uncovered parts of [0, videoMs), shorter parts left out.
@@ -27,17 +30,25 @@ export function missingRanges(videoMs, covered, minimum = MIN_PART_MS) {
   if (videoMs > at) missing.push([at, videoMs]);
   return missing.filter(([a, b]) => b - a >= minimum);
 }
-// Replay time covered by aligned collection sessions: each matched range maps collection time onto the replay (video-alignment.mjs).
-export function coveredRanges(alignment, sessions, durationOf) {
-  const covered = [];
-  for (const session of sessions) {
-    const entry = alignment?.phase === 'complete' ? alignment.sessions?.[session.session_id] : null;
-    if (!entry) continue;
-    const length = durationOf(session);
-    for (const range of entry.ranges ?? [{ from_ms: null, to_ms: null, offset_ms: entry.offset_ms }])
-      covered.push([(range.from_ms ?? 0) + range.offset_ms, (range.to_ms ?? length) + range.offset_ms]);
+// The council replay leaves out recesses, so a live session that is mostly recess matches the replay only where people spoke
+// (2026-11-26: the evening sessions held 1 to 3 minutes of speech after an hour of recess). Public speech is grouped into
+// stretches with gaps under a minute, and each stretch is matched on its own.
+export function speechClusters(rows, gap = CLUSTER_GAP_MS) {
+  const clusters = [];
+  for (const row of [...rows].sort((a, b) => a.start_ms - b.start_ms)) {
+    const last = clusters.at(-1);
+    if (last && row.start_ms - last.to_ms <= gap) last.to_ms = Math.max(last.to_ms, row.end_ms);
+    else clusters.push({ from_ms: row.start_ms, to_ms: row.end_ms });
   }
-  return covered;
+  return clusters;
+}
+// The replay offset of one stretch: its matched probes agree within 100 ms and make up at least half of the voiced probes
+// (scripts/verify-video-alignment.py, one 30-second probe every 5 minutes from 15 seconds in).
+export function clusterOffset(probes) {
+  const voiced = probes.filter(probe => probe.status !== 'silent').length;
+  const matched = probes.filter(probe => probe.status === 'matched' && Number.isFinite(probe.offset_s)).map(probe => probe.offset_s).sort((a, b) => a - b);
+  if (!matched.length || matched.at(-1) - matched[0] > 0.1 || matched.length * 2 < voiced) return null;
+  return Math.round(matched[Math.floor(matched.length / 2)] * 1000);
 }
 // The replay of the meeting in the council archive: same date and committee, and the detail page's 일시 equal to the schedule.
 export async function findReplay(record, { fetchHtml = councilHtml, signal } = {}) {
@@ -53,11 +64,21 @@ export async function findReplay(record, { fetchHtml = councilHtml, signal } = {
   }
   return null;
 }
-const ffmpeg = (binary, args, signal) => new Promise((resolvePromise, reject) => {
+const runProcess = (binary, args, signal) => new Promise((resolvePromise, reject) => {
   const child = spawn(binary, args, { windowsHide: true, shell: false, stdio: ['ignore', 'ignore', 'pipe'], signal });
   child.stderr.resume(); child.on('error', reject);
-  child.on('exit', code => code === 0 ? resolvePromise() : reject(new Error('ffmpeg failed: ' + code)));
+  child.on('exit', code => code === 0 ? resolvePromise() : reject(new Error(binary.split(/[\\/]/).at(-1) + ' failed: ' + code)));
 });
+async function copyRange(sourcePath, targetPath, start, length) {
+  const source = await open(sourcePath, 'r'); const target = await open(targetPath, 'w');
+  try {
+    for (let done = 0; done < length;) {
+      const buffer = Buffer.alloc(Math.min(32_000 * 60, length - done));
+      const { bytesRead } = await source.read(buffer, 0, buffer.length, start + done);
+      if (!bytesRead) break; await target.write(buffer.subarray(0, bytesRead)); done += bytesRead;
+    }
+  } finally { await source.close(); await target.close(); }
+}
 const seoulMs = text => { const match = /^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2})/.exec(text ?? ''); return match ? Date.parse(match[1] + 'T' + match[2] + ':' + match[3] + ':00+09:00') : null; };
 
 export class ReplayRecovery {
@@ -84,7 +105,59 @@ export class ReplayRecovery {
     this.pending = this.run(id, job).finally(() => { this.pending = null; });
     return job;
   }
-  async align(id) { if (this.videoAlignment.pending) await this.videoAlignment.pending; this.videoAlignment.start(id); await this.videoAlignment.pending; }
+  // Matches each speech stretch of the live sessions against the replay. Sessions recovered earlier from the same replay
+  // cover the replay time they were cut from, so a second run adds nothing twice.
+  async place(id, replay, pcm, directory, signal) {
+    const sessions = this.registry.sessions(id); const entries = {}; const covered = []; const unplaced = []; const pieces = [];
+    const rows = this.registry.segments(id).filter(row => row.ai_corrected === true && publicSpeech(row) && (row.timeline_epoch ?? 0) === 0);
+    const recordings = resolve(this.config.recordings ?? 'data/recordings');
+    for (const session of sessions) {
+      if (session.replay_recovery) {
+        if (session.replay_recovery.media_url !== replay.media_url) continue;
+        const { from_ms, to_ms } = session.replay_recovery;
+        covered.push([from_ms, to_ms]); entries[session.session_id] = { offset_ms: from_ms }; continue;
+      }
+      const source = resolve(recordings, session.stream_id ?? '', session.session_id, 'audio.pcm');
+      if (!existsSync(source)) continue;
+      const length = statSync(source).size / BYTES_PER_MS;
+      for (const cluster of speechClusters(rows.filter(row => row.session_id === session.session_id))) {
+        const from = Math.max(0, Math.floor(cluster.from_ms - MARGIN_MS)); const to = Math.min(length, cluster.to_ms + MARGIN_MS);
+        if (to > from) pieces.push({ session, cluster, from, to, source, file: resolve(directory, 'cluster-' + pieces.length + '.pcm') });
+      }
+    }
+    if (pieces.length) {
+      for (const piece of pieces) await copyRange(piece.source, piece.file, piece.from * BYTES_PER_MS, Math.floor(piece.to - piece.from) * BYTES_PER_MS);
+      const review = speakerReviewPython(this.config); const output = resolve(directory, 'clusters.json');
+      await runProcess(this.config.alignmentPython ?? (existsSync(review) ? review : this.config.diarizationPython ?? 'python'),
+        [resolve('scripts/verify-video-alignment.py'), pcm, output, ...pieces.map(piece => piece.file)], signal);
+      const probes = JSON.parse(readFileSync(output, 'utf8')).probes ?? [];
+      for (const piece of pieces) {
+        const offset = clusterOffset(probes.filter(probe => probe.session === piece.file));
+        const { session_id } = piece.session; const { from_ms, to_ms } = piece.cluster;
+        if (offset === null) { unplaced.push({ session_id, from_ms, to_ms }); continue; }
+        // Collection time t of the session is replay time t + shift.
+        const shift = offset - piece.from;
+        covered.push([from_ms + shift, to_ms + shift]);
+        (entries[session_id] ??= { offset_ms: shift, ranges: [], live: true }).ranges.push({ from_ms, to_ms, offset_ms: shift });
+      }
+    }
+    return { entries, covered, unplaced };
+  }
+  // The measured offsets are stored as the meeting's video alignment, which the minutes use for video time; a complete
+  // measurement of the same replay keeps its sessions.
+  async saveAlignment(id, replay, job, entries) {
+    if (this.videoAlignment.pending) await this.videoAlignment.pending;
+    const previous = this.review.get('video-alignment:' + id);
+    const sessions = {};
+    for (const [sessionId, { live, ...entry }] of Object.entries(entries)) sessions[sessionId] = { ...entry, video_ms: job.video_ms, method: live ? 'speech-stretch' : 'replay-recovery' };
+    for (const part of job.parts) if (part.session_id) sessions[part.session_id] = { offset_ms: part.from_ms, video_ms: job.video_ms, method: 'replay-recovery' };
+    if (previous?.phase === 'complete' && previous.media_url === replay.media_url) Object.assign(sessions, previous.sessions);
+    if (!Object.keys(sessions).length) return;
+    this.review.save('video-alignment:' + id, { phase: 'complete', method: ALIGNMENT_METHOD, source: 'council_vod', media_url: replay.media_url,
+      page_url: replay.page_url, video_id: null, media_seconds: job.media_seconds, started_ms: job.started_ms, updated_ms: Date.now(),
+      sessions, checked: Object.keys(sessions).length, measured_by: 'replay-recovery' });
+    this.store.emit('broadcast', id);
+  }
   async run(id, job) {
     const signal = this.controller.signal; const directory = resolve(this.config.replayRecoveryDirectory ?? 'data/replay-recovery', id);
     try {
@@ -93,40 +166,33 @@ export class ReplayRecovery {
       if (!replay) { this.save(id, { ...job, phase: 'waiting', error: '공식 다시보기 영상이 아직 없습니다.' }); return; }
       job.replay = replay;
       if (!record.replay_url) { this.registry.save({ ...record, replay_url: replay.media_url, replay_page: replay.page_url }); record = this.registry.get(id); }
-      // Live sessions with speech are matched against the replay first; the parts outside every match are missing.
-      const sessions = this.registry.sessions(id).filter(session => !session.replay_recovery);
-      const spoken = new Set(this.registry.segments(id).filter(row => row.ai_corrected === true && publicSpeech(row)).map(row => row.session_id));
-      let alignment = this.review.get('video-alignment:' + id);
-      if (sessions.some(session => spoken.has(session.session_id)) && (alignment?.phase !== 'complete' || alignment.media_url !== replay.media_url)) {
-        await this.align(id); alignment = this.review.get('video-alignment:' + id);
-      }
-      const placed = session => alignment?.phase === 'complete' && alignment.sessions?.[session.session_id];
-      const unplaced = sessions.filter(session => spoken.has(session.session_id) && !placed(session));
-      if (unplaced.length) throw new HttpError(409, '수집 구간 ' + unplaced.length + '개를 다시보기와 맞추지 못해 복구하지 않았습니다.');
       mkdirSync(directory, { recursive: true });
       const aac = resolve(directory, 'replay.aac'); const pcm = resolve(directory, 'replay.pcm');
       job.media_seconds = (await this.download(replay.media_url, aac, { signal })).seconds;
-      await ffmpeg(resolve(this.config.ffmpeg ?? 'bin/ffmpeg.exe'), ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'aac', '-i', aac, '-ac', '1', '-ar', '16000', '-f', 's16le', pcm], signal);
+      await runProcess(resolve(this.config.ffmpeg ?? 'bin/ffmpeg.exe'), ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'aac', '-i', aac, '-ac', '1', '-ar', '16000', '-f', 's16le', pcm], signal);
       const videoMs = Math.floor(statSync(pcm).size / BYTES_PER_MS);
-      const recordings = resolve(this.config.recordings ?? 'data/recordings');
-      const durationOf = session => { const file = resolve(recordings, session.stream_id ?? '', session.session_id, 'audio.pcm'); return existsSync(file) ? statSync(file).size / BYTES_PER_MS : 0; };
-      const covered = coveredRanges(alignment, sessions.filter(session => spoken.has(session.session_id)), durationOf);
-      Object.assign(job, { video_ms: videoMs, covered, parts: missingRanges(videoMs, covered).map(([from_ms, to_ms]) => ({ from_ms, to_ms, phase: 'waiting' })) });
+      // Speech that could not be matched is left as it is; the replay is still recovered around the matched stretches.
+      const { entries, covered, unplaced } = await this.place(id, replay, pcm, directory, signal);
+      Object.assign(job, { video_ms: videoMs, covered, unplaced, parts: missingRanges(videoMs, covered).map(([from_ms, to_ms]) => ({ from_ms, to_ms, phase: 'waiting' })) });
       this.save(id, job);
       if (job.dry) { this.save(id, { ...job, phase: 'checked' }); return; }
-      // Replay time r happened at anchor.wall + (r - anchor.replay): the first aligned session gives the anchor, else the scheduled start.
-      const anchorSession = sessions.find(placed);
-      const anchor = anchorSession ? { wall: anchorSession.started_ms, replay: alignment.sessions[anchorSession.session_id].offset_ms }
-        : { wall: seoulMs(record.scheduled_at) ?? Date.now(), replay: 0 };
+      // The replay leaves out recesses, so its clock runs behind the wall clock. A part takes the wall time from the scheduled
+      // start; a part after a matched stretch continues from the end of that stretch.
+      const start = seoulMs(record.scheduled_at) ?? Date.now();
+      const stretches = Object.entries(entries).filter(([, entry]) => entry.live).flatMap(([sessionId, entry]) => {
+        const session = this.registry.sessions(id).find(item => item.session_id === sessionId);
+        return entry.ranges.map(range => ({ replay_end: range.to_ms + range.offset_ms, wall_end: session.started_ms + range.to_ms }));
+      });
       for (const part of job.parts) {
         if (this.closed) throw new Error('closed');
         if (speakingCapture(this.scheduler)) throw new HttpError(409, '발언 수집이 시작되어 복구를 멈췄습니다. 수집이 끝난 뒤 다시 시작해 주세요.');
         part.phase = 'transcribing'; this.save(id, job);
-        part.session_id = await this.transcribe(record, pcm, part, anchor, directory);
+        const before = stretches.filter(item => item.replay_end <= part.from_ms + 1000).sort((a, b) => b.replay_end - a.replay_end)[0];
+        const wall = before ? before.wall_end + (part.from_ms - before.replay_end) : start + part.from_ms;
+        part.session_id = await this.transcribe(record, pcm, part, wall, directory);
         part.phase = 'done'; this.save(id, job);
       }
-      // The recovered sessions are replay audio, so a new match places them on the replay clock.
-      if (job.parts.length) await this.align(id);
+      await this.saveAlignment(id, replay, job, entries);
       this.save(id, { ...job, phase: 'completed', ended_ms: Date.now() });
       this.store.audit({ action: 'replay.recovery', broadcast_id: id, parts: job.parts.length,
         seconds: Math.round(job.parts.reduce((sum, part) => sum + part.to_ms - part.from_ms, 0) / 1000) });
@@ -134,22 +200,15 @@ export class ReplayRecovery {
       if (this.closed) return;
       this.save(id, { ...job, phase: 'failed', error: error.status ? error.message : '다시보기 복구에 실패했습니다.', detail: String(error.message).slice(0, 200) });
     } finally {
-      for (const name of ['replay.aac', 'replay.pcm', 'part.pcm']) rmSync(resolve(directory, name), { force: true });
+      if (existsSync(directory)) for (const name of readdirSync(directory)) if (/^(?:replay\.(?:aac|pcm)|part\.pcm|cluster-\d+\.pcm|clusters\.json)$/.test(name)) rmSync(resolve(directory, name), { force: true });
     }
   }
-  async transcribe(record, pcm, part, anchor, directory) {
+  async transcribe(record, pcm, part, started, directory) {
     const channel = record.stream_id;
     if (ACTIVE.includes(this.scheduler.channels.get(channel)?.state) || this.inputs.isActive(channel)) throw new HttpError(409, '복구할 채널이 수집 중입니다.');
     // The part is cut from the replay audio, which is 16 kHz mono 16-bit PCM.
-    const file = resolve(directory, 'part.pcm'); const length = (part.to_ms - part.from_ms) * BYTES_PER_MS;
-    const source = await open(pcm, 'r'); const target = await open(file, 'w');
-    try {
-      for (let done = 0; done < length;) {
-        const buffer = Buffer.alloc(Math.min(32_000 * 60, length - done));
-        const { bytesRead } = await source.read(buffer, 0, buffer.length, part.from_ms * BYTES_PER_MS + done);
-        if (!bytesRead) break; await target.write(buffer.subarray(0, bytesRead)); done += bytesRead;
-      }
-    } finally { await source.close(); await target.close(); }
+    const file = resolve(directory, 'part.pcm');
+    await copyRange(pcm, file, part.from_ms * BYTES_PER_MS, (part.to_ms - part.from_ms) * BYTES_PER_MS);
     const stream = { stream_id: channel, name: record.title, kind: 'file', page_url: '', video_id: null, broadcast_id: record.id,
       approved: true, approval_note: '공식 다시보기 복구', prompt: agendaPrompt(record), auto_start: false, auto_record: true };
     const before = this.registry.get(record.id);
@@ -170,9 +229,9 @@ export class ReplayRecovery {
       restore();
       const row = this.store.db.prepare('SELECT document FROM sessions WHERE id=?').get(state.session_id);
       if (row) {
-        const session = JSON.parse(row.document); const started = anchor.wall + (part.from_ms - anchor.replay);
+        const session = JSON.parse(row.document);
         this.store.saveSession({ ...session, started_ms: started, ended_ms: started + (part.to_ms - part.from_ms),
-          replay_recovery: { media_url: record.replay_url ?? null, from_ms: part.from_ms, to_ms: part.to_ms, recovered_ms: Date.now() } });
+          replay_recovery: { media_url: this.registry.get(record.id).replay_url ?? null, from_ms: part.from_ms, to_ms: part.to_ms, recovered_ms: Date.now() } });
       }
       rmSync(file, { force: true });
     }
