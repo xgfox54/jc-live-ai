@@ -85,8 +85,13 @@ export class BroadcastMonitor {
       if (result.phase === 'ended' && this.owned.has(id) && liveEdge && quiet) {
         await this.inputs.stop(id, 'eof'); this.scheduler.stop(id, 'eof');
       } else if (result.phase === 'live' && !this.active(id)) {
+        const finished = current.broadcast_id && !current.recess_watch && result.key?.startsWith('hls:') ? this.registry?.get(current.broadcast_id) : null;
         if (stream.auto_completed_key === result.key)
           phase = stream.recess_watch?.key === result.key ? await this.watchRecess(current, result, signal) : 'completed';
+        // A council committee stream that comes back after its meeting adjourned carries the committee's next meeting
+        // (2026-11-27: 5차 행정자치위원회 adjourned at 23:59 and 6차 opened at 00:05 on the same stream, and 6차 was collected
+        // into 5차). The channel waits for the official list to give it that meeting (BroadcastDiscovery.assign).
+        else if (finished?.completed === true) phase = 'completed';
         else {
           const source = { ...result.source, auto_start: true };
           if (source.video_id !== stream.video_id || source.media_url !== stream.media_url) {
