@@ -4,6 +4,23 @@ import { publicSpeech, publicText } from './silence-filter.mjs';
 import { budgetYears } from './budget-year.mjs';
 import { createHash } from 'node:crypto';
 
+// When the official list showed a meeting on air, in recess and off air (read every 30 seconds). The council replay leaves
+// recesses out, so a replay recovered later takes its wall time from these marks (replay-recovery.mjs). On 2026-11-26 none
+// were kept, and the evening resumption of a recovered meeting was shown at 14:02.
+export function airTimes(existing, candidate, now) {
+  const times = {};
+  if (candidate.phase === 'live' && !existing?.aired_from_ms) times.aired_from_ms = now;
+  if (['offline', 'ended'].includes(candidate.phase) && existing && !['offline', 'ended'].includes(existing.phase)
+    && (existing.aired_from_ms || existing.recess_spans?.length)) times.aired_until_ms = now;
+  if (typeof candidate.recess === 'boolean' && candidate.recess !== (existing?.recess === true)) {
+    const spans = [...(existing?.recess_spans ?? [])];
+    if (candidate.recess) spans.push({ from_ms: now, to_ms: null });
+    else if (spans.at(-1)?.to_ms === null) spans[spans.length - 1] = { ...spans.at(-1), to_ms: now };
+    times.recess_spans = spans.slice(-50);
+  }
+  return times;
+}
+
 export class BroadcastRegistry {
   constructor(store) {
     this.store = store; this.db = store.db;
@@ -38,7 +55,7 @@ export class BroadcastRegistry {
         for (const stream of this.store.streams().filter(stream => stream.broadcast_id === duplicate.id))
           this.store.saveStream({ ...stream, broadcast_id: id });
       }
-      return this.save({ ...existing, ...metadata, id, first_seen_ms: existing?.first_seen_ms ?? Date.now(), updated_ms: Date.now(),
+      return this.save({ ...existing, ...metadata, ...airTimes(existing, candidate, Date.now()), id, first_seen_ms: existing?.first_seen_ms ?? Date.now(), updated_ms: Date.now(),
         sources: [...new Set([...matches.flatMap(item => item.sources), ...candidate.sources])],
         ...(official && candidate.kind === 'youtube' ? {
           kind: official.kind, page_url: official.page_url, title: official.title, agenda: official.agenda,

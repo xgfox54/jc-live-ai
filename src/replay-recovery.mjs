@@ -20,6 +20,7 @@ const MIN_PART_MS = 20_000;
 const BYTES_PER_MS = 32;
 const CLUSTER_GAP_MS = 60_000;
 const MARGIN_MS = 15_000;
+const RESUME_GAP_MS = 120_000;
 const ACTIVE = ['running', 'draining', 'degraded', 'reconnecting'];
 
 // The uncovered parts of [0, videoMs), shorter parts left out.
@@ -49,6 +50,60 @@ export function clusterOffset(probes) {
   const matched = probes.filter(probe => probe.status === 'matched' && Number.isFinite(probe.offset_s)).map(probe => probe.offset_s).sort((a, b) => a - b);
   if (!matched.length || matched.at(-1) - matched[0] > 0.1 || matched.length * 2 < voiced) return null;
   return Math.round(matched[Math.floor(matched.length / 2)] * 1000);
+}
+const DECLARED = /정회(?:를|을)?\s*(?:선포|하겠습니다|토록|하도록|합니다)/;
+const wording = row => (row.corrected_text ?? '') + ' ' + (row.raw_text ?? '');
+// Recesses the council cut out of a replay: a declared recess followed within two minutes of replay time by the resumption.
+// A replay that keeps a recess has minutes of silence there, which give no sentences, so the declaration stands alone.
+export function recessCuts(rows) {
+  const ordered = rows.filter(row => row.speech_activity?.state !== 'silence').sort((a, b) => a.start_ms - b.start_ms);
+  const cuts = [];
+  ordered.forEach((row, index) => {
+    const declared = DECLARED.exec(wording(row)); if (!declared) return;
+    const sameRow = /속개/.test(wording(row).slice(declared.index));
+    const resumed = sameRow ? row : ordered.slice(index + 1, index + 4).find(next => /속개/.test(wording(next)));
+    if (!resumed || resumed.start_ms - row.end_ms > RESUME_GAP_MS) return;
+    const at_ms = sameRow ? Math.round((row.start_ms + row.end_ms) / 2) : row.end_ms;
+    if (!cuts.some(cut => Math.abs(cut.at_ms - at_ms) < 30_000)) cuts.push({ at_ms, text: (row.corrected_text ?? row.raw_text ?? '').slice(0, 300) });
+  });
+  return cuts;
+}
+// The resumption a chair announced: '18시까지 정회' (an hour before 8 is read as afternoon) or '10분간 정회'.
+export function announcedResume(text, date, paused) {
+  if (!text) return null;
+  const clock = /(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분)?\s*까지/.exec(text);
+  if (clock && /^\d{4}-\d{2}-\d{2}$/.test(date ?? '')) {
+    const hour = Number(clock[1]) < 8 ? Number(clock[1]) + 12 : Number(clock[1]);
+    const value = Date.parse(date + 'T' + String(hour).padStart(2, '0') + ':' + String(clock[2] ?? 0).padStart(2, '0') + ':00+09:00');
+    return Number.isFinite(value) ? value : null;
+  }
+  const minutes = /(\d{1,3})\s*분\s*(?:간|동안)/.exec(text);
+  return minutes && Number.isFinite(paused) ? paused + Number(minutes[1]) * 60_000 : null;
+}
+// Wall time of each piece of a recovered part split at its recess cuts. The first piece starts at start_ms. A later piece
+// resumes at the recess end the official list showed (recess_spans), else at the announced time, else right after the
+// previous piece. end_ms, when known (a matched live stretch that follows, or the end of the broadcast), places the last piece;
+// a part without cuts takes it only within 15 minutes of the start estimate, since a larger difference means an unseen cut.
+export function wallClock({ length_ms, cuts = [], start_ms, end_ms = null, spans = [], date = '' }) {
+  const bounds = [0, ...cuts.map(cut => cut.at_ms).filter(at => at > 0 && at < length_ms).sort((a, b) => a - b), length_ms];
+  const said = new Map(cuts.map(cut => [cut.at_ms, cut.text]));
+  const recesses = spans.filter(span => Number.isFinite(span.from_ms) && Number.isFinite(span.to_ms)).sort((a, b) => a.from_ms - b.from_ms);
+  const pieces = [{ from_ms: 0, to_ms: bounds[1], wall_ms: start_ms, basis: 'start' }];
+  for (let index = 1; index + 1 < bounds.length; index++) {
+    const previous = pieces.at(-1); const paused = previous.wall_ms + bounds[index] - previous.from_ms;
+    const recess = recesses.find(span => span.to_ms > paused);
+    if (recess) recesses.splice(0, recesses.indexOf(recess) + 1);
+    const announced = recess ? null : announcedResume(said.get(bounds[index]), date, paused);
+    pieces.push({ from_ms: bounds[index], to_ms: bounds[index + 1], wall_ms: Math.max(paused, recess?.to_ms ?? announced ?? paused),
+      basis: recess ? 'recess-mark' : announced !== null ? 'announced' : 'continuous' });
+  }
+  if (Number.isFinite(end_ms)) {
+    const last = pieces.at(-1); const previous = pieces.at(-2); const wall_ms = end_ms - (last.to_ms - last.from_ms);
+    const fits = previous ? last.basis !== 'recess-mark' && wall_ms >= previous.wall_ms + previous.to_ms - previous.from_ms
+      : Math.abs(wall_ms - last.wall_ms) <= 900_000;
+    if (fits) Object.assign(last, { wall_ms, basis: 'end' });
+  }
+  return pieces;
 }
 // The replay of the meeting in the council archive: same date and committee, and the detail page's 일시 equal to the schedule.
 export async function findReplay(record, { fetchHtml = councilHtml, signal } = {}) {
@@ -178,11 +233,12 @@ export class ReplayRecovery {
       if (job.dry) { this.save(id, { ...job, phase: 'checked' }); return; }
       // The replay leaves out recesses, so its clock runs behind the wall clock. A part takes the wall time from the scheduled
       // start; a part after a matched stretch continues from the end of that stretch.
-      const start = seoulMs(record.scheduled_at) ?? Date.now();
       const stretches = Object.entries(entries).filter(([, entry]) => entry.live).flatMap(([sessionId, entry]) => {
         const session = this.registry.sessions(id).find(item => item.session_id === sessionId);
-        return entry.ranges.map(range => ({ replay_end: range.to_ms + range.offset_ms, wall_end: session.started_ms + range.to_ms }));
+        return entry.ranges.map(range => ({ replay_start: range.from_ms + range.offset_ms, wall_start: session.started_ms + range.from_ms,
+          replay_end: range.to_ms + range.offset_ms, wall_end: session.started_ms + range.to_ms }));
       });
+      const start = record.aired_from_ms ?? seoulMs(record.scheduled_at) ?? Date.now();
       for (const part of job.parts) {
         if (this.closed) throw new Error('closed');
         if (speakingCapture(this.scheduler)) throw new HttpError(409, '발언 수집이 시작되어 복구를 멈췄습니다. 수집이 끝난 뒤 다시 시작해 주세요.');
@@ -192,6 +248,7 @@ export class ReplayRecovery {
         part.session_id = await this.transcribe(record, pcm, part, wall, directory);
         part.phase = 'done'; this.save(id, job);
       }
+      this.retime(id, replay, videoMs, stretches);
       await this.saveAlignment(id, replay, job, entries);
       this.save(id, { ...job, phase: 'completed', ended_ms: Date.now() });
       this.store.audit({ action: 'replay.recovery', broadcast_id: id, parts: job.parts.length,
@@ -238,4 +295,27 @@ export class ReplayRecovery {
     return state.session_id;
   }
   async close() { this.closed = true; this.controller.abort(); await this.pending; }
+  // Gives every session recovered from this replay the wall time of its speech (wallClock): the session start and end, the
+  // pieces between recess cuts (wall_clock), and each sentence's received time, which the public transcript shows as '수신'.
+  // It runs again on every recovery of the meeting, so later marks (a recorded broadcast end) correct earlier estimates.
+  retime(id, replay, videoMs, stretches) {
+    const record = this.registry.get(id); const date = String(record.scheduled_at ?? '').slice(0, 10);
+    const start = record.aired_from_ms ?? seoulMs(record.scheduled_at);
+    const rows = this.registry.segments(id);
+    for (const session of this.registry.sessions(id).filter(item => item.replay_recovery?.media_url === replay.media_url)) {
+      const { from_ms, to_ms } = session.replay_recovery;
+      const before = stretches.filter(item => item.replay_end <= from_ms + 1000).sort((a, b) => b.replay_end - a.replay_end)[0];
+      const after = stretches.find(item => Math.abs(item.replay_start - to_ms) <= 3000);
+      const start_ms = before ? before.wall_end + (from_ms - before.replay_end) : Number.isFinite(start) ? start + from_ms : session.started_ms;
+      const end_ms = after ? after.wall_start : to_ms >= videoMs - 3000 ? record.aired_until_ms ?? null : null;
+      const own = rows.filter(row => row.session_id === session.session_id);
+      const pieces = wallClock({ length_ms: to_ms - from_ms, cuts: recessCuts(own), start_ms, end_ms, spans: record.recess_spans ?? [], date });
+      const wallAt = at => { const piece = pieces.findLast(item => item.from_ms <= at) ?? pieces[0]; return Math.round(piece.wall_ms + at - piece.from_ms); };
+      const update = this.store.db.prepare("UPDATE segments SET document=json_set(document,'$.audio_received_ms',?) WHERE id=?");
+      this.store.transaction(() => { for (const row of own) update.run(wallAt(row.end_ms), row.segment_id); });
+      const last = pieces.at(-1);
+      this.store.saveSession({ ...session, started_ms: pieces[0].wall_ms, ended_ms: last.wall_ms + last.to_ms - last.from_ms, wall_clock: pieces });
+    }
+    this.store.emit('broadcast', id);
+  }
 }
