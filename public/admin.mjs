@@ -61,7 +61,7 @@ function renderMonitor() {
   $('#auto-toggle').textContent = enabled ? '자동 감지 끄기' : '자동 감지 켜기';
   const names = { waiting: '방송 시작 대기', checking: '방송 상태 확인 중', live: '생방송 감지',
     collecting: '녹음·전사 중', ended: '방송 종료', completed: '이 방송의 수집 완료', offline: '생방송 아님',
-    retry: '조회·수집 재시도 대기', disabled: '자동 감지 꺼짐', blocked: '자동 감지 중단' };
+    retry: '조회·수집 재시도 대기', disabled: '자동 감지 꺼짐', blocked: '자동 감지 중단', watching: '수집 마감 · 속개 감시 중' };
   $('#auto-status').textContent = !stream ? '방송을 먼저 등록해 주세요.' : !autoSupported(stream) ? '이 입력 방식은 수동으로 시작합니다.'
     : (names[status?.phase] ?? (enabled ? '방송 시작 대기' : '자동 감지 꺼짐'))
     + (status?.checked_ms ? ' · 최근 확인 ' + new Date(status.checked_ms).toLocaleTimeString('ko-KR') : '')

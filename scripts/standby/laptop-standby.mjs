@@ -1,12 +1,13 @@
 // Standby controller for a laptop that transcribes only while the desktop is down (docs/LAPTOP-STANDBY.md).
-// Every 15 seconds it asks the Worker whether the desktop answers, writes the lease the engine checks, starts the
-// engine after 60 seconds of confirmed desktop silence and shuts it down when the desktop answers again.
+// It asks the Worker whether the desktop answers (every 60 seconds; every 15 seconds after an unanswered check and while
+// the laptop transcribes), writes the lease the engine checks, starts the engine after 60 seconds of confirmed desktop
+// silence and shuts it down when the desktop answers again.
 // Usage: node scripts/standby/laptop-standby.mjs [config.local.json]
 import { readFileSync, writeFileSync, openSync, closeSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { StandbyPolicy } from './standby-policy.mjs';
+import { StandbyPolicy, checkInterval } from './standby-policy.mjs';
 import { CLOUDFLARE_SITE } from '../../src/sites.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -51,15 +52,17 @@ async function tick() {
     child.once('error', error => { console.error(JSON.stringify({ event: 'standby.start_failed', error: error.message })); child = null; });
     child.once('exit', () => { child = null; });
   }
+  return checkInterval(active, desktop);
 }
 process.on('SIGINT', () => { stopping = true; });
 process.on('SIGTERM', () => { stopping = true; });
 while (!stopping) {
-  try { await tick(); }
+  let wait = 15000;
+  try { wait = await tick(); }
   catch (error) {
     if (!(error instanceof Error)) throw error;
     writeFileSync(leasePath, JSON.stringify({ role: 'waiting', valid_until: 0 }));
     console.error(JSON.stringify({ event: 'standby.check_failed', error: error.message }));
   }
-  await new Promise(resolve => setTimeout(resolve, 15000));
+  await new Promise(resolve => setTimeout(resolve, wait));
 }

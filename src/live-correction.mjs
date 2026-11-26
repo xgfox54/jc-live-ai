@@ -1,14 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { correctionIssue, hallucination, parseCorrections } from './ai-correction.mjs';
+import { correctionIssue, hallucination, modelChain, parseCorrections } from './ai-correction.mjs';
 import { correctionPrompt } from './correction-prompt.mjs';
 import { committees } from '../public/committees.mjs';
 import { peopleGlossary } from './people-reference.mjs';
 
 // Corrects each new recognition segment as soon as it is stored, so the public text follows the audio within seconds.
 // Segments of one stream are corrected in order (each uses the previous corrected sentences as context);
-// streams run in parallel. A second identical request is sent after hedgeMs to cut slow-provider tails.
+// streams run in parallel. After hedgeMs a second request goes to the next model of the saved order (the same model when
+// there is none) to cut slow-provider tails; the first valid answer is used.
 export class LiveCorrection {
-  constructor({ store, registry, ai, speakers = null, now = Date.now, hedgeMs = 3500, timeoutMs = 9000, refineTimeoutMs = 40000, refineHedgeMs = 9000, refineLimit = 16, nextWaitMs = 10000 }) {
+  // A refinement asks the next model after 20 s. Gemini 4 Hydrogen took 12.8 s on average for one sentence and over 9 s for 9
+  // of 12 sentences (2026-11-20), so a 9 s wait would ask the next model for most of its refinements.
+  constructor({ store, registry, ai, speakers = null, now = Date.now, hedgeMs = 3500, timeoutMs = 9000, refineTimeoutMs = 40000, refineHedgeMs = 20000, refineLimit = 16, nextWaitMs = 10000 }) {
     Object.assign(this, { store, registry, ai, speakers, now, hedgeMs, timeoutMs, refineTimeoutMs, refineHedgeMs, refineLimit, nextWaitMs });
     this.waiting = new Map();
     this.chains = new Map(); this.closed = false; this.inflight = ai.liveInflight = new Set();
@@ -45,13 +48,15 @@ export class LiveCorrection {
   }
   request(messages, settings, { hedgeMs = this.hedgeMs, timeoutMs = this.timeoutMs, prefix = '' } = {}) {
     const controller = new AbortController();
-    const attempt = () => this.ai.requestText(messages, settings, controller.signal).then(text => parseCorrections(text, [{ id: 'S0' }]).get('S0'));
+    const chain = modelChain(settings);
+    const attempt = model => { let used = model; return this.ai.requestText(messages, { ...settings, model }, controller.signal, value => { used = value; })
+      .then(text => ({ text: parseCorrections(text, [{ id: 'S0' }]).get('S0'), model: used })); };
     return new Promise((resolve, reject) => {
       let started = 1; let failures = 0; let settled = false;
       const finish = (callback, value) => { if (settled) return; settled = true; clearTimeout(hedge); clearTimeout(deadline); controller.abort(); callback(value); };
       const fail = error => { if (++failures >= started) finish(reject, error); };
-      this.metrics[prefix + 'requests']++; attempt().then(value => finish(resolve, value), fail);
-      const hedge = setTimeout(() => { started++; this.metrics[prefix + 'hedged']++; attempt().then(value => finish(resolve, value), fail); }, hedgeMs);
+      this.metrics[prefix + 'requests']++; attempt(chain[0]).then(value => finish(resolve, value), fail);
+      const hedge = setTimeout(() => { started++; this.metrics[prefix + 'hedged']++; attempt(chain[1] ?? chain[0]).then(value => finish(resolve, value), fail); }, hedgeMs);
       const deadline = setTimeout(() => finish(reject, new Error('Live correction timeout')), timeoutMs);
     });
   }
@@ -72,19 +77,19 @@ export class LiveCorrection {
     const glossary = this.glossary(this.registry.get(broadcastId), field);
     const messages = correctionPrompt({ style: 'minutes', committee: glossary.committee, glossary: glossary.text, context: this.context(segment),
       segments: [{ id: 'S0', text: segment.raw_text }] });
-    const text = await this.request(messages, settings);
+    const { text, model } = await this.request(messages, settings);
     if (this.closed) return;
     const latest = current();
     if (!latest) { this.metrics.skipped++; return; }
-    let candidate = { ...base, source_version: latest.version, text, glossary: field.glossary.text, issue: correctionIssue(segment.raw_text, text), status: 'pending', created_ms: this.now() };
+    let candidate = { ...base, source_version: latest.version, text, model, glossary: field.glossary.text, issue: correctionIssue(segment.raw_text, text), status: 'pending', created_ms: this.now() };
     insert(candidate);
     if (candidate.issue && settings.auto_apply_safe) {
       // A flagged minutes-style edit falls back to a word-preserving correction that can still be published automatically.
       const plain = await this.request(correctionPrompt({ style: 'plain', glossary: glossary.text, segments: [{ id: 'S0', text: segment.raw_text }] }), settings).catch(() => null);
       const again = current();
       if (plain && again && !this.closed) {
-        candidate = { ...base, id: randomUUID(), source_version: again.version, text: plain, glossary: field.glossary.text,
-          issue: correctionIssue(segment.raw_text, plain), status: 'pending', created_ms: this.now(), fallback: true };
+        candidate = { ...base, id: randomUUID(), source_version: again.version, text: plain.text, model: plain.model, glossary: field.glossary.text,
+          issue: correctionIssue(segment.raw_text, plain.text), status: 'pending', created_ms: this.now(), fallback: true };
         insert(candidate); this.metrics.fallback = (this.metrics.fallback ?? 0) + 1;
       }
     }
@@ -118,7 +123,7 @@ export class LiveCorrection {
     const messages = correctionPrompt({ style: 'minutes', committee: glossary.committee, glossary: glossary.text, context: this.context(segment), next,
       segments: [this.input(segment)] });
     const task = this.request(messages, { ...settings, model: settings.refine_model }, { hedgeMs: this.refineHedgeMs, timeoutMs: this.refineTimeoutMs, prefix: 'refine_' })
-      .then(text => {
+      .then(({ text, model }) => {
         if (this.closed) return;
         const row = this.store.db.prepare('SELECT document FROM segments WHERE id=?').get(segment.segment_id);
         const value = row && JSON.parse(row.document);
@@ -127,7 +132,7 @@ export class LiveCorrection {
         if (!value || value.raw_text !== segment.raw_text || (value.corrected_text !== null && origin !== 'ai')) { this.metrics.refine_skipped++; return; }
         if (value.corrected_text === text) { this.metrics.refine_same++; return; }
         const candidate = { id: randomUUID(), broadcast_id: broadcastId, segment_id: segment.segment_id, source_version: value.version, source_text: segment.raw_text,
-          text, model: settings.refine_model, provider: settings.provider, glossary: field.glossary.text, start_ms: segment.start_ms, end_ms: segment.end_ms,
+          text, model, provider: settings.provider, glossary: field.glossary.text, start_ms: segment.start_ms, end_ms: segment.end_ms,
           issue: correctionIssue(segment.raw_text, text), status: 'pending', created_ms: this.now(), live: true, refine: true };
         this.store.db.prepare('INSERT INTO ai_candidates VALUES(?,?,?,?,?,?)')
           .run(candidate.id, broadcastId, segment.segment_id, candidate.source_version, context, JSON.stringify(candidate));

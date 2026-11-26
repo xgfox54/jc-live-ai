@@ -47,6 +47,7 @@ test('official directory accepts live and scheduled detail links while excluding
     + '<p><a href="https://evil.test/broadcast/schedule.do?act=view&seq=5">외부</a></p>'
     + '<!-- <p><a href="/broadcast/schedule.do?act=view&seq=6">주석</a></p> --></body></html>';
   const items = parseCouncilDirectory(html); assert.equal(items.length, 2); assert.deepEqual(items.map(item => item.phase), ['live', 'waiting']);
+  assert.deepEqual(parseCouncilDirectory(html.replaceAll('<i>방송중</i></p>', '<i>정회중</i></p>')).map(item => item.recess), [true, false]);
   assert.throws(() => parseCouncilDirectory('<html>blocked</html>'));
 });
 test('official metadata preserves published agenda and ignores inactive players', () => {

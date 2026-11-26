@@ -68,3 +68,29 @@ test('pre-inference gate skips digital and near silence but not quiet speech or 
     assert.equal(called, 1); assert.equal(store.segments({ stream: 'ch0' }).items[0].raw_text, '네.');
   } finally { await scheduler.close(); store.close(); }
 });
+
+test('in an official recess only clear sound is recognized and invented courtesy phrases are dropped at once', async () => {
+  // A second of tone at the given level: the council recess floor (-55 dBFS) or a speaker at the microphone (-30 dBFS).
+  const tone = dbfs => { const pcm = Buffer.alloc(32000); const amplitude = 32768 * 10 ** (dbfs / 20) * Math.SQRT2;
+    for (let i = 0; i < 16000; i++) pcm.writeInt16LE(Math.round(amplitude * Math.sin(i / 4)), i * 2); return pcm; };
+  const store = new Store(':memory:'); const texts = ['시청해주셔서 감사합니다.', '회의를 속개하겠습니다.', '시청해주셔서 감사합니다.']; let called = 0;
+  const engine = { ready: true, metadata: {}, transcribe: async () => { called++; return { spans: [{ text: texts.shift() }], inference_ms: 1 }; }, stop: async () => {} };
+  const scheduler = new Scheduler(store, engine, { chunkSeconds: 5, queueChunks: 8, speechGate: true });
+  let recess = true; scheduler.inRecess = () => recess;
+  const feed = async (state, from, pcm) => {
+    for (let seq = from; seq < from + 5; seq++) scheduler.feed('ch0', { session_id: state.session_id, epoch: 0, seq, pcm });
+    while (scheduler.busy) await new Promise(resolve => setImmediate(resolve));
+  };
+  try {
+    const state = scheduler.start({ stream_id: 'ch0' });
+    // Given a recess, the room floor above the near-silence level is not recognized
+    await feed(state, 0, tone(-55));
+    assert.equal(called, 0); assert.equal(scheduler.metrics.recess_quiet, 1);
+    // Clear sound is recognized; an invented courtesy phrase is dropped, a resumption is kept
+    await feed(state, 5, tone(-30)); await feed(state, 10, tone(-30));
+    assert.equal(called, 2); assert.deepEqual(store.segments({ stream: 'ch0' }).items.map(item => item.raw_text), ['회의를 속개하겠습니다.']);
+    // Outside a recess the same floor is recognized as before and waits for the speaker check
+    recess = false; await feed(state, 15, tone(-55));
+    assert.equal(called, 3); assert.equal(store.segments({ stream: 'ch0' }).items.length, 2);
+  } finally { await scheduler.close(); store.close(); }
+});

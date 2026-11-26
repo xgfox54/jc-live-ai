@@ -59,3 +59,52 @@ test('segments recorded after a handover are shown on the video clock', () => {
   assert.deepEqual([viewerSegment(row).start_ms, viewerSegment(row).end_ms], [620000, 630000]);
   assert.deepEqual([viewerSegment({ ...row, video_offset_ms: null }).start_ms], [20000]);
 });
+
+test('handoff sends an unchanged position once and retries a failed send', async () => {
+  const stream = { stream_id: 'ch0', video_id: 'abcdefghijk', broadcast_id: 'b'.repeat(64) };
+  const session = { session_id: 's1', stream_id: 'ch0', video_id: stream.video_id, state: 'stopped',
+    timeline_epoch: 0, total_gap_s: 0, video_offset_ms: 600000, audio_processed_until: 30000 };
+  const handoff = new Handoff({ config: {}, scheduler: { states: () => [session] },
+    store: { streams: () => [stream], db: { prepare: () => ({ get: () => ({ last: 0 }) }) } },
+    registry: { forSession: () => stream.broadcast_id, sessions: () => [], segments: () => [] } });
+  handoff.settings = { processor: 'desktop' };
+  const sent = []; let offline = true;
+  handoff.request = async (_, data) => { if (offline) throw new Error('Offline'); sent.push(data.video_ms); return { ok: true }; };
+  await assert.rejects(handoff.publish(), /Offline/);
+  offline = false;
+  await handoff.publish(); await handoff.publish();
+  session.audio_processed_until = 45000;
+  await handoff.publish(); await handoff.publish();
+  assert.deepEqual(sent, [630000, 645000]);
+});
+
+test('one handoff request stores sentences and the position together', async () => {
+  const sql = new DatabaseSync(':memory:');
+  const wrap = (query, bindings = []) => ({ bind: (...args) => wrap(query, args),
+    first: async () => sql.prepare(query).get(...bindings) ?? null,
+    all: async () => ({ results: sql.prepare(query).all(...bindings) }),
+    run: async () => sql.prepare(query).run(...bindings) });
+  const env = { JC_SYNC_SECRET: 'a'.repeat(64), DB: { prepare: wrap, batch: async queries => Promise.all(queries.map(q => q.run())) } };
+  const video = 'abcdefghijk', broadcast = 'b'.repeat(64);
+  const send = data => handoffRequest(new Request('https://example.test/api/handoff?video=' + video,
+    { method: data ? 'POST' : 'GET', headers: { 'X-JC-Handoff-Key': env.JC_SYNC_SECRET }, ...(data ? { body: JSON.stringify(data) } : {}) }), env);
+  const session = { session_id: 'session-1', stream_id: 'ch0', video_id: video };
+  const row = id => ({ session, segment: { segment_id: id, session_id: session.session_id, stream_id: 'ch0', version: 1 }, broadcast_id: broadcast });
+  const position = (ms, id = video) => ({ video_id: id, broadcast_id: broadcast, video_ms: ms, processor: 'desktop' });
+  try {
+    // When sentences arrive with a position, both are stored and the answer names the position
+    const answer = await send({ type: 'rows', rows: [row('segment-1')], checkpoint: position(700000) });
+    assert.equal((await answer.json()).checkpoint.video_ms, 700000);
+    const saved = await (await send()).json();
+    assert.equal(saved.checkpoint.video_ms, 700000); assert.equal(saved.checkpoint.processor, 'desktop'); assert.equal(saved.rows.length, 1);
+    // A position that is not valid (another video) is left out: the sentences are stored and the answer names no position
+    assert.equal((await (await send({ type: 'rows', rows: [row('segment-2')], checkpoint: position(800000, 'other_video') })).json()).checkpoint, undefined);
+    assert.equal((await (await send()).json()).checkpoint.video_ms, 700000);
+    // An earlier position sent with sentences does not move the shared position back
+    await send({ type: 'rows', rows: [row('segment-3')], checkpoint: position(600000) });
+    const later = await (await send()).json();
+    assert.equal(later.checkpoint.video_ms, 700000); assert.equal(later.rows.length, 3);
+    // Sentences alone are answered without a position, as before
+    assert.equal((await (await send({ type: 'rows', rows: [] })).json()).checkpoint, undefined);
+  } finally { sql.close(); }
+});

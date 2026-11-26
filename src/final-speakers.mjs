@@ -34,6 +34,8 @@ export const SETTLE_MS = 600_000;
 //      evidence or name a member other than the one whose turn it is.
 // v12: a mixed first group of a turn no longer breaks the link to the member's next labeled group.
 export const REVIEW_METHOD = 'grounded-segment-review-v12';
+// Shown on a review that waited for a channel taking in speech (SpeakerAcoustics.deferred).
+export const CAPTURE_WAIT = '방송 수집 중이라 원음 분석을 미뤘습니다. 수집이 끝나거나 발언 없이 10분이 지나면 다시 시작합니다.';
 // Results from these earlier rules stay public until the current rules have reviewed the meeting again.
 // v10 is left out: its voice names could carry one member's name into the next member's speech.
 export const PREVIOUS_METHODS = ['grounded-segment-review-v11', 'grounded-segment-review-v11-revalidated', 'grounded-segment-review-v9', 'grounded-segment-review-v9-revalidated', 'grounded-segment-review-v7', 'grounded-segment-review-v7-revalidated', 'grounded-segment-review-v6', 'grounded-segment-review-v6-revalidated'];
@@ -374,7 +376,8 @@ export class FinalSpeakerReview {
     this.review.record(id);
     const result = this.registry.finalSpeakers(id);
     return { readiness: finalReadiness(this.registry, id, this.ai), job: this.review.get('speaker-job:' + id),
-      result: result ? { phase: result.phase, assigned: result.assigned, unresolved: result.unresolved, updated_ms: result.updated_ms, model: result.model } : null };
+      result: result ? { phase: result.phase, assigned: result.assigned, unresolved: result.unresolved, updated_ms: result.updated_ms, model: result.model,
+        kept: result.kept === true } : null };
   }
   start(id) {
     const record = this.review.record(id);
@@ -477,18 +480,26 @@ export class FinalSpeakerReview {
       const assigned = Object.values(assignments).filter(Boolean).length;
       const result = { ...job, phase: assigned === rows.length ? 'complete' : 'partial', updated_ms: Date.now(),
         assigned, unresolved: rows.length - assigned, assignments, text_assignments, voice_assigned,
-        people, people_hash, acoustic_conflicts, method: REVIEW_METHOD };
+        people, people_hash, acoustic_conflicts, method: REVIEW_METHOD,
+        // What the review was made from, so that its names for unchanged sentences stay in force after a later change
+        // (BroadcastRegistry.keptSpeakers).
+        versions: Object.fromEntries(rows.map(row => [row.segment_id, row.version])), roster_version: this.review.get('speaker-roster:' + id)?.version ?? 0,
+        meeting: [record.stream_id ?? null, record.committee ?? null, record.scheduled_at ?? null] };
       if (previous) this.review.save('final-speakers-history:' + id + ':' + job.started_ms, previous);
       this.review.save('final-speakers:' + id, result); this.review.save('speaker-job:' + id, { ...job, phase: result.phase, updated_ms: result.updated_ms });
       this.review.store.audit?.({ action: 'speakers.final-review', broadcast_id: id, assigned, unresolved: result.unresolved });
       this.review.store.emit('broadcast', id);
     } catch (error) {
-      this.review.save('speaker-job:' + id, { ...job, phase: signal.aborted ? this.pauseRequested ? 'paused' : 'interrupted' : 'failed',
-        error: signal.aborted ? '검토가 중단됐습니다.' : '발언자 검토 응답 또는 원본 상태를 확인해 주세요.', updated_ms: Date.now() });
+      // A channel taking in speech holds back the recordings analysis; the review starts again once collection is quiet.
+      const waiting = !signal.aborted && error?.code === 'CAPTURE_PRIORITY';
+      this.review.save('speaker-job:' + id, { ...job, phase: signal.aborted ? this.pauseRequested ? 'paused' : 'interrupted' : waiting ? 'waiting' : 'failed',
+        error: signal.aborted ? '검토가 중단됐습니다.' : waiting ? CAPTURE_WAIT : '발언자 검토 응답 또는 원본 상태를 확인해 주세요.', updated_ms: Date.now() });
     }
   }
   auto() {
     if (this.closed || this.pending || this.ai.pending || this.ai.externalBusy || this.ai.config?.manualMode || !this.ai.settings().automatic) return;
+    // Reviews that analyze the recordings wait while a channel is taking in speech.
+    if (this.acoustics?.deferred?.()) return;
     for (const record of this.registry.list()) {
       // Obsolete evidence methods are hidden by the registry until a current review replaces them. A review is current under
       // the rules finalSpeakers() applies (method, phase, source guard) with unchanged decisions and roster. Only those fields
@@ -500,7 +511,8 @@ export class FinalSpeakerReview {
           && final.people_hash === hash(peopleCandidates(record, this.directory, this.review.get('speaker-roster:' + record.id)?.people))
         || finalReadiness(this.registry, record.id, this.ai) !== 'ready') continue;
       const job = this.review.get('speaker-job:' + record.id);
-      // Paused jobs wait for the administrator; failed jobs retry at most every 30 minutes.
+      // Paused jobs wait for the administrator; failed jobs retry at most every 30 minutes. A job that waited for collection
+      // ('waiting') starts again on the first pass with no channel taking in speech.
       if (job?.method === REVIEW_METHOD && job.source_guard === finalSourceGuard(this.registry, record.id)
         && (job.phase === 'paused' || (job.phase === 'failed' && Date.now() - job.updated_ms < 1_800_000))) continue;
       try { this.start(record.id); return; } catch { /* Retry readiness after another job finishes. */ }

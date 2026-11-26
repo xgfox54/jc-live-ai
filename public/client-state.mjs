@@ -121,10 +121,16 @@ export class TranscriptHistory {
       ? { ...item, display_state: 'reconciling', text: '' } : item);
   }
   update(items, before) {
-    const ordered = items.filter(item => Number.isSafeInteger(item.sequence) && item.sequence > 0);
+    // Only published sentences of the snapshot and of pages are contiguous. A live preview (display_state) can be an old
+    // sentence whose text changed lately; counting it made the record look complete back to that sentence (2026-11-21:
+    // a preview from 4,000 sequences back hid about 1,000 sentences in between).
+    const ordered = items.filter(item => Number.isSafeInteger(item.sequence) && item.sequence > 0 && !item.display_state);
     const oldest = ordered.length ? Math.min(...ordered.map(item => item.sequence)) : before;
     const newest = this.items.reduce((last, item) => Math.max(last, item.sequence ?? 0), 0);
-    if (this.before === null || !this.items.length) this.before = oldest ?? Number.MAX_SAFE_INTEGER;
+    // A record read to its start without any sentence keeps cursor 0 until a published sentence arrives. Moving it back to
+    // the newest page made every open channel without sentences ask again as soon as the empty answer arrived (2026-11-25:
+    // 47,144 Worker requests in one hour before the first sentences of the day, docs/CLOUDFLARE.md).
+    if (this.before === null || (!this.items.length && ordered.length)) this.before = oldest ?? Number.MAX_SAFE_INTEGER;
     else if (newest && ordered.length && oldest > newest) {
       this.bridge = { before: Math.max(oldest, this.bridge?.before ?? 0), target: Math.min(newest, this.bridge?.target ?? newest) };
     }

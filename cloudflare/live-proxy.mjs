@@ -3,7 +3,7 @@ import { priorityFetch } from './priority-routing.mjs';
 const paths = new Set(['/api/viewer/snapshot', '/api/viewer/events', '/api/viewer/segments', '/api/viewer/schedule', '/api/viewer/status']);
 const baseHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY', 'Strict-Transport-Security': 'max-age=63072000; includeSubDomains',
-  'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'", Vary: 'Origin' };
+  'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'", Vary: 'Origin, Accept-Encoding' };
 
 export async function proxyLive(request, env) {
   const url = new URL(request.url);
@@ -28,6 +28,9 @@ export async function proxyLive(request, env) {
   if (!env.DESKTOP_LIVE && !env.JC_LAPTOP_URL) return reply('데스크톱 실시간 연결을 준비하고 있습니다.', 503);
   const upstreamHeaders = new Headers({ Origin: origin });
   if (request.headers.has('if-none-match')) upstreamHeaders.set('If-None-Match', request.headers.get('if-none-match'));
+  // The desktop compresses large answers in an encoding the viewer accepts. Keeping Content-Encoding and not reading the body
+  // here lets Cloudflare pass the compressed bytes to the viewer without decompressing and compressing them again.
+  if (request.headers.has('accept-encoding')) upstreamHeaders.set('Accept-Encoding', request.headers.get('accept-encoding'));
   try {
     // VPC Service fixes the desktop destination to the separate loopback read-only listener. The standby laptop
     // answers only while the desktop is down (priority-routing.mjs).
@@ -35,7 +38,7 @@ export async function proxyLive(request, env) {
     if (!response) return reply('데스크톱 실시간 연결을 확인하고 있습니다.', 503);
     if (response.status >= 300 && response.status < 400 && response.status !== 304) return reply('Desktop redirect rejected', 502);
     const output = new Headers(headers);
-    for (const name of ['Content-Type', 'ETag', 'Retry-After', 'X-Accel-Buffering', 'X-JC-Active-Processor'])
+    for (const name of ['Content-Type', 'Content-Encoding', 'ETag', 'Retry-After', 'X-Accel-Buffering', 'X-JC-Active-Processor'])
       if (response.headers.has(name)) output.set(name, response.headers.get(name));
     return new Response(response.body, { status: response.status, headers: output });
   } catch (error) {

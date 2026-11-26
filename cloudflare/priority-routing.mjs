@@ -15,15 +15,16 @@ const validKey = (received, expected) => /^[a-f0-9]{64}$/.test(received ?? '') &
   && expected.length === 64 && timingSafeEqual(Buffer.from(received), Buffer.from(expected));
 
 // true: the desktop engine answers. false: the desktop is unreachable or its engine is stopped. null: unknown.
+// The check reads the status answer (about 1 ms on the desktop). The all-channel snapshot it read before took about 210 ms
+// to build whenever its 1-second cache had expired (2026-11-21), and every viewer request waited for it.
 async function desktopAvailable(env, origin) {
   if (!env.DESKTOP_LIVE) return null;
   try {
-    const response = await env.DESKTOP_LIVE.fetch(new Request(DESKTOP + '/api/viewer/snapshot?text_streams=', {
+    const response = await env.DESKTOP_LIVE.fetch(new Request(DESKTOP + '/api/viewer/status?probe=1', {
       headers: { Origin: origin }, signal: AbortSignal.timeout(4000), redirect: 'manual' }));
     if (!response.ok) { await response.body?.cancel(); return response.status >= 500 ? false : null; }
     const data = await response.json();
-    if (!Array.isArray(data.streams) || !Array.isArray(data.states)) return null;
-    return data.engine !== 'stopped';
+    return data?.engine === 'running' ? true : data?.engine === 'stopped' ? false : null;
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     return error instanceof SyntaxError ? null : false;
@@ -44,20 +45,31 @@ export function requestLimit(pathname, desktop) {
   return pathname.endsWith('/events') ? (desktop ? null : 30000) : 15000;
 }
 
-// Returns null when neither processor can answer.
+// Returns null when neither processor can answer. The desktop is asked together with its status check, so a viewer waits for
+// one desktop round trip instead of two: on 2026-11-21 requests from Korea ran in Los Angeles, and each round trip to the
+// Seoul tunnel crossed the Pacific (a 24-byte status answer took about 1 second). When the check sends the viewer to the
+// laptop or finds no processor, the desktop request is cancelled.
 export async function priorityFetch(path, { headers, signal }, env, origin) {
+  const upstream = (base, desktop, cancel) => {
+    const upstreamHeaders = new Headers(headers);
+    upstreamHeaders.delete('X-JC-Laptop-Key');
+    if (!desktop) upstreamHeaders.set('X-JC-Laptop-Key', env.JC_LAPTOP_SECRET);
+    const limit = requestLimit(new URL(path, DESKTOP).pathname, desktop);
+    const signals = [signal, cancel, limit === null ? null : AbortSignal.timeout(limit)].filter(Boolean);
+    return new Request(base + path, { headers: upstreamHeaders, signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0], redirect: 'manual' });
+  };
+  const cancel = new AbortController();
+  const desktopCall = env.DESKTOP_LIVE ? env.DESKTOP_LIVE.fetch(upstream(DESKTOP, true, cancel.signal)) : null;
+  desktopCall?.catch(() => {}); // a cancelled call must not report an unhandled rejection
   const desktop = await desktopAvailable(env, origin);
-  if (desktop === null || (!desktop && !env.JC_LAPTOP_URL)) return null;
-  const upstreamHeaders = new Headers(headers);
-  upstreamHeaders.delete('X-JC-Laptop-Key');
-  if (!desktop) upstreamHeaders.set('X-JC-Laptop-Key', env.JC_LAPTOP_SECRET);
-  const limit = requestLimit(new URL(path, DESKTOP).pathname, desktop);
-  const signals = [signal, limit === null ? null : AbortSignal.timeout(limit)].filter(Boolean);
-  const upstream = new Request((desktop ? DESKTOP : env.JC_LAPTOP_URL) + path, { headers: upstreamHeaders,
-    signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0], redirect: 'manual' });
-  const response = desktop ? await env.DESKTOP_LIVE.fetch(upstream) : await fetch(upstream);
+  if (desktop) return relay(await desktopCall, 'desktop');
+  cancel.abort();
+  if (desktop === null || !env.JC_LAPTOP_URL) return null;
+  return relay(await fetch(upstream(env.JC_LAPTOP_URL, false)), 'laptop');
+}
+function relay(response, processor) {
   const output = new Headers(response.headers);
-  output.set('X-JC-Active-Processor', desktop ? 'desktop' : 'laptop');
+  output.set('X-JC-Active-Processor', processor);
   return new Response(response.body, { status: response.status, headers: output });
 }
 

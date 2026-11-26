@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { HttpError } from './validate.mjs';
 import { RecoveryQueue } from './recovery-queue.mjs';
 import { Segmenter } from './segmenter.mjs';
-import { nonSpeech, stripInvented } from './silence-filter.mjs';
+import { nonSpeech, stripInvented, suspectText } from './silence-filter.mjs';
 import { speechActivity } from './speech-activity.mjs';
+import { soundLevel } from './recess-watch.mjs';
 
 export class Scheduler {
   constructor(store, engine, config) {
@@ -207,7 +208,12 @@ export class Scheduler {
           const speakers = job.diarization_result;
           const gate = this.config.speechGate === true || this.config.silenceRms > 0;
           const acoustic_activity = gate && this.vad ? await this.vad.process(job) : undefined;
-          const activity = gate ? speechActivity(job.pcm, speakers, { ...job, acoustic_activity }) : { state: 'unknown', method: 'disabled' };
+          let activity = gate ? speechActivity(job.pcm, speakers, { ...job, acoustic_activity }) : { state: 'unknown', method: 'disabled' };
+          // While the official list shows the meeting in recess, only clear sound is recognized (the recess watch rule: 5% of
+          // 20 ms frames at -45 dBFS or louder). On 2026-11-26 the council streams kept a -52 to -64 dBFS floor in recess and
+          // Whisper wrote '시청해주셔서 감사합니다.' or the agenda title in 357 chunks; 29 of them reached the public page.
+          const recess = this.inRecess?.(c.stream_id) === true;
+          if (recess && activity.state !== 'silence' && !soundLevel(job.pcm).sound) activity = { state: 'silence', method: 'recess-quiet' };
           const silent = activity.state === 'silence';
           const result = silent ? { spans: [], inference_ms: 0 } : await this.recognize(job);
           const evidence = { ...(speakers ?? {}), speech_activity: activity };
@@ -225,13 +231,16 @@ export class Scheduler {
           this.metrics.inferred_audio_s += silent ? 0 : job.unique_s;
           if (silent) this.metrics.silence++;
           if (activity.method === 'near-silence') this.metrics.near_silence++;
+          if (activity.method === 'recess-quiet') this.metrics.recess_quiet = (this.metrics.recess_quiet ?? 0) + 1;
           c.total_processed_s += job.unique_s;
           if (job.epoch === c.timeline_epoch) c.audio_processed_until = job.end_ms;
           let main_text = result.spans.map(s => s.text).join('').trim();
-          if (main_text && nonSpeech(main_text, evidence))
+          // In a recess a phrase Whisper also invents over noise is dropped at once instead of waiting for the speaker check.
+          const dropped = nonSpeech(main_text, evidence) || (recess && suspectText(main_text));
+          if (main_text && dropped)
             this.store.db.prepare('INSERT INTO recognition_suppressed(session_id,start_ms,end_ms,document) VALUES(?,?,?,?)')
-              .run(job.session_id, job.start_ms, job.end_ms, JSON.stringify({ raw_text: main_text, evidence }));
-          if (nonSpeech(main_text, evidence)) { main_text = ''; this.metrics.silence_artifacts = (this.metrics.silence_artifacts ?? 0) + 1; }
+              .run(job.session_id, job.start_ms, job.end_ms, JSON.stringify({ raw_text: main_text, evidence, recess }));
+          if (dropped) { main_text = ''; this.metrics.silence_artifacts = (this.metrics.silence_artifacts ?? 0) + 1; }
           // Music under real speech makes Whisper append invented phrases ("…부르겠습니다. 찬송가 2장"). They are cut out
           // and the recognized text is kept with the segment.
           const recognized_text = main_text; main_text = stripInvented(main_text);

@@ -30,7 +30,7 @@ export function videoOffset(timeline) {
 export class Handoff {
   constructor({ store, registry, scheduler, config }) {
     Object.assign(this, { store, registry, scheduler, config });
-    this.sent = new Map(); this.busy = null; this.closed = false; this.stopping = new AbortController();
+    this.sent = new Map(); this.checkpoints = new Map(); this.busy = null; this.closed = false; this.stopping = new AbortController();
     if (config.handoffFile) {
       this.settings = JSON.parse(readFileSync(config.handoffFile, 'utf8'));
       if (this.settings.secretFile) {
@@ -39,9 +39,12 @@ export class Handoff {
       }
       if (this.settings.endpoint !== CLOUDFLARE_SITE + '/api/handoff' ||
         !/^[a-f0-9]{64}$/.test(this.settings.secret)) throw new Error('Invalid handoff configuration');
+      // Progress and changed sentences go every 60 seconds, up to 60 sentences a request. Every 15 seconds with 30 a request
+      // it was about 16 Worker requests a minute with two channels on air (2026-11-25). A laptop that takes over
+      // transcribes again at most about one more minute of the broadcast.
       this.timer = setInterval(() => this.flush().catch(error => {
         console.error(JSON.stringify({ event: 'handoff.sync_failed', error: error.message }));
-      }), 15000); this.timer.unref();
+      }), 60000); this.timer.unref();
     }
   }
   async request(video, data, after = '') {
@@ -90,13 +93,18 @@ export class Handoff {
       const rows = this.registry.segments(stream.broadcast_id).filter(s =>
         this.sent.get(s.segment_id) !== JSON.stringify(s)).map(segment => ({ segment,
         session: sessions.get(segment.session_id), broadcast_id: stream.broadcast_id }));
-      for (let i = 0; i < rows.length; i += 30) {
-        const batch = rows.slice(i, i + 30);
+      for (let i = 0; i < rows.length; i += 60) {
+        const batch = rows.slice(i, i + 60);
         await this.request(stream.video_id, { type: 'rows', rows: batch });
         for (const row of batch) this.sent.set(row.segment.segment_id, JSON.stringify(row.segment));
       }
+      // An unchanged position is not sent again. A stopped session used to resend it every 15 seconds until restart,
+      // 240 Worker calls and D1 writes an hour per channel.
+      const key = stream.video_id + '/' + stream.broadcast_id;
+      if (this.checkpoints.get(key) === position) continue;
       await this.request(stream.video_id, { type: 'checkpoint', video_id: stream.video_id,
         broadcast_id: stream.broadcast_id, video_ms: position, processor: this.settings.processor });
+      this.checkpoints.set(key, position);
     }
   }
   // The last progress is still sent at shutdown, but for at most 10 seconds (each request alone could wait 30 seconds).

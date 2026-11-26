@@ -17,7 +17,7 @@ export function desktopLiveSettings(value) {
 export function createDesktopLive(context) {
   const settings = desktopLiveSettings(context.config.desktopLive);
   if (!settings) return null;
-  const viewer = createViewer({ ...context, cloudSync: null, config: { ...context.config, maxClients: 350, snapshotCacheMs: 1000, pushDeliveryHealth: true } });
+  const viewer = createViewer({ ...context, cloudSync: null, config: { ...context.config, maxClients: 350, snapshotCacheMs: 1000, historyCacheMs: 10000, pushDeliveryHealth: true } });
   const routes = new Set(['/api/viewer/snapshot', '/api/viewer/events', '/api/viewer/segments', '/api/viewer/schedule', '/api/viewer/status']);
   let windowStart = 0; let requests = 0;
   const server = createServer((req, res) => {

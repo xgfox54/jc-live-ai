@@ -8,16 +8,37 @@ import { proxyBase, sealCredential, openCredential } from './ai-proxy.mjs';
 // Adapted from StreamRecord transcript-correction.ts; see STREAMRECORD-PORT.md.
 // Phrases Whisper emits over silence or music; the patterns live in silence-filter.mjs.
 export const hallucination = (text, evidence = null) => nonSpeech(text, evidence);
+// A proxy request tries its own model first, then the correction model and the fallback models in the saved order
+// (settings.model_order), each model once.
+export const modelChain = settings => [...new Set([settings.model, ...(settings.model_order ?? [])])].filter(Boolean);
+// Version of the rules in correctionIssue. Pending candidates held under an earlier version are checked again once at start.
+export const ISSUE_RULES = 2;
 // 제주 4.3 is read "사삼" and also written "4·3"; "4.300" (a misheard "4.3 영령") already equals 4.3 below. A candidate
 // passes when its amounts match either as written or with these spellings unified, so nothing that passed before is held.
 const spelled = text => text.replace(/(\d)\s*[·ㆍ・∙]\s*(?=\d)/g, '$1.').replace(/(?:(?<![가-힣])|(?<=제주\s*))사삼/g, '4.3');
+// Whisper writes some misheard words with digits: 제주 as 제2 or 제6 ("제2특별아치도", "제6시 문화관광체육국"), 삼도1동 as "3도 1동",
+// 이도2동 as "이도이동", 이월액 as "2월액", 일문일답 as "1문 1답". Where the candidate writes the word out ("제주특별자치도",
+// "삼도1동"), that digit is not an amount and the transcript is compared in the candidate's spelling (2026-11-24: the opening of
+// a committee meeting was held back for this). A candidate that changes the digit instead ("제7시") still differs.
+const DONG = { 1: '일', 2: '이', 3: '삼', 일: '일', 이: '이', 삼: '삼' }; const DONG_NUMBER = { 1: '1', 2: '2', 일: '1', 이: '2' };
+const HEARD = [[/제\s*\d\s*(?=특별\s*[자아]치|특별\s*시도)/g, () => '제주', '제주특별'], [/제\s*\d\s*(?=시\s*[가-힣])/g, () => '제주', '제주시'],
+  [/(?<![\d가-힣])([123일이삼])\s*도\s*([12일이])\s*동/g, (_, place, number) => DONG[place] + '도' + DONG_NUMBER[number] + '동'],
+  [/(?<![가-힣])용담\s*([12일이])\s*동/g, (_, number) => '용담' + DONG_NUMBER[number] + '동'],
+  [/2\s*월(?=액|금)/g, () => '이월', '이월'], [/1\s*문\s*1\s*답/g, () => '일문일답']];
+function heard(source, candidate) {
+  const written = candidate.replace(/\s/g, '');
+  return HEARD.reduce((text, [pattern, spelling, word]) => text.replace(pattern, (...match) => {
+    const value = spelling(...match); return written.includes(word ?? value) ? value : match[0];
+  }), source);
+}
 function numbersChanged(source, candidate) {
   const left = amounts(candidate);
   for (const value of amounts(source)) { const index = left.indexOf(value); if (index < 0) return true; left.splice(index, 1); }
   return left.length > 0 && !HANGUL_NUMBER.test(source);
 }
 export function correctionIssue(source, candidate) {
-  if (numbersChanged(source, candidate) && numbersChanged(spelled(source), spelled(candidate))) return 'numbers';
+  if (numbersChanged(source, candidate) && numbersChanged(spelled(source), spelled(candidate))
+    && numbersChanged(spelled(heard(source, candidate)), spelled(candidate))) return 'numbers';
   const trimmed = source.trim();
   return (trimmed.length >= 12 && candidate.length < trimmed.length * .4) || candidate.length > source.length * 2.5 + 40 ? 'length' : null;
 }
@@ -80,10 +101,30 @@ export class CorrectionService {
       + 'CREATE TABLE IF NOT EXISTS ai_candidates(id TEXT PRIMARY KEY, broadcast_id TEXT NOT NULL, segment_id TEXT NOT NULL,'
       + ' source_version INTEGER NOT NULL, context TEXT NOT NULL, document TEXT NOT NULL);'
       + 'CREATE INDEX IF NOT EXISTS ai_candidate_lookup ON ai_candidates(broadcast_id,segment_id,source_version,context);'
+      // auto() looks up the candidates of a segment without its broadcast. Without this index every lookup read all candidates
+      // (2026-11-23: about 6 seconds per cycle for 53,420 candidates, which stopped the desktop listener from answering).
+      + 'CREATE INDEX IF NOT EXISTS ai_candidate_segment ON ai_candidates(segment_id,source_version,context);'
       + "CREATE INDEX IF NOT EXISTS ai_candidate_pending ON ai_candidates(broadcast_id) WHERE json_extract(document,'$.status')='pending';");
     for (const job of this.jobs().filter(job => ['queued', 'running'].includes(job.phase)))
       this.save('ai_jobs', job.id, { ...job, phase: 'interrupted', error: '서버가 재시작되었습니다. 후보 생성을 다시 시작해 주세요.' });
+    this.recheck();
     this.timer = setInterval(() => this.auto(), 30000); this.timer.unref();
+  }
+  // Pending candidates of unpublished sentences held under earlier rules are checked again once (ISSUE_RULES). A candidate the
+  // current rules accept gets no issue and is published by the next automatic pass. Candidates for an older version of their
+  // sentence, and refinements of sentences already public, are left for the administrator.
+  recheck() {
+    const update = this.store.db.prepare('UPDATE ai_candidates SET document=? WHERE id=?'); let released = 0;
+    this.store.transaction(() => {
+      for (const row of this.store.db.prepare("SELECT c.id,c.document,s.version FROM ai_candidates c JOIN segments s ON s.id=c.segment_id "
+        + "WHERE json_extract(c.document,'$.status')='pending' AND json_extract(c.document,'$.issue') IS NOT NULL AND json_extract(s.document,'$.corrected_text') IS NULL").all()) {
+        const candidate = JSON.parse(row.document);
+        if (candidate.issue_rules === ISSUE_RULES || row.version !== candidate.source_version) continue;
+        const issue = correctionIssue(candidate.source_text, candidate.text); if (!issue) released++;
+        update.run(JSON.stringify({ ...candidate, issue, issue_rules: ISSUE_RULES }), row.id);
+      }
+    });
+    return released;
   }
   get(table, id) {
     if (typeof id !== 'string') return null;
@@ -94,11 +135,11 @@ export class CorrectionService {
       .run(id, JSON.stringify(value)); return value;
   }
   settings() {
-    const value = { model: '', refine_model: '', automatic: false, auto_apply_safe: false, provider: 'ollama', base: 'http://127.0.0.1:10100/v1',
+    const value = { model: '', refine_model: '', fallback_models: [], automatic: false, auto_apply_safe: false, provider: 'ollama', base: 'http://127.0.0.1:10100/v1',
       ...this.get('ai_settings', 'global'), has_api_key: Boolean(this.get('ai_settings', 'proxy-credential')),
       ...(this.config.manualMode ? { automatic: false, auto_apply_safe: false } : {}) };
     // Automatic correction publishes warning-free candidates; flagged candidates stay for administrator review.
-    return { ...value, auto_apply_safe: value.auto_apply_safe || value.automatic };
+    return { ...value, auto_apply_safe: value.auto_apply_safe || value.automatic, model_order: [...new Set([value.model, ...value.fallback_models])].filter(Boolean) };
   }
   proxyHeaders(settings) {
     const secret = openCredential(this.get('ai_settings', 'proxy-credential'), settings.base, this.config.adminToken);
@@ -126,10 +167,14 @@ export class CorrectionService {
     if (value.auto_apply_safe !== undefined && typeof value.auto_apply_safe !== 'boolean') throw new HttpError(400, '자동 적용 설정을 확인해 주세요.');
     if (value.refine_model !== undefined && (typeof value.refine_model !== 'string' || !/^[a-zA-Z0-9_.:/-]{0,200}$/.test(value.refine_model)))
       throw new HttpError(400, '정밀 후보정 모델을 확인해 주세요.');
+    const fallback = value.fallback_models ?? previous.fallback_models;
+    if (!Array.isArray(fallback) || fallback.length > 2 || fallback.some(model => typeof model !== 'string' || !/^[a-zA-Z0-9_.:/-]{1,200}$/.test(model)))
+      throw new HttpError(400, '예비 모델을 확인해 주세요.');
     this.store.transaction(() => {
       if (value.clear_key === true || base !== previous.base) this.store.db.prepare("DELETE FROM ai_settings WHERE id='proxy-credential'").run();
       if (value.api_key) this.save('ai_settings', 'proxy-credential', sealCredential(value.api_key, base, this.config.adminToken));
-      this.save('ai_settings', 'global', { model: value.model, refine_model: value.refine_model ?? previous.refine_model ?? '', automatic: value.automatic,
+      this.save('ai_settings', 'global', { model: value.model, refine_model: value.refine_model ?? previous.refine_model ?? '',
+        fallback_models: [...new Set(fallback)].filter(model => model !== value.model), automatic: value.automatic,
         auto_apply_safe: value.auto_apply_safe ?? previous.auto_apply_safe, provider, base });
     });
     return this.settings();
@@ -141,12 +186,20 @@ export class CorrectionService {
   }
   jobs() { return this.store.db.prepare('SELECT document FROM ai_jobs ORDER BY rowid DESC').all().map(row => JSON.parse(row.document)); }
   busy() { return this.scheduler.states().some(state => ['running', 'draining', 'degraded', 'reconnecting'].includes(state.state)); }
+  // Answers and failures per model since the server started, and the last answer that came from a later model of the order.
+  countModel(model, error, skipped = null) {
+    const use = this.modelUse ??= new Map();
+    const entry = use.get(model) ?? { answered: 0, failed: 0, last_error: null, last_failed_ms: null }; use.set(model, entry);
+    if (error) Object.assign(entry, { failed: entry.failed + 1, last_error: String(error.message ?? error).slice(0, 200), last_failed_ms: this.now() });
+    else { entry.answered++; if (skipped) this.lastFallback = { model, instead_of: skipped, at_ms: this.now() }; }
+  }
   // A failed automatic application does not stop the pass; it stays visible in the AI view and the error log.
   autoApplyFailed(id, error) {
     this.autoApply = { failures: (this.autoApply?.failures ?? 0) + 1, broadcast_id: id, error: error.message.slice(0, 200), failed_ms: this.now() };
     process.stderr.write(JSON.stringify({ level: 'error', event: 'ai.auto_apply_failed', broadcast_id: id, error: error.message }) + '\n');
   }
   view() { return { settings: this.settings(), jobs: this.jobs(), broadcasts: this.registry.minuteList(), auto_apply: this.autoApply ?? null,
+    model_use: { models: Object.fromEntries(this.modelUse ?? []), last_fallback: this.lastFallback ?? null },
     catalog: glossaryCatalog, collecting: this.busy(), collection_blocks: this.settings().provider !== 'proxy' && this.busy() }; }
   async models() {
     const settings = this.settings(); const proxy = settings.provider === 'proxy';
@@ -159,13 +212,28 @@ export class CorrectionService {
         .filter(name => typeof name === 'string' && name.length <= 200 && /^[a-zA-Z0-9_.:/-]+$/.test(name)))], error: null };
     } catch { return { models: [], error: proxy ? '프록시 주소·인증키·실행 상태를 확인해 주세요.' : 'Ollama 연결을 확인해 주세요. 이 PC의 11434 포트를 사용합니다.' }; }
   }
-  list(id, before = Number.MAX_SAFE_INTEGER) {
+  // waiting lists only the candidates that wait for an administrator: pending with a warning and written for the current version
+  // of an unpublished sentence, newest first, up to 200 at once.
+  list(id, before = Number.MAX_SAFE_INTEGER, waiting = false) {
     this.field(id);
-    const rows = this.store.db.prepare('SELECT rowid,document FROM ai_candidates WHERE broadcast_id=? AND rowid<? ORDER BY rowid DESC LIMIT 50').all(id, before);
+    const rows = waiting ? this.store.db.prepare("SELECT c.rowid,c.document FROM ai_candidates c JOIN segments s ON s.id=c.segment_id AND s.version=c.source_version "
+      + "WHERE c.broadcast_id=? AND json_extract(c.document,'$.status')='pending' AND json_extract(c.document,'$.issue') IS NOT NULL "
+      + "AND json_extract(s.document,'$.corrected_text') IS NULL ORDER BY c.rowid DESC LIMIT 200").all(id)
+      : this.store.db.prepare('SELECT rowid,document FROM ai_candidates WHERE broadcast_id=? AND rowid<? ORDER BY rowid DESC LIMIT 50').all(id, before);
     return { items: rows.map(row => {
       const candidate = JSON.parse(row.document); const current = this.store.db.prepare('SELECT version FROM segments WHERE id=?').get(candidate.segment_id);
       return { ...candidate, stale: candidate.status === 'pending' && current?.version !== candidate.source_version };
-    }), before: rows.at(-1)?.rowid ?? null };
+    }), before: waiting ? null : rows.at(-1)?.rowid ?? null };
+  }
+  // Applies the candidates an administrator checked against the recording, warnings included. A candidate whose sentence
+  // changed in the meantime, or that was already reviewed, is skipped.
+  applyChecked(ids) {
+    if (!Array.isArray(ids) || !ids.length || ids.length > 200 || !ids.every(id => typeof id === 'string')) throw new HttpError(400, '적용할 후보를 선택해 주세요.');
+    let applied = 0; let skipped = 0;
+    for (const id of new Set(ids)) {
+      try { this.apply(id, true); applied++; } catch (error) { if (![404, 409].includes(error.status)) throw error; skipped++; }
+    }
+    return { applied, skipped };
   }
   start(id, { limit = Infinity } = {}) {
     if (this.closed) throw new HttpError(409, '서버를 종료하고 있습니다.');
@@ -184,22 +252,34 @@ export class CorrectionService {
   }
   async generate(parts, glossary, settings, signal) {
     const input = JSON.stringify({ glossary, segments: parts });
-    const model = settings.model;
     const messages = [{ role: 'system', content: instruction }, { role: 'user', content: input }];
-    return parseCorrections(await this.requestText(messages, settings, signal), parts);
+    let model = settings.model; const text = await this.requestText(messages, settings, signal, used => { model = used; });
+    return { corrections: parseCorrections(text, parts), model };
   }
-  async requestText(messages, settings, signal) {
-    const model = settings.model;
-    if (settings.provider === 'proxy') {
-      const response = await this.fetcher(settings.base + '/chat/completions', { method: 'POST', redirect: 'error',
-        signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]), headers: this.proxyHeaders(settings),
-        // The proxy counts model reasoning tokens against max_tokens; 4,000 left batch summaries with empty content.
-        body: JSON.stringify({ model, stream: false, max_tokens: 16000, messages }) });
-      const result = await readJson(response); const choice = result.choices?.[0];
-      if (!choice || choice.finish_reason === 'length' || choice.message?.tool_calls?.length || typeof choice.message?.content !== 'string')
-        throw new Error('프록시 응답이 비었거나 출력이 잘렸습니다. 원문은 보존했습니다.');
-      return choice.message.content;
+  // A proxy request moves to the next model of modelChain when a model answers with an error, a cut or empty answer or
+  // nothing within the time limit. A cancelled request is not passed on. answered receives the model that produced the text.
+  async requestText(messages, settings, signal, answered) {
+    if (settings.provider !== 'proxy') { const text = await this.localText(settings.model, messages, signal); answered?.(settings.model); return text; }
+    const chain = modelChain(settings); let failure = new Error('후보정에 사용할 AI 모델을 저장해 주세요.');
+    for (const [index, model] of chain.entries()) {
+      try {
+        const text = await this.proxyText(model, messages, settings, signal);
+        this.countModel(model, null, index ? chain[0] : null); answered?.(model); return text;
+      } catch (error) { if (signal.aborted) throw error; failure = error; this.countModel(model, error); }
     }
+    throw failure;
+  }
+  async proxyText(model, messages, settings, signal) {
+    const response = await this.fetcher(settings.base + '/chat/completions', { method: 'POST', redirect: 'error',
+      signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]), headers: this.proxyHeaders(settings),
+      // The proxy counts model reasoning tokens against max_tokens; 4,000 left batch summaries with empty content.
+      body: JSON.stringify({ model, stream: false, max_tokens: 16000, messages }) });
+    const result = await readJson(response); const choice = result.choices?.[0];
+    if (!choice || choice.finish_reason === 'length' || choice.message?.tool_calls?.length || typeof choice.message?.content !== 'string')
+      throw new Error('프록시 응답이 비었거나 출력이 잘렸습니다. 원문은 보존했습니다.');
+    return choice.message.content;
+  }
+  async localText(model, messages, signal) {
     const response = await this.fetcher('http://127.0.0.1:11434/api/chat', { method: 'POST', redirect: 'error',
       signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]), headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, stream: false, think: false, format: 'json', keep_alive: 0,
@@ -236,7 +316,7 @@ export class CorrectionService {
           result.push({ id: 'S' + index + 'p' + result.length, text: row.raw_text.slice(offset, offset + 900), index });
         return result;
       });
-      const found = new Map(); const saved = new Set();
+      const found = new Map(); const answeredBy = new Map(); const saved = new Set();
       for (let offset = 0; offset < parts.length;) {
         signal.throwIfAborted();
         if (settings.provider !== 'proxy' && this.busy()) throw new Error('새 방송 수집을 시작해 로컬 후보 생성을 중단했습니다. 녹음·전사는 계속됩니다.');
@@ -246,7 +326,8 @@ export class CorrectionService {
           if (batch.length && length + part.text.length > 1800) break;
           batch.push(part); length += part.text.length; offset++;
         }
-        for (const [id, text] of await this.generate(batch.map(({ id, text }) => ({ id, text })), field.glossary.text, settings, signal)) found.set(id, text);
+        const result = await this.generate(batch.map(({ id, text }) => ({ id, text })), field.glossary.text, settings, signal);
+        for (const [id, text] of result.corrections) { found.set(id, text); answeredBy.set(id, result.model); }
         signal.throwIfAborted();
         for (const index of new Set(batch.map(part => part.index))) {
           const row = rows[index]; const rowParts = parts.filter(part => part.index === index);
@@ -254,7 +335,7 @@ export class CorrectionService {
           const text = rowParts.map(part => found.get(part.id)).join(' ');
           if (text.length > 5000) throw new Error('후보정 결과가 문장 저장 한도를 초과했습니다.');
           const candidate = { id: randomUUID(), broadcast_id: job.id, segment_id: row.segment_id, source_version: row.version,
-            source_text: row.raw_text, text, model: settings.model, provider: settings.provider, glossary: field.glossary.text,
+            source_text: row.raw_text, text, model: [...new Set(rowParts.map(part => answeredBy.get(part.id)))].join(', '), provider: settings.provider, glossary: field.glossary.text,
             issue: correctionIssue(row.raw_text, text), status: 'pending', start_ms: row.start_ms, end_ms: row.end_ms, created_ms: Date.now() };
           this.store.db.prepare('INSERT INTO ai_candidates VALUES(?,?,?,?,?,?)')
             .run(candidate.id, job.id, row.segment_id, row.version, context, JSON.stringify(candidate));
@@ -294,7 +375,9 @@ export class CorrectionService {
   }
   async applySafe(id) {
     this.field(id); let applied = 0; let skipped = 0;
-    for (const row of this.store.db.prepare("SELECT document FROM ai_candidates WHERE broadcast_id=? AND json_extract(document,'$.status')='pending'").all(id)) {
+    // Newest first: when several candidates wait for one sentence (a vocabulary or model change made new ones), the newest is
+    // applied and the others close as superseded.
+    for (const row of this.store.db.prepare("SELECT document FROM ai_candidates WHERE broadcast_id=? AND json_extract(document,'$.status')='pending' ORDER BY rowid DESC").all(id)) {
       const candidate = JSON.parse(row.document);
       const source = this.store.db.prepare('SELECT document FROM segments WHERE id=?').get(candidate.segment_id);
       if (hallucination(candidate.source_text, source ? JSON.parse(source.document) : null)) {

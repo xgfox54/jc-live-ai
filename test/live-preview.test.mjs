@@ -4,6 +4,7 @@ import { Store } from '../src/store.mjs';
 import { viewerLiveSegment, viewerSnapshot } from '../src/viewer.mjs';
 import { publicLiveSegment, publicSnapshot } from '../web/lib/model.mjs';
 import { TranscriptState, TranscriptHistory } from '../public/client-state.mjs';
+import { selectSnapshotText } from '../web/lib/snapshot-selection.mjs';
 
 const row = { stream_id: 'ch0', session_id: 's1', segment_id: 'seg1', timeline_epoch: 0, start_ms: 0, end_ms: 10000,
   raw_text: '오늘 회의를 시작하겠습니다.', corrected_text: null, ai_corrected: false, version: 1, live_preview: true,
@@ -47,5 +48,31 @@ test('live snapshots and cloud validators scope drafts to the requested broadcas
     assert.throws(() => publicLiveSegment({ ...projected.live_segments[0], display_state: 'removed', text: 'must be empty' }));
     assert.throws(() => publicLiveSegment({ ...projected.live_segments[0], text: 'x'.repeat(5001) }));
     assert.deepEqual(publicSnapshot({ ...snapshot, live_policy: 'unknown' }).live_segments, []);
+  } finally { store.close(); }
+});
+
+test('a snapshot builds sentences only for the channels asked for and answers like a filtered full snapshot', () => {
+  // Given two channels, each with a recognition draft and a corrected sentence
+  const store = new Store(':memory:');
+  try {
+    for (const stream_id of ['ch0', 'ch1']) {
+      store.saveStream({ stream_id, name: stream_id, page_url: '' });
+      store.segment({ ...row, stream_id, raw_text: stream_id + ' 초안 발언입니다.' });
+      const done = store.segment({ ...row, stream_id, live_preview: false, start_ms: 10000, end_ms: 20000 });
+      store.correct(done.segment_id, { version: 1, origin: 'ai', text: stream_id + ' 보정 발언입니다.' });
+    }
+    const context = { store, scheduler: { states: () => [] } };
+    const text = snapshot => ({ segments: snapshot.segments, live_segments: snapshot.live_segments, live_pending: snapshot.live_pending,
+      before: snapshot.before, streams: snapshot.streams, gaps: snapshot.gaps, states: snapshot.states, event_id: snapshot.event_id });
+    // When one channel's text, or none, is asked for
+    for (const texts of [['ch1'], []]) {
+      const light = selectSnapshotText(viewerSnapshot(context, ['ch0', 'ch1'], texts), texts);
+      const full = selectSnapshotText(viewerSnapshot(context, ['ch0', 'ch1']), texts);
+      // Then the answer equals filtering a snapshot built with every channel's sentences
+      assert.deepEqual(text(light), text(full));
+    }
+    const one = selectSnapshotText(viewerSnapshot(context, ['ch0', 'ch1'], ['ch1']), ['ch1']);
+    assert.deepEqual(one.segments.map(item => item.text), ['ch1 보정 발언입니다.']);
+    assert.deepEqual(one.live_segments.map(item => item.stream_id), ['ch1']); assert.equal(one.streams.length, 2);
   } finally { store.close(); }
 });

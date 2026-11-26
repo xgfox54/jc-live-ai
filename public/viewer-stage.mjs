@@ -5,25 +5,28 @@ import { viewerHealthMessage, TranscriptHistory, mergeTranscriptItems, deliveryM
 import { speakerText } from './speakers.mjs';
 
 const BIG_SIZES = ['small', 'medium', 'large'];
+// The whole record of the broadcast is shown at once (2026-11-21). One page holds 2,000 sentences, a full-day meeting
+// (11-12 3차 본회의: 2,040 sentences, about 1 MB). An engine that still allows 200 sentences per page is read in pages of 200.
+const HISTORY_PAGE = 2000;
+// A sentence that left the pending list without its corrected text is looked up at most this many times.
+const DRAFT_LOOKUPS = 2;
 
 export class ViewerStage {
   constructor(options) {
     this.options = options; this.stream = options.stream; this.history = new TranscriptHistory(); this.muted = true;
-    this.sourceEpoch = 0; this.nodeCache = new Map(); this.typing = new Map();
+    this.sourceEpoch = 0; this.nodeCache = new Map(); this.typing = new Map(); this.lookups = new Map();
     this.element = document.createElement('article'); this.element.className = 'watch-panel';
     this.element.dataset.stream = this.stream.stream_id;
     this.element.innerHTML = '<div class="panel-heading"><h2></h2><div class="row"><button class="secondary sound">소리 켜기</button>'
       + '<button class="secondary big-open">크게 보기</button><button class="secondary close">닫기</button></div></div>'
       + '<div class="video-frame"></div><div class="video-info"><p role="status"></p><a target="_blank" rel="noopener noreferrer">공식 영상 열기</a></div>'
       + '<div class="transcript-controls"><h3>회의록 받아쓰기</h3><label>문장 검색<input type="search" maxlength="200" placeholder="후보정문 검색"></label>'
-      + '<button class="secondary search-all">전체 기록 검색</button>'
       + '<label class="check"><input type="checkbox" checked> 새 문장으로 이동</label></div>'
       + '<p class="transcription-progress" role="status" hidden>받아쓰기 처리중<span class="processing-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span></p>'
       + '<p class="gap-note" hidden>음성이 누락된 구간이 있습니다. 원음과 함께 확인해 주세요.</p>'
       + '<p class="help delivery-health" role="status" hidden></p>'
       + '<p class="help delivery-metrics" hidden></p>'
       + '<p class="help transcript-clock-note">영상 시간은 수집 구간 기준이며, 재연결하면 0부터 시작합니다. 실제 영상 재생 위치와 다를 수 있습니다.</p>'
-      + '<div class="panel-footer row"><button class="secondary history">이전 기록 불러오기</button><span class="help history-status" role="status"></span></div>'
       + '<div class="transcript" tabindex="0"></div><div class="panel-footer"><button class="secondary latest">최신 문장 보기</button></div>'
       + '<section class="big-captions" aria-label="큰 자막" hidden><div class="big-toolbar"><div class="big-sizes" role="group" aria-label="자막 글자 크기">'
       + '<button type="button" class="secondary" data-size="small">작게</button><button type="button" class="secondary" data-size="medium">보통</button>'
@@ -36,12 +39,12 @@ export class ViewerStage {
     const find = selector => this.element.querySelector(selector);
     this.title = find('h2'); this.video = find('.video-frame'); this.note = find('.video-info p'); this.link = find('.video-info a');
     this.transcript = find('.transcript'); this.search = find('input[type=search]'); this.follow = find('input[type=checkbox]');
-    this.soundButton = find('.sound'); this.historyButton = find('.history');
-    this.historyStatus = find('.history-status');
+    this.soundButton = find('.sound'); this.pageSize = HISTORY_PAGE;
+    // Shown above the earliest sentence while earlier sentences are still loading.
+    this.historyStatus = document.createElement('p'); this.historyStatus.className = 'help history-status'; this.historyStatus.setAttribute('role', 'status');
     // The progress line is repeated after the newest sentence, where the next sentence will appear.
     this.progress = find('.transcription-progress'); this.tailProgress = this.progress.cloneNode(true);
     this.tailProgress.removeAttribute('role'); this.tailProgress.setAttribute('aria-hidden', 'true');
-    find('.search-all').addEventListener('click', () => this.searchAll().catch(error => options.message(error.message)));
     this.player = new OfficialPlayer(this.video, value => { this.note.textContent = value; }, { viewer: true, muted: true });
     find('.close').addEventListener('click', options.close);
     this.bigButton = find('.big-open'); this.big = find('.big-captions');
@@ -55,10 +58,9 @@ export class ViewerStage {
     this.onKey = event => { if (event.key === 'Escape' && !this.big.hidden) this.closeBig(); };
     document.addEventListener('fullscreenchange', this.onFullscreen); document.addEventListener('keydown', this.onKey);
     this.soundButton.addEventListener('click', () => { if (this.muted) options.sound(); this.setMuted(!this.muted); });
-    this.search.addEventListener('input', () => { this.searchEpoch = (this.searchEpoch ?? 0) + 1; this.searchResults = null; this.render(); });
-    this.search.addEventListener('keydown', event => { if (event.key === 'Enter') this.searchAll().catch(error => options.message(error.message)); });
+    // The whole record is loaded, so the search box filters every sentence of the broadcast.
+    this.search.addEventListener('input', () => this.render());
     this.follow.addEventListener('change', () => this.render());
-    this.historyButton.addEventListener('click', () => this.loadHistory());
     this.transcript.addEventListener('scroll', () => {
       const top = this.transcript.scrollTop;
       const upward = top < (this.lastScrollTop ?? 0) - 1;
@@ -68,13 +70,9 @@ export class ViewerStage {
       // A position that stays at the bottom while the content shrinks (font load, wider panel) is not a user scroll.
       const reading = upward && below > 2;
       if (reading) this.follow.checked = false;
-      else if (!upward && below <= 40 && !this.searchResults) this.follow.checked = true;
-      if (reading && top <= 64) this.loadHistory();
+      else if (!upward && below <= 40) this.follow.checked = true;
     });
-    find('.latest').addEventListener('click', () => {
-      this.searchEpoch = (this.searchEpoch ?? 0) + 1; this.searchResults = null; this.search.value = '';
-      this.follow.checked = true; this.render();
-    });
+    find('.latest').addEventListener('click', () => { this.search.value = ''; this.follow.checked = true; this.render(); });
     this.update(this.stream, true);
   }
   setMuted(value) {
@@ -85,10 +83,10 @@ export class ViewerStage {
     const changed = initial || this.stream.video_id !== stream.video_id || this.stream.page_url !== stream.page_url;
     const source = stream.broadcast_id || stream.video_id || stream.page_url || '';
     if (!initial && this.source !== source) {
-      this.sourceEpoch++; this.searchEpoch = (this.searchEpoch ?? 0) + 1; this.request?.abort(); this.request = null; this.searchRequest?.abort(); this.searchRequest = null;
-      this.history = new TranscriptHistory(); this.nodeCache.clear(); this.searchResults = null; this.historyError = '';
+      this.sourceEpoch++; this.request?.abort(); this.request = null; clearTimeout(this.retryTimer); this.retryTimer = null;
+      this.history = new TranscriptHistory(); this.nodeCache.clear(); this.historyError = ''; this.failures = 0; this.loadedOnce = false;
       for (const frame of this.typing.values()) cancelAnimationFrame(frame); this.typing.clear();
-      this.reconcileRequest?.abort(); this.reconcileRequest = null; this.reconcileAfter = 0;
+      this.reconcileRequest?.abort(); this.reconcileRequest = null; this.reconcileAfter = 0; this.lookups.clear();
     }
     this.source = source;
     this.stream = stream; this.title.textContent = stream.name; this.link.href = stream.page_url || '#'; this.link.hidden = !stream.page_url;
@@ -101,10 +99,11 @@ export class ViewerStage {
     this.history.reconcilePending(this.options.state.livePending?.get(this.stream.stream_id), this.stream.broadcast_id);
     this.renderHealth();
     const query = this.search.value.trim().toLocaleLowerCase();
-    const items = this.searchResults ?? this.history.items.filter(item => !query || item.text?.toLocaleLowerCase().includes(query));
+    const items = this.history.items.filter(item => !query || item.text?.toLocaleLowerCase().includes(query));
     const top = this.transcript.scrollTop;
     const edge = this.transcript.getBoundingClientRect().top;
-    const anchor = [...this.transcript.children].find(node => node.getBoundingClientRect().bottom > edge);
+    // A reader who left the newest sentence keeps the first visible sentence in place while sentences are added around it.
+    const anchor = this.follow.checked ? null : [...this.transcript.children].find(node => node.id && node.getBoundingClientRect().bottom > edge);
     const offset = anchor?.getBoundingClientRect().top - edge;
     const nodes = items.filter(item => (item.ai_corrected === true || item.display_state === 'draft') && item.text?.trim()).map(item => {
       const cached = this.nodeCache.get(item.segment_id);
@@ -114,18 +113,28 @@ export class ViewerStage {
       if (!cached && item.display_state === 'draft' && this.follow.checked && Date.now() - item.audio_received_ms < 120000) this.typeDraft(node, item);
       this.nodeCache.set(item.segment_id, { item, node }); return node;
     });
-    if (nodes.length) this.transcript.replaceChildren(...nodes, this.tailProgress);
-    else this.transcript.replaceChildren(transcriptNodes([], { publicOnly: true,
-      empty: query ? '검색한 문장이 없습니다.' : '방송 음성을 기다립니다.' }), this.tailProgress);
+    // The status line shows only while earlier sentences can still arrive; a channel without a broadcast has no record to load.
+    // Before the first page arrives, the empty list itself says that the record is on its way.
+    const pending = this.history.cursor > 0 && Boolean(this.stream.broadcast_id || this.history.items.length);
+    const loading = pending && (nodes.length || this.historyError) ? [this.historyStatus] : [];
+    this.historyStatus.textContent = this.historyError || '이전 기록을 불러오고 있습니다.';
+    const next = [...loading, ...(nodes.length ? nodes : [transcriptNodes([], { publicOnly: true,
+      empty: query ? '검색한 문장이 없습니다.' : this.awaitingRecord() ? '방송 기록을 불러옵니다.' : '방송 음성을 기다립니다.' })]), this.tailProgress];
+    // Only the list after the first changed sentence is replaced. Rebuilding a whole meeting (1,679 sentences) on every
+    // health event took about 65 ms on a desktop PC (2026-11-21).
+    const shown = this.transcript.children; let same = 0;
+    while (same < next.length && shown[same] === next[same]) same++;
+    while (shown.length > same) this.transcript.lastElementChild.remove();
+    this.transcript.append(...next.slice(same));
     for (const item of items) if (['removed', 'reconciling'].includes(item.display_state)) { this.cancelTyping(item.segment_id); this.nodeCache.delete(item.segment_id); }
     const restored = anchor?.id ? this.transcript.querySelector('#' + CSS.escape(anchor.id)) : null;
     this.transcript.scrollTop = this.follow.checked ? this.transcript.scrollHeight
       : restored ? this.transcript.scrollTop + restored.getBoundingClientRect().top - edge - offset : top;
     this.lastScrollTop = this.transcript.scrollTop;
     this.markTarget();
-    this.renderHistoryStatus();
     this.element.querySelector('.gap-note').hidden = !this.options.state.gaps.has(this.stream.stream_id);
     this.reconcileDrafts();
+    this.loadHistory();
     this.renderBig();
   }
   async openBig() {
@@ -173,18 +182,24 @@ export class ViewerStage {
     this.follow.checked = false; node.scrollIntoView({ block: 'center' });
     setTimeout(() => { if (!this.disposed) this.markTarget(); }, 4100);
   }
+  // Looks up sentences that left the pending list of a snapshot ('reconciling') before their corrected text arrived.
+  // A draft still on the list waits for its correction, which comes as an event or with the next snapshot, so it is not
+  // looked up: a draft held for review is not on the public pages until it is approved. Each sentence is looked up at most
+  // DRAFT_LOOKUPS times because a removed sentence is never found. Looking every 30 seconds for drafts held for review made
+  // 73-74% of the Worker requests on 2026-11-25 (docs/CLOUDFLARE.md).
   async reconcileDrafts() {
     if (this.disposed || this.reconcileRequest || Date.now() < (this.reconcileAfter ?? 0)) return;
-    const missing = this.history.items.filter(item => ['draft', 'reconciling'].includes(item.display_state) && Number.isSafeInteger(item.sequence)
-      && !this.options.state.segments.has(item.segment_id));
+    const missing = this.history.items.filter(item => item.display_state === 'reconciling' && Number.isSafeInteger(item.sequence)
+      && !this.options.state.segments.has(item.segment_id) && (this.lookups.get(item.segment_id) ?? 0) < DRAFT_LOOKUPS);
     if (!missing.length) return;
+    for (const item of missing) this.lookups.set(item.segment_id, (this.lookups.get(item.segment_id) ?? 0) + 1);
     const epoch = this.sourceEpoch; const controller = new AbortController(); this.reconcileRequest = controller;
     this.reconcileAfter = Date.now() + 30000;
     const timer = setTimeout(() => controller.abort(), 15000);
     try {
       const min = Math.min(...missing.map(item => item.sequence)); let before = Math.max(...missing.map(item => item.sequence)) + 1;
       for (let pageNumber = 0; pageNumber < 5; pageNumber++) {
-        const page = await (await this.options.api(this.historyUrl() + '&before=' + before, { signal: controller.signal })).json();
+        const page = await (await this.options.api(this.historyUrl(200) + '&before=' + before, { signal: controller.signal })).json();
         if (this.disposed || epoch !== this.sourceEpoch) return;
         this.checkBroadcast(page);
         this.history.items = mergeTranscriptItems(this.history.items, page.items);
@@ -196,39 +211,44 @@ export class ViewerStage {
     } catch { /* Retry with the next snapshot; keep the last received text readable. */ }
     finally { clearTimeout(timer); if (this.reconcileRequest === controller) this.reconcileRequest = null; }
   }
-  renderHistoryStatus() {
-    const cursor = this.searchResults ? this.searchBefore : this.history.cursor;
-    this.historyButton.disabled = Boolean(this.request || this.searchRequest) || cursor === 0;
-    this.historyStatus.textContent = this.historyError || (this.request || this.searchRequest ? '이전 기록을 불러오고 있습니다.'
-      : cursor === 0 ? '처음 기록까지 모두 불러왔습니다.' : '위로 스크롤하면 이전 기록을 불러옵니다.');
-  }
+  // The earlier record loads by itself up to the first sentence of the broadcast; viewers do not ask for it. The first request
+  // takes the newest page, so it also covers a snapshot that arrives later, and the viewers of one meeting send the same request
+  // (the desktop answers it from a short cache). A failed page is requested again after about 2 seconds, doubling up to a
+  // minute with random spread. An engine that allows 200 sentences per page refuses the larger page with 400, and loading goes
+  // on with 200; a 409 (the broadcast changed) is retried like a failed page until the new broadcast arrives.
   async loadHistory() {
-    if (this.disposed || this.request || this.searchRequest || (this.searchResults ? this.searchBefore : this.history.cursor) === 0) return;
-    if (this.searchResults) { try { await this.searchAll(this.searchBefore); } catch (error) { this.options.message(error.message); } return; }
-    const epoch = this.sourceEpoch; const requested = this.history.cursor;
+    // A channel chosen before its first snapshot has no broadcast yet; its record loads once the broadcast is known.
+    if (this.disposed || this.request || this.retryTimer || this.history.cursor === 0 || (!this.stream.broadcast_id && !this.history.items.length)) return;
+    const epoch = this.sourceEpoch; const requested = this.loadedOnce ? this.history.cursor : Number.MAX_SAFE_INTEGER;
     const controller = new AbortController(); this.request = controller;
-    const timer = setTimeout(() => controller.abort(), 15000);
-    let emptyPage = false;
-    this.historyError = ''; this.follow.checked = false; this.renderHistoryStatus();
+    const timer = setTimeout(() => controller.abort(), 30000);
+    let retryMs = null;
     try {
-      const page = await (await this.options.api(this.historyUrl() + '&before=' + requested, { signal: controller.signal })).json();
+      const page = await (await this.options.api(this.historyUrl(this.pageSize) + '&before=' + requested, { signal: controller.signal })).json();
       if (this.disposed || epoch !== this.sourceEpoch) return;
-      this.checkBroadcast(page); this.history.addPage(page, requested); emptyPage = !page.items.length && this.history.cursor > 0; this.render();
+      this.checkBroadcast(page); this.history.addPage(page, requested); this.loadedOnce = true; this.historyError = ''; this.failures = 0;
     } catch (error) {
-      if (!this.disposed && epoch === this.sourceEpoch) {
-        this.historyError = '이전 기록을 불러오지 못했습니다. 버튼을 눌러 다시 시도해 주세요.';
-        this.options.message(this.historyError);
+      if (this.disposed || epoch !== this.sourceEpoch) return;
+      if (error.status === 400 && this.pageSize > 200) { this.pageSize = 200; retryMs = 0; }
+      else {
+        this.failures = (this.failures ?? 0) + 1; retryMs = Math.round(Math.min(60000, 2000 * 2 ** (this.failures - 1)) * (0.5 + Math.random()));
+        this.historyError = '연결이 원활하지 않아 이전 기록을 자동으로 다시 불러오고 있습니다.';
       }
     } finally {
       clearTimeout(timer);
       if (this.request === controller) {
-        this.request = null; this.render();
-        if (emptyPage) queueMicrotask(() => { if (!this.disposed && epoch === this.sourceEpoch) this.loadHistory(); });
+        this.request = null;
+        if (retryMs !== null) this.retryTimer = setTimeout(() => { this.retryTimer = null; this.render(); }, retryMs);
+        this.render();
       }
     }
   }
-  historyUrl() {
-    return '/api/segments?stream=' + encodeURIComponent(this.stream.stream_id) + '&limit=200'
+  // Until the channel's snapshot or the first page of its record arrives, an empty list means the record is on its way.
+  awaitingRecord() {
+    return !this.history.items.length && (this.options.hasSnapshot?.() === false || (Boolean(this.stream.broadcast_id) && !this.loadedOnce));
+  }
+  historyUrl(limit) {
+    return '/api/segments?stream=' + encodeURIComponent(this.stream.stream_id) + '&limit=' + limit
       + (this.stream.broadcast_id ? '&broadcast=' + encodeURIComponent(this.stream.broadcast_id) : '');
   }
   checkBroadcast(page) {
@@ -251,7 +271,7 @@ export class ViewerStage {
     const busy = !pause && (health?.stages?.transcription === 'processing' || health?.stages?.correction === 'processing'
       || (pending && !['delayed', 'correction_delayed'].includes(health?.status)));
     this.progress.hidden = !busy;
-    this.tailProgress.hidden = !busy || Boolean(this.searchResults || this.search.value.trim());
+    this.tailProgress.hidden = !busy || Boolean(this.search.value.trim());
   }
   cancelTyping(id) {
     const frame = this.typing.get(id); if (frame !== undefined) cancelAnimationFrame(frame); this.typing.delete(id);
@@ -271,23 +291,7 @@ export class ViewerStage {
     };
     this.typing.set(item.segment_id, requestAnimationFrame(tick));
   }
-  async searchAll(before) {
-    const epoch = (this.searchEpoch ?? 0) + 1; this.searchEpoch = epoch;
-    this.searchRequest?.abort(); const controller = new AbortController(); this.searchRequest = controller;
-    const timer = setTimeout(() => controller.abort(), 15000); this.renderHistoryStatus();
-    try {
-      const value = await (await this.options.api(this.historyUrl() + '&q=' + encodeURIComponent(this.search.value.trim()) + (before ? '&before=' + before : ''), { signal: controller.signal })).json();
-      if (this.disposed || this.searchEpoch !== epoch) return;
-      this.checkBroadcast(value);
-      this.searchResults = before ? mergeTranscriptItems(this.searchResults ?? [], value.items, true) : value.items;
-      this.searchBefore = value.before ?? 0;
-      this.follow.checked = false; this.render();
-    } finally {
-      clearTimeout(timer);
-      if (this.searchRequest === controller) { this.searchRequest = null; if (!this.disposed) this.renderHistoryStatus(); }
-    }
-  }
   dispose() { this.closeBig({ restoreFocus: false }); document.removeEventListener('fullscreenchange', this.onFullscreen); document.removeEventListener('keydown', this.onKey);
-    this.disposed = true; this.searchEpoch++; this.request?.abort(); this.searchRequest?.abort(); this.reconcileRequest?.abort();
+    this.disposed = true; this.request?.abort(); clearTimeout(this.retryTimer); this.reconcileRequest?.abort();
     for (const frame of this.typing.values()) cancelAnimationFrame(frame); this.typing.clear(); this.player.dispose(); this.element.remove(); }
 }

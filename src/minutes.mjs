@@ -23,9 +23,21 @@ export function minutesLabel(item, committee, participants = {}) {
   return '[' + (committee || '세션 ' + item.session_number) + ' / 구간 ' + item.epoch + ' / ' + (item.video_time ? '영상 ' : '') + time(item.start_ms) + '~' + time(item.end_ms)
     + (speakerText(item, participants) ? ' / ' + speakerText(item, participants) : '') + ']';
 }
+// A gap without a range recorded when the meeting's last collection session ended, with an adjournment declared in one of that
+// session's last three sentences.
+function afterAdjournment(gap, sessions, segments) {
+  const last = sessions.at(-1); const ended = last?.ended_ms ?? last?.last_receive_ms;
+  if (gap.start_ms != null || !Number.isFinite(gap.created_ms) || gap.session_id !== last?.session_id || last.state !== 'stopped'
+    || !Number.isFinite(ended) || Math.abs(gap.created_ms - ended) > 120_000) return false;
+  return segments.filter(row => row.session_id === last.session_id).slice(-3)
+    .some(row => /(?:산회|폐회)(?:를|을)?\s*선포/.test(row.corrected_text ?? row.raw_text ?? ''));
+}
 export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
   const participants = extras.participants ?? {};
   const active = sessions.some(session => ['running', 'draining', 'degraded', 'reconnecting'].includes(session.state));
+  // An input that stops with an error as the broadcast ends after adjournment is not a gap in the meeting (2026-11-24: two
+  // meetings logged 'collector_failed' and 'beginning_collection_failed' when the stream closed after 산회 선포).
+  const closing = gaps.filter(gap => afterAdjournment(gap, sessions, segments)); gaps = gaps.filter(gap => !closing.includes(gap));
   const finalReview = active ? null : extras.finalSpeakers;
   // Channel 0 is not a committee: label its minutes with the official 소관 field or the broadcast title.
   const channel = committeeForChannel(record.stream_id);
@@ -41,9 +53,13 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
   // Sessions matched against the official video audio are shown on the video's own clock.
   const offsets = videoOffsets(extras.videoAlignment, sessions, segments);
   const shiftOf = (sessionId, start_ms, end_ms) => { const entry = offsets.get(sessionId); return entry ? videoShift(entry, start_ms, end_ms) : null; };
+  // Without a match, a YouTube collection keeps its position in the live stream (video_offset_ms), which can differ from the
+  // council replay; matched counts the sentences placed by the audio match.
+  let matched = 0;
   segments.forEach((segment, index) => {
-    const offset = shiftOf(segment.session_id, segment.start_ms, segment.end_ms) ?? segment.video_offset_ms; if (!Number.isFinite(offset)) return;
-    const item = transcript[index]; item.start_ms += offset; item.end_ms += offset; item.video_time = true;
+    const shift = shiftOf(segment.session_id, segment.start_ms, segment.end_ms); const offset = shift ?? segment.video_offset_ms;
+    if (!Number.isFinite(offset)) return;
+    const item = transcript[index]; item.start_ms += offset; item.end_ms += offset; item.video_time = true; if (Number.isFinite(shift)) matched++;
   });
   for (const item of transcript) {
     if (!active) item.speaker_final = true;
@@ -84,21 +100,28 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
   const digest = summary?.digest ? { overview: summary.digest.overview, topics: summary.digest.topics } : null;
   const videoItems = transcript.filter(item => item.video_time).length;
   const warnings = ['AI 음성 전사에서 발언을 발췌한 검토용 회의록입니다. 발언자·참석자·정식 의결 결과는 원음과 공식 기록으로 확인해야 합니다.',
-    videoItems && videoItems === transcript.length ? '시각은 공식 영상의 재생 위치입니다. 녹음 음성과 공식 영상 음성을 대조해 세션별로 맞췄습니다.'
-      : videoItems ? '"영상"으로 표시한 시각은 공식 영상의 재생 위치이고, 나머지는 수집 세션별 경과 시간입니다.'
-        : '시각은 수집 세션과 입력 구간별 경과 시간입니다. 방송 영상의 시각과 일치 여부는 확인되지 않았습니다.',
+    !videoItems ? '시각은 수집 세션과 입력 구간별 경과 시간입니다. 방송 영상의 시각과 일치 여부는 확인되지 않았습니다.'
+      : matched === transcript.length ? '시각은 공식 영상의 재생 위치입니다. 녹음 음성과 공식 영상 음성을 대조해 세션별로 맞췄습니다.'
+        : !matched && videoItems === transcript.length ? '시각은 유튜브 생중계 영상의 재생 위치입니다. 공식 다시보기 영상과는 아직 대조하지 않아 다시보기의 시각과 다를 수 있습니다.'
+          : matched === videoItems ? '"영상"으로 표시한 시각은 공식 영상의 재생 위치이고, 나머지는 수집 세션별 경과 시간입니다.'
+            : '"영상"으로 표시한 시각 가운데 공식 다시보기 영상과 대조하지 않은 구간은 유튜브 생중계 위치라 다시보기의 시각과 다를 수 있습니다.'
+              + (videoItems < transcript.length ? ' "영상" 표시가 없는 시각은 수집 세션별 경과 시간입니다.' : ''),
     record.capture_from_start ? '방송 시작 부분부터 수집을 요청했습니다. 제공자의 다시보기·보관 구간에 따라 시작 부분이 누락될 수 있으며 전체 수록 여부는 확인되지 않았습니다.'
       : '수집 연결 이후의 음성으로 작성했습니다. 방송 시작부터 전체 수록했는지는 확인되지 않았습니다.'];
   if (gaps.length) warnings.push('음성·전사 누락 또는 입력 중단 기록 ' + gaps.length + '건이 있습니다. 원음 확인이 필요합니다.');
+  if (closing.length) warnings.push('산회 선포 뒤 방송이 끝나면서 생긴 수집 종료 기록 ' + closing.length + '건은 누락·중단 기록에서 제외했습니다.');
   if (record.beginning_fallback) warnings.push('시작 부분 수집에 실패해 현재 시점의 음성 수집으로 전환했습니다. 수집 사이의 누락 범위는 확인되지 않았습니다.');
   // Rows merged from another PC's record carry a note on their source and clock (2026-11-11 plenary).
   if (record.merge_note) warnings.push(clean(record.merge_note));
+  // How a collection closed while its broadcast stayed on air (BroadcastMonitor.close).
+  if (record.close_note) warnings.push(clean(record.close_note));
   if (sessions.some(session => session.state === 'interrupted')) warnings.push('서버 재시작으로 중단된 수집 세션이 있습니다.');
   if (sessions.some(session => session.error)) warnings.push('수집 또는 전사 오류가 기록된 세션이 있습니다.');
   const started = sessions.map(session => session.started_ms).filter(Number.isFinite).sort((a, b) => a - b)[0];
   // The council replay goes in its own field so readers that only know the YouTube form keep accepting the document.
   const alignment = extras.videoAlignment; const aligned = [...offsets].map(([sessionId, entry]) => ({ session_number: sessionNumber(sessionId), offset_ms: entry.offset_ms }));
-  const value = { id: record.id, title: record.title, sources: record.sources,
+  // display_title is a title an administrator set or a part title (BroadcastRegistry.continuation); discovery keeps title current.
+  const value = { id: record.id, title: record.display_title || record.title, sources: record.sources,
     scheduled_at: clean(record.scheduled_at) || (started ? seoul(started) + ' (수집 시작 시각)' : ''), meeting_round: record.meeting_round ?? '', meeting_type: record.meeting_type ?? '',
     committee, agenda: record.agenda ?? '', status: active ? 'in_progress' : 'draft',
     method: 'extractive_transcript', updated_ms: Date.now(), segment_count: transcript.length,
@@ -119,7 +142,8 @@ export function buildMinutes(record, sessions, segments, gaps, extras = {}) {
   const speakerLines = participantList.map(entry => '- ' + entry.label + role(entry) + ' · 발언 ' + entry.paragraph_count + '건 · 약 ' + Math.round(entry.seconds / 60) + '분');
   const unassigned = paragraphs.filter(item => !item.speaker_key).length;
   if (unassigned) speakerLines.push('- 발언자 미확인·교대 구간 · ' + unassigned + '건');
-  const speakerNote = finalReview ? '전체 발언 구간을 재검토했습니다. 이름을 뒷받침할 근거가 부족한 구간은 발언자 미확인으로 남깁니다.'
+  const speakerNote = finalReview?.kept ? '전체 발언 구간을 재검토한 결과입니다. 재검토 뒤 새로 공개되거나 바뀐 문장은 다시 검토할 때까지 발언자 미확인으로 둡니다.'
+    : finalReview ? '전체 발언 구간을 재검토했습니다. 이름을 뒷받침할 근거가 부족한 구간은 발언자 미확인으로 남깁니다.'
     : active ? '번호는 실시간 분석의 임시 번호입니다. 회의가 끝나면 발언자를 자동으로 재검토합니다.' : '회의가 끝나 발언자 재검토를 기다리고 있습니다.';
   const chapter = digest ? '### 회의 한줄 요약\n\n' + clean(digest.overview.text) + '\n\n### 주요 논의 사항\n\n'
     + digest.topics.map(topic => '#### ' + clean(topic.title) + '\n\n' + topic.items.map(fact).join('\n')).join('\n\n')

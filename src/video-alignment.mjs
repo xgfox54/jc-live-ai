@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { HttpError } from './validate.mjs';
 import { finalReadiness } from './final-speakers.mjs';
 import { councilReplay, downloadReplayAudio } from './council.mjs';
-import { speakerReviewPython } from './speaker-acoustics.mjs';
+import { speakerReviewPython, speakingCapture } from './speaker-acoustics.mjs';
 
 export const ALIGNMENT_METHOD = 'audio-match-v1';
 // The official council replay is preferred because the council's YouTube copies are made private after the meeting.
@@ -147,8 +147,9 @@ export class VideoAlignment {
   }
   // After collection has settled (the same end rule as the speaker review), one attempt per meeting;
   // a failed attempt is retried after six hours. A result measured on YouTube is measured again once the official replay is known.
+  // It waits while a channel is taking in speech; a channel silent for 10 minutes (a recess) does not hold it back (speakingCapture).
   auto() {
-    if (this.closed || this.pending || this.config.manualMode || this.scheduler?.states?.().some(state => ['running', 'draining'].includes(state.state))) return;
+    if (this.closed || this.pending || this.config.manualMode || speakingCapture(this.scheduler)) return;
     for (const record of this.registry.list()) {
       const source = alignmentSource(record);
       // A merged record keeps one collection clock; audio matching would move only the session that has a recording.

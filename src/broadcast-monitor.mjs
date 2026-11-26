@@ -1,6 +1,7 @@
 import { createLiveProbe } from './live-probe.mjs';
 import { viewerStream } from './viewer.mjs';
 import { HttpError } from './validate.mjs';
+import { sampleSound, WATCH_MS } from './recess-watch.mjs';
 
 export const supportsAutoStart = stream => ['youtube', 'council'].includes(stream.kind);
 export const autoEnabled = stream => stream.approved && supportsAutoStart(stream) && stream.auto_start !== false;
@@ -10,12 +11,17 @@ export const receivedUntil = session => !Number.isFinite(session?.last_receive_m
   : Number.isFinite(session.content_from_ms) ? Math.min(session.last_receive_ms, session.content_from_ms + (session.total_received_s ?? 0) * 1000)
   : session.last_receive_ms;
 
+const seoulDate = ms => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul' }).format(ms);
+// A meeting's own date: the part date of a part record, the scheduled date, or the day it was first seen.
+const meetingDate = record => record.part_date ?? String(record.scheduled_at ?? '').match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? seoulDate(record.first_seen_ms ?? 0);
+
 export class BroadcastMonitor {
   constructor(context) {
     Object.assign(this, context);
     this.probe = context.probe ?? createLiveProbe(context.config);
     this.now = context.now ?? Date.now;
     this.interval = 30000; this.pending = new Map(); this.status = new Map(); this.owned = new Map(); this.closed = false;
+    this.listen = context.listen ?? ((source, signal) => sampleSound(context.config, source, signal)); this.watch = new Map();
   }
   start() {
     if (this.timer || this.closed) return;
@@ -79,7 +85,8 @@ export class BroadcastMonitor {
       if (result.phase === 'ended' && this.owned.has(id) && liveEdge && quiet) {
         await this.inputs.stop(id, 'eof'); this.scheduler.stop(id, 'eof');
       } else if (result.phase === 'live' && !this.active(id)) {
-        if (stream.auto_completed_key === result.key) phase = 'completed';
+        if (stream.auto_completed_key === result.key)
+          phase = stream.recess_watch?.key === result.key ? await this.watchRecess(current, result, signal) : 'completed';
         else {
           const source = { ...result.source, auto_start: true };
           if (source.video_id !== stream.video_id || source.media_url !== stream.media_url) {
@@ -105,6 +112,10 @@ export class BroadcastMonitor {
       }
       if (['offline', 'ended', 'waiting'].includes(result.phase) && stream.auto_completed_key?.startsWith('hls:'))
         this.store.saveStream({ ...current, auto_completed_key: null });
+      // A closed broadcast that has ended needs no resumption watch.
+      if (current.recess_watch && ['offline', 'ended'].includes(result.phase)) {
+        this.watch.delete(id); this.store.saveStream({ ...this.store.streams().find(item => item.stream_id === id), recess_watch: null });
+      }
       const failures = phase === 'collecting' && !this.scheduler.channels.get(id)?.last_receive_ms ? previous?.failures ?? 0 : 0;
       this.status.set(id, { phase, checked_ms: this.now(), next_check_ms: this.now() + this.interval, failures });
     } catch (error) {
@@ -114,6 +125,58 @@ export class BroadcastMonitor {
         checked_ms: this.now(), next_check_ms: this.now() + Math.min(300000, this.interval * 2 ** Math.min(failures - 1, 4)) });
       if (unreachable) this.endUnreachable(stream);
     }
+  }
+  // Ends a collection whose broadcast stays on air while the meeting does not continue (2026-11-24 교육위원회: recess from
+  // 12:05 with the stream on into the night). The input ends as at the end of the broadcast: the record is completed, the same
+  // broadcast is not collected again, and the stream keeps a resumption watch (watchRecess). note is shown in the minutes.
+  async closeCollection(stream, note = '') {
+    const id = stream.stream_id;
+    if (!this.active(id)) throw new HttpError(409, '수집 중인 방송이 아닙니다.');
+    if (typeof note !== 'string' || note.length > 500) throw new HttpError(400, '마감 안내는 500자 이내로 입력해 주세요.');
+    const result = await this.probe(stream, AbortSignal.timeout(60000)).catch(() => null);
+    if (result?.phase !== 'live') throw new HttpError(409, '생방송 중으로 확인된 방송만 마감합니다. 방송이 끝나면 수집도 자동으로 끝납니다.');
+    await this.inputs.stop(id, 'eof'); this.scheduler.stop(id, 'eof');
+    const current = this.store.streams().find(item => item.stream_id === id);
+    const saved = { ...current, auto_completed_key: result.key, resume_after_ms: null,
+      recess_watch: { key: result.key, broadcast_id: current.broadcast_id ?? null, closed_ms: this.now() } };
+    this.store.saveStream(saved); this.store.event('stream', viewerStream(saved)); this.watch.delete(id);
+    const record = current.broadcast_id && this.registry?.get(current.broadcast_id);
+    if (record) this.registry.save({ ...record, completed: true, phase: 'ended', ...(note.trim() ? { close_note: note.trim() } : {}) });
+    this.status.set(id, { phase: 'watching', checked_ms: this.now(), next_check_ms: this.now() + this.interval });
+    return saved;
+  }
+  // A broadcast whose collection was ended on air is sampled every WATCH_MS. Sound in two samples in a row (a resumed meeting; a single sound
+  // can be a microphone check) starts collection again. The live playlist is read back from the last silent sample, so the
+  // start of the resumed speech is kept. A resumption on a later day than the meeting's goes to a part record for that day.
+  async watchRecess(stream, result, signal) {
+    const id = stream.stream_id; const state = this.watch.get(id) ?? { checked_ms: 0, quiet_ms: stream.recess_watch.closed_ms, heard: 0 };
+    if (this.now() - state.checked_ms < WATCH_MS) return 'watching';
+    const level = await this.listen(result.source ?? stream, signal).catch(() => null);
+    if (signal.aborted || this.closed) return 'watching';
+    state.checked_ms = this.now();
+    if (level && !level.sound) { state.quiet_ms = state.checked_ms; state.heard = 0; }
+    else if (level) state.heard++;
+    this.watch.set(id, state);
+    if (state.heard < 2) return 'watching';
+    this.watch.delete(id);
+    const current = this.store.streams().find(item => item.stream_id === id);
+    const source = { ...current, ...result.source, auto_start: true, broadcast_id: this.resumeTarget(current), auto_completed_key: null, recess_watch: null,
+      beginning_fallback: true, resume_after_ms: state.quiet_ms };
+    this.store.saveStream(source); this.store.event('stream', viewerStream(source));
+    this.begin(source, { automatic: true, key: result.key });
+    return 'collecting';
+  }
+  // The record a resumed collection continues: the closed record on its own date, otherwise the part record of today.
+  resumeTarget(stream) {
+    const record = stream.broadcast_id && this.registry?.get(stream.broadcast_id);
+    if (!record) return stream.broadcast_id ?? null;
+    const today = seoulDate(this.now());
+    if (today === meetingDate(record)) {
+      const time = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(this.now());
+      this.registry.save({ ...record, completed: false, ...(record.close_note ? { close_note: record.close_note + ' ' + time + '부터 방송 소리가 다시 들려 수집을 이어 갔습니다.' } : {}) });
+      return record.id;
+    }
+    return this.registry.continuation(record, today, this.now()).id;
   }
   // The official page drops its player when a meeting ends, so a broadcast that cannot be checked ten minutes after the
   // meeting's last received audio has ended; its channel is then free for the committee's next broadcast.

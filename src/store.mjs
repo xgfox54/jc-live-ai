@@ -168,8 +168,9 @@ export class Store extends EventEmitter {
       ORDER BY json_extract(document,'$.preview_updated_ms') DESC,rowid DESC LIMIT 200`)
       .all(stream, ...(broadcast ? [broadcast] : [])).map(row => ({ ...JSON.parse(row.document), sequence: row.rowid }));
   }
-  snapshot(ids, broadcasts = {}, published = false) {
-    const pages = ids.map(stream => ({ stream, ...this.segments({ stream, broadcast: broadcasts[stream], published }) }));
+  // Sentences are read for textIds only; the viewer snapshot reads its own published pages and passes none.
+  snapshot(ids, broadcasts = {}, published = false, textIds = ids) {
+    const pages = textIds.map(stream => ({ stream, ...this.segments({ stream, broadcast: broadcasts[stream], published }) }));
     const gaps = ids.flatMap(stream => {
       // "+id" lets SQLite use the partial gap index (created by BroadcastRegistry) instead of reading every event from the end.
       const row = this.db.prepare("SELECT payload FROM events WHERE stream_id=? AND kind='gap' ORDER BY +id DESC LIMIT 1").get(stream);

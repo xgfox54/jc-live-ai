@@ -5,11 +5,11 @@ import { once } from 'node:events';
 import { priorityFetch, priorityControl, protectedArchive, archiveViewer, requestLimit, RESTORED_MINUTES_ID, MERGED_MINUTES_ID } from '../cloudflare/priority-routing.mjs';
 import { handleRequest } from '../cloudflare/worker.mjs';
 import { proxyLive } from '../cloudflare/live-proxy.mjs';
-import { StandbyPolicy } from '../scripts/standby/standby-policy.mjs';
+import { StandbyPolicy, checkInterval } from '../scripts/standby/standby-policy.mjs';
 
 const origin = 'https://jc-live.unit.workers.dev';
 const key = 'a'.repeat(64);
-const desktop = (snapshot, body = 'desktop transcript') => ({ fetch: async request => request.url.endsWith('/api/viewer/snapshot?text_streams=')
+const desktop = (snapshot, body = 'desktop transcript') => ({ fetch: async request => request.url.endsWith('/api/viewer/status?probe=1')
   ? (snapshot instanceof Response ? snapshot : Response.json(snapshot)) : new Response(body) });
 const request = path => [path, { headers: new Headers({ Origin: origin }), signal: new AbortController().signal }];
 
@@ -61,8 +61,15 @@ test('standby requires sustained confirmed silence and stops on recovery or unce
   assert.equal(policy.observe(false, 120004), false);
 });
 
+test('standby checks the desktop every minute and every 15 seconds once it stops answering or while the laptop transcribes', () => {
+  assert.equal(checkInterval(false, true), 60000);
+  assert.equal(checkInterval(false, null), 60000);
+  assert.equal(checkInterval(false, false), 15000);
+  assert.equal(checkInterval(true, true), 15000);
+});
+
 test('failover control and handoff routes require their keys and never reach viewers without them', async () => {
-  const env = { JC_LAPTOP_SECRET: key, DESKTOP_LIVE: desktop({ streams: [], states: [] }) };
+  const env = { JC_LAPTOP_SECRET: key, DESKTOP_LIVE: desktop({ engine: 'running' }) };
   assert.equal((await priorityControl(new Request(origin + '/api/failover'), env)).status, 403);
   assert.equal((await priorityControl(new Request(origin + '/api/failover', { method: 'POST', headers: { 'X-JC-Laptop-Key': key } }), env)).status, 403);
   const control = await priorityControl(new Request(origin + '/api/failover', { headers: { 'X-JC-Laptop-Key': key } }), env);
@@ -93,4 +100,25 @@ test('the merged desktop record replaces the restored entry once it holds the re
   assert.deepEqual((await viewer(2).read('site.json')).value.minutes_index.map(x => x.id), [MERGED_MINUTES_ID, RESTORED_MINUTES_ID]);
   assert.deepEqual((await viewer(3).read('site.json')).value.minutes_index.map(x => x.id), [MERGED_MINUTES_ID]);
   assert.equal((await viewer(3).read('minutes/' + RESTORED_MINUTES_ID + '.json')).value, restored);
+});
+
+test('the desktop is asked together with its status check, and the request is cancelled when the desktop may not answer', async () => {
+  // Given a desktop whose status check answers only after the viewer's request has reached the desktop
+  let reached; const requestReached = new Promise(resolve => { reached = resolve; });
+  const DESKTOP_LIVE = { fetch: async request => {
+    if (!request.url.endsWith('/api/viewer/status?probe=1')) { reached(); return new Response('desktop transcript'); }
+    await Promise.race([requestReached, new Promise((resolve, reject) => setTimeout(() => reject(new TypeError('status check waited alone')), 2000))]);
+    return Response.json({ engine: 'running' });
+  } };
+  // When a viewer asks for the record
+  const response = await priorityFetch(...request('/api/viewer/segments'), { DESKTOP_LIVE }, origin);
+  // Then the desktop answers, because both requests were in flight together
+  assert.equal(await response?.text(), 'desktop transcript');
+  assert.equal(response.headers.get('X-JC-Active-Processor'), 'desktop');
+  // A stopped desktop engine without a laptop gives no answer, and the request sent to the desktop is cancelled
+  const signals = [];
+  const stopped = { fetch: async request => request.url.endsWith('/api/viewer/status?probe=1')
+    ? Response.json({ engine: 'stopped' }) : (signals.push(request.signal), new Response('desktop transcript')) };
+  assert.equal(await priorityFetch(...request('/api/viewer/segments'), { DESKTOP_LIVE: stopped }, origin), null);
+  assert.equal(signals.length, 1); assert.equal(signals[0].aborted, true);
 });

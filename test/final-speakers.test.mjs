@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/store.mjs';
 import { BroadcastRegistry } from '../src/broadcast-registry.mjs';
 import { ReviewService } from '../src/review.mjs';
-import { FinalSpeakerReview, identityAnchors, validateAssignments, finalReadiness, resolveName, SETTLE_MS, candidatesFor, presidingOfficers } from '../src/final-speakers.mjs';
+import { FinalSpeakerReview, identityAnchors, validateAssignments, finalReadiness, resolveName, SETTLE_MS, candidatesFor, presidingOfficers, CAPTURE_WAIT } from '../src/final-speakers.mjs';
 import { peopleCandidates, streamRecordPeople } from '../src/people-reference.mjs';
 import { buildMinutes } from '../src/minutes.mjs';
 import { publicMinutes } from '../web/lib/model.mjs';
@@ -104,7 +104,7 @@ function fixture({ response, count = 23 } = {}) {
   return { store, registry, id: record.id, review, final, ai, calls, async close() { await final.close(); await review.close(); store.close(); } };
 }
 
-test('whole meeting auto review includes last batch and invalidates on edit; raw data remains unchanged', async () => {
+test('whole meeting auto review includes last batch; an edit keeps the names of unchanged sentences; raw data remains unchanged', async () => {
   const f = fixture();
   try {
     f.final.auto(); await f.final.pending;
@@ -112,7 +112,10 @@ test('whole meeting auto review includes last batch and invalidates on edit; raw
     assert.equal(f.registry.finalSpeakers(f.id).assigned, 23); assert.equal(f.final.state(f.id).result.phase, 'complete');
     const first = f.registry.segments(f.id)[0]; assert.equal(first.speaker_id, 1); assert.equal(first.raw_text, '이경심입니다. 안건을 설명합니다.');
     f.store.correct(first.segment_id, { version: first.version, text: '수정 내용', origin: 'manual' });
-    assert.equal(f.registry.finalSpeakers(f.id), null);
+    // The edited sentence waits for the next review; the other 22 keep their names until then.
+    const kept = f.registry.finalSpeakers(f.id);
+    assert.equal(kept.kept, true); assert.equal(kept.phase, 'partial'); assert.equal(kept.assigned, 22); assert.equal(kept.unresolved, 1);
+    assert.equal(kept.assignments[first.segment_id], null); assert.equal(f.final.state(f.id).result.kept, true);
   } finally { await f.close(); }
 });
 
@@ -404,5 +407,54 @@ test('a current review is not repeated; a new administrator decision starts it a
     f.final.auto(); assert.ok(!f.final.pending); assert.equal(f.calls.length, 1);
     f.review.save('speaker-decisions:' + f.id, { version: 1, entries: {}, updated_ms: Date.now() });
     f.final.auto(); await f.final.pending; assert.equal(f.registry.finalSpeakers(f.id).review_decision_version, 1);
+  } finally { await f.close(); }
+});
+
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+test('a result saved before sentence versions keeps names of sentences with no later correction; a later roster edit removes them', async () => {
+  const f = fixture({ count: 3 });
+  try {
+    f.final.start(f.id); await f.final.pending;
+    // Given: the stored result in the form saved before 2026-11-24, made after every fixture correction.
+    await pause(5); const since = Date.now(); await pause(5);
+    const { versions, roster_version, meeting, ...old } = f.review.get('final-speakers:' + f.id);
+    f.review.save('final-speakers:' + f.id, { ...old, started_ms: since });
+    const rows = f.registry.publishedSegments(f.id);
+    // When: one sentence is corrected again (a vocabulary update re-corrected held sentences on 2026-11-24).
+    f.store.correct(rows[1].segment_id, { version: rows[1].version, text: '이경심입니다. 안건을 다시 설명합니다.', origin: 'ai' });
+    // Then: the names of the two unchanged sentences stay, the corrected one waits for the next review.
+    const kept = f.registry.finalSpeakers(f.id);
+    assert.deepEqual(rows.map(row => kept.assignments[row.segment_id]?.name ?? null), ['이경심', null, '이경심']);
+    assert.equal(kept.assigned, 2); assert.equal(kept.unresolved, 1);
+    // A speaker roster saved after the review removes every kept name.
+    f.review.save('speaker-roster:' + f.id, { version: 1, people: [], updated_ms: Date.now() });
+    assert.equal(f.registry.finalSpeakers(f.id), null);
+  } finally { await f.close(); }
+});
+
+test('names are not kept after the meeting was moved to another committee', async () => {
+  const f = fixture({ count: 2 });
+  try {
+    f.final.start(f.id); await f.final.pending;
+    assert.equal(f.registry.finalSpeakers(f.id).assigned, 2);
+    f.registry.save({ ...f.registry.get(f.id), committee: '교육위원회' });
+    assert.equal(f.registry.finalSpeakers(f.id), null);
+  } finally { await f.close(); }
+});
+
+test('a review that analyzes the recordings waits while a channel is taking in speech and starts when it is quiet', async () => {
+  const f = fixture({ count: 2 });
+  try {
+    let speaking = true;
+    const refuse = async () => { throw Object.assign(new Error('Live capture has priority'), { code: 'CAPTURE_PRIORITY' }); };
+    f.final.acoustics = { deferred: () => speaking, prepare: refuse };
+    f.final.auto(); assert.ok(!f.final.pending); assert.equal(f.final.state(f.id).job, null);
+    // Speech resumed between the check and the analysis: the job waits with its reason instead of failing.
+    speaking = false; f.final.auto(); await f.final.pending;
+    assert.equal(f.final.state(f.id).job.phase, 'waiting'); assert.equal(f.final.state(f.id).job.error, CAPTURE_WAIT);
+    // A waiting job is retried on the next quiet pass, without the 30-minute wait of a failed one.
+    f.final.acoustics = { deferred: () => false, prepare: async () => ({ phase: 'unconfigured', features: [] }) };
+    f.final.auto(); await f.final.pending;
+    assert.equal(f.final.state(f.id).job.phase, 'complete'); assert.equal(f.registry.finalSpeakers(f.id).assigned, 2);
   } finally { await f.close(); }
 });

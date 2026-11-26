@@ -77,13 +77,23 @@ export function voiceCandidates(rows, features, assignments, { threshold = .8, m
   return matches;
 }
 const digest = async file => { const h = createHash('sha256'); for await (const part of createReadStream(file)) h.update(part); return h.digest('hex'); };
-const busy = scheduler => scheduler?.states().some(s => ['running', 'draining', 'degraded', 'reconnecting'].includes(s.state));
+// Analysis after a meeting gives way to collection only while a channel is taking in speech. A running channel that has received
+// QUIET_MS of audio since its last recognized sentence does not count: on 2026-11-24 the 교육위원회 broadcast stayed on through a
+// recess from 12:05 into the evening, and every speaker review and video alignment waited for it. When speech comes back, an
+// analysis in progress stops within 2 seconds and is tried again later.
+export const QUIET_MS = 600_000;
+export const speakingCapture = (scheduler, quietMs = QUIET_MS) => Boolean(scheduler?.states?.().some(s => ['draining', 'degraded', 'reconnecting'].includes(s.state)
+  || (s.state === 'running' && !(s.audio_received_until - (s.last_speech_segment_end ?? 0) >= quietMs))));
+const capturePriority = () => Object.assign(new Error('Live capture has priority'), { code: 'CAPTURE_PRIORITY' });
 
 // The speaker-review environment (worker/speaker-review-requirements.txt) also provides numpy for the video alignment script.
 export const speakerReviewPython = config =>
   resolve(config.speakerReviewPython ?? resolve(config.speakerReviewDirectory ?? 'bin/speaker-review') + '/venv/Scripts/python.exe');
 export class SpeakerAcoustics {
   constructor({ registry, review, audioReview, config, scheduler }) { Object.assign(this, { registry, review, audioReview, config, scheduler }); }
+  // True while a review that analyzes the recordings would be refused: the analysis models are installed and a channel is
+  // taking in speech.
+  deferred() { return this.config.speakerReview !== false && Object.values(this.paths()).every(existsSync) && speakingCapture(this.scheduler); }
   paths() {
     const root = resolve(this.config.speakerReviewDirectory ?? 'bin/speaker-review');
     return { python: speakerReviewPython(this.config),
@@ -93,7 +103,7 @@ export class SpeakerAcoustics {
     const previous = this.review.get('speaker-acoustics:' + id);
     const paths = this.paths();
     if (this.config.speakerReview === false || !Object.values(paths).every(existsSync)) return { phase: 'unconfigured', features: [] };
-    if (busy(this.scheduler)) throw new Error('Live capture has priority');
+    if (speakingCapture(this.scheduler)) throw capturePriority();
     const sessions = this.registry.sessions(id); const recordings = []; const missing = [];
     for (const session of sessions) {
       signal.throwIfAborted();
@@ -119,14 +129,14 @@ export class SpeakerAcoustics {
       await new Promise((done, reject) => {
         const child = spawn(paths.python, ['-B', '-u', '-s', fileURLToPath(new URL('../worker/speaker_offline.py', import.meta.url)), requestFile, outputFile],
           { windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'ignore'] });
-        let tail = '', failure; const stop = () => {
+        let tail = '', failure; const stop = (reason = new Error('Speaker analysis stopped')) => {
           if (failure) return;
-          failure = new Error('Speaker analysis stopped');
+          failure = reason;
           // Windows venv launchers spawn the interpreter; terminate only this owned process tree.
           if (process.platform === 'win32' && child.pid) execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
           else child.kill();
         };
-        const interval = setInterval(() => { if (busy(this.scheduler)) stop(); }, 2000); interval.unref();
+        const interval = setInterval(() => { if (speakingCapture(this.scheduler)) stop(capturePriority()); }, 2000); interval.unref();
         const timeout = setTimeout(stop, 7_200_000); timeout.unref();
         signal.addEventListener('abort', stop, { once: true }); if (signal.aborted) stop();
         child.stdout.on('data', part => {

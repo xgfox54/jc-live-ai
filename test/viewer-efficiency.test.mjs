@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { viewerRequest } from '../web/lib/http.mjs';
 import { publicSnapshot } from '../web/lib/model.mjs';
 import { TranscriptState, TranscriptHistory } from '../public/client-state.mjs';
+import { ViewerStage } from '../public/viewer-stage.mjs';
 import { publicationHealth } from '../src/delivery-health.mjs';
 import { Store } from '../src/store.mjs';
 import { createViewer } from '../src/viewer.mjs';
@@ -46,6 +47,22 @@ test('complete pending manifests retire missed drafts without losing corrected h
   }
 });
 
+test('drafts held on the pending list are not looked up and a missing sentence is looked up twice at most', async () => {
+  // Given a draft held for review (still pending) and a sentence that left the pending list, both outside the state window
+  const history = new TranscriptHistory();
+  history.update([{ ...draft, segment_id: 'held', sequence: 10 }, { ...draft, segment_id: 'gone', sequence: 20 }]);
+  history.reconcilePending({ ...manifest, segment_ids: ['held'] }, null);
+  const requests = [];
+  const stage = Object.assign(Object.create(ViewerStage.prototype), { history, lookups: new Map(), sourceEpoch: 0,
+    stream: { stream_id: 'ch0', broadcast_id: null }, render() {},
+    options: { state: new TranscriptState(), api: async url => { requests.push(url); return { json: async () => ({ items: [], before: 0 }) }; } } });
+  // When the lookup runs three times, each after its 30-second wait
+  for (let round = 0; round < 3; round++) { stage.reconcileAfter = 0; await stage.reconcileDrafts(); }
+  // Then only the sentence that left the list was looked up, twice, and the held draft stays readable
+  assert.deepEqual(requests, ['/api/segments?stream=ch0&limit=200&before=21', '/api/segments?stream=ch0&limit=200&before=21']);
+  assert.equal(history.items.find(item => item.segment_id === 'held').display_state, 'draft');
+});
+
 test('cloud manifest validation preserves explicit completeness and rejects malformed identifiers', () => {
   assert.deepEqual(publicSnapshot(snapshot).live_pending, [manifest]);
   assert.throws(() => publicSnapshot({ ...snapshot, live_pending: [{ ...manifest, complete: 'yes' }] }));
@@ -75,5 +92,25 @@ test('local viewer serves selected text with all metadata and conditional respon
     assert.equal(data.streams.length, 1); assert.equal(data.segments.length, 0);
     assert.equal((await fetch(url, { headers: { 'If-None-Match': first.headers.get('etag') } })).status, 304);
     assert.equal((await (await fetch(url + 'ch0')).json()).segments.length, 1);
+  } finally { viewer.feed.close(); await new Promise(resolve => server.close(resolve)); store.close(); }
+});
+
+test('the newest page of a record without sentences carries one undrawn start row', async () => {
+  const store = new Store(':memory:');
+  store.saveStream({ stream_id: 'ch0', name: '회의', page_url: '' });
+  const viewer = createViewer({ store, scheduler: { states: () => [] }, config: {} });
+  const server = createServer((req, res) => viewer.handle(req, res, new URL(req.url, 'http://localhost')));
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const page = async before => (await fetch('http://127.0.0.1:' + server.address().port + '/api/viewer/segments?stream=ch0&limit=2000&before=' + before)).json();
+  try {
+    // Given no published sentence: the newest page ends the reload of screens loaded before 2026-11-25
+    const newest = await page(Number.MAX_SAFE_INTEGER);
+    assert.deepEqual(newest.items.map(item => [item.segment_id, item.display_state, item.text, item.sequence]), [['record-start', 'removed', '', 1]]);
+    assert.equal(newest.before, 0);
+    assert.deepEqual((await page(500)).items, []);
+    // When a sentence is published, the page holds that sentence only
+    const row = store.segment({ session_id: 'session', stream_id: 'ch0', start_ms: 0, end_ms: 1000, raw_text: '회의 발언입니다.' });
+    store.correct(row.segment_id, { version: 1, origin: 'ai', text: '회의 발언입니다.' });
+    assert.deepEqual((await page(Number.MAX_SAFE_INTEGER)).items.map(item => item.segment_id), [row.segment_id]);
   } finally { viewer.feed.close(); await new Promise(resolve => server.close(resolve)); store.close(); }
 });

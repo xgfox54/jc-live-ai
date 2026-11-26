@@ -58,7 +58,8 @@ test('live SSE replaces an opted-in draft while archive endpoints stay corrected
     raw_text: '신규 일차 받아쓰기입니다.', live_preview: true, preview_updated_ms: Date.now() });
   const snapshot = await (await fetch(f.base + '/api/viewer/snapshot?streams=ch1')).json();
   assert.equal(snapshot.live_segments[0].display_state, 'draft'); assert.equal(snapshot.segments.length, 0);
-  assert.equal((await (await fetch(f.base + '/api/viewer/segments?stream=ch1')).json()).items.length, 0);
+  // The record page holds no sentence yet: only the undrawn start row, never the draft.
+  assert.deepEqual((await (await fetch(f.base + '/api/viewer/segments?stream=ch1')).json()).items.map(item => [item.segment_id, item.text]), [['record-start', '']]);
   f.store.correct(row.segment_id, { version: 1, origin: 'ai', text: '후보정을 마친 문장입니다.' });
   f.store.event('stream', { stream_id: 'ch1', name: 'END_LIVE_PREVIEW' });
   const abort = new AbortController(); const timer = setTimeout(() => abort.abort(), 3000);

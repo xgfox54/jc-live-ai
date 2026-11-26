@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { Store } from '../src/store.mjs';
 import { BroadcastRegistry } from '../src/broadcast-registry.mjs';
-import { CorrectionService, parseCorrections, correctionIssue } from '../src/ai-correction.mjs';
+import { CorrectionService, parseCorrections, correctionIssue, modelChain } from '../src/ai-correction.mjs';
 import { glossaryCatalog, glossaryText } from '../src/glossary.mjs';
 import { createService } from '../src/server.mjs';
 import { Scheduler } from '../src/scheduler.mjs';
@@ -237,6 +237,42 @@ test('a candidate for an earlier version of the sentence is closed once instead 
   assert.deepEqual(await f.ai.applySafe(f.id), { applied: 0, skipped: 1 });
   const closed = f.ai.list(f.id).items[0]; assert.equal(closed.status, 'rejected'); assert.equal(closed.issue, 'superseded');
   assert.equal(f.store.snapshot(['ch1']).segments[0].corrected_text, '직접 확인한 발언');
+});
+test('a failing model passes the request to the next model of the saved order and the candidate names the model that answered', async t => {
+  // Given three proxy models where the first fails and the second cuts its answer
+  const f = fixture(t);
+  f.ai.saveSettings({ model: 'first', fallback_models: ['second', 'third'], automatic: false, provider: 'proxy', base: 'http://127.0.0.1:10100/v1' });
+  const asked = [];
+  f.ai.fetcher = async (url, options) => {
+    const body = JSON.parse(options.body); asked.push(body.model);
+    if (body.model === 'first') return new Response('{}', { status: 503 });
+    const parts = JSON.parse(body.messages.at(-1).content).segments;
+    return Response.json({ choices: [{ finish_reason: body.model === 'second' ? 'length' : 'stop', message: { content: JSON.stringify({ corrections: parts }) } }] });
+  };
+  // When
+  f.add(); f.ai.start(f.id); await f.ai.pending;
+  // Then the third model answered and the candidate and the AI view say so
+  assert.deepEqual(asked, ['first', 'second', 'third']);
+  assert.equal(f.ai.list(f.id).items[0].model, 'third');
+  const use = f.ai.view().model_use;
+  assert.equal(use.models.first.failed, 1); assert.equal(use.models.second.failed, 1); assert.equal(use.models.third.answered, 1);
+  assert.deepEqual([use.last_fallback.model, use.last_fallback.instead_of], ['third', 'first']);
+  // A cancelled request is not passed on to the next model.
+  asked.length = 0; const controller = new AbortController();
+  f.ai.fetcher = async (url, options) => { asked.push(JSON.parse(options.body).model); controller.abort(); throw new Error('cancelled'); };
+  await assert.rejects(f.ai.requestText([{ role: 'user', content: '{}' }], f.ai.settings(), controller.signal));
+  assert.deepEqual(asked, ['first']);
+});
+test('fallback models are checked, keep their order and leave out the correction model', t => {
+  const f = fixture(t);
+  const saved = f.ai.saveSettings({ model: 'first', fallback_models: ['first', 'second'], automatic: false, provider: 'proxy', base: 'http://127.0.0.1:10100/v1' });
+  assert.deepEqual(saved.fallback_models, ['second']); assert.deepEqual(saved.model_order, ['first', 'second']);
+  // A request for the refinement model tries it first, then the saved order.
+  assert.deepEqual(modelChain({ ...saved, model: 'refiner' }), ['refiner', 'first', 'second']);
+  // Settings saved without the field keep the fallback models.
+  assert.deepEqual(f.ai.saveSettings({ model: 'other', automatic: false }).fallback_models, ['second']);
+  for (const fallback_models of [['a', 'b', 'c'], ['bad model'], 'second', [''], [7]])
+    assert.throws(() => f.ai.saveSettings({ model: 'first', fallback_models, automatic: false }), /예비 모델/);
 });
 test('a failed automatic application is recorded instead of being ignored', async t => {
   const f = fixture(t); f.add(); f.ai.start(f.id); await f.ai.pending;

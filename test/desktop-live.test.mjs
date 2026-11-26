@@ -6,6 +6,7 @@ import { createLiveTransport, desktopOrigin } from '../public/live-transport.mjs
 import { applyLiveTransport } from '../web/deployment/live-transport.mjs';
 import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
+import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 
 const origin = 'https://fixture.vercel.app';
 async function fixture(t, scheduler = { states: () => [] }) {
@@ -129,4 +130,54 @@ test('deployment allows exactly one HTTPS live origin without weakening other CS
   }
   assert.equal(desktopLiveSettings(null), null);
   assert.throws(() => desktopLiveSettings({ enabled: true, port: 4321, publicOrigin: 'https://live.example.org', allowedOrigins: ['*'] }));
+});
+test('the whole record of a meeting comes in one page and viewers of the meeting share one answer for 10 seconds', async t => {
+  // Given a meeting longer than the former 200-sentence page
+  const f = await fixture(t);
+  f.store.saveStream({ stream_id: 'ch1', name: '합성 시험' });
+  f.store.saveSession({ session_id: 'session1', stream_id: 'ch1', state: 'running' });
+  const add = n => { const row = f.store.segment({ stream_id: 'ch1', session_id: 'session1', start_ms: n * 5000, end_ms: (n + 1) * 5000, raw_text: 'PRIVATE_RAW' });
+    f.store.correct(row.segment_id, { version: 1, origin: 'ai', text: '공개 확인 발언 ' + n }); };
+  for (let n = 0; n < 450; n++) add(n);
+  // When a viewer asks for the newest page of 2,000 sentences
+  const page = await (await f.get('/api/viewer/segments?stream=ch1&limit=2000&before=' + Number.MAX_SAFE_INTEGER)).json();
+  // Then every sentence arrives in order in one answer
+  assert.equal(page.items.length, 450); assert.equal(page.before, 0);
+  assert.equal(page.items[0].text, '공개 확인 발언 0'); assert.equal(page.items.at(-1).text, '공개 확인 발언 449');
+  assert.doesNotMatch(JSON.stringify(page), /PRIVATE_|raw_text/);
+  assert.equal((await f.get('/api/viewer/segments?stream=ch1&limit=2001')).status, 400);
+  // A sentence added since then reaches viewers through the event stream; the same request within 10 seconds gets the first answer.
+  add(450);
+  const again = await (await f.get('/api/viewer/segments?stream=ch1&limit=2000&before=' + Number.MAX_SAFE_INTEGER)).json();
+  assert.equal(again.items.length, 450);
+});
+
+test('large viewer answers go out compressed in an encoding the caller accepts, with the same JSON', async t => {
+  // Given a meeting record larger than 1 KB
+  const f = await fixture(t);
+  f.store.saveStream({ stream_id: 'ch1', name: '합성 시험' });
+  f.store.saveSession({ session_id: 'session1', stream_id: 'ch1', state: 'running' });
+  for (let n = 0; n < 60; n++) {
+    const row = f.store.segment({ stream_id: 'ch1', session_id: 'session1', start_ms: n * 5000, end_ms: (n + 1) * 5000, raw_text: 'PRIVATE_RAW' });
+    f.store.correct(row.segment_id, { version: 1, origin: 'ai', text: '압축 확인 발언 ' + n });
+  }
+  const raw = (path, encoding) => new Promise((resolve, reject) => {
+    const req = request(f.base + path, { headers: { Origin: origin, ...(encoding === undefined ? {} : { 'Accept-Encoding': encoding }) } }, res => {
+      const parts = []; res.on('data', part => parts.push(part)); res.on('error', reject);
+      res.on('end', () => resolve({ headers: res.headers, body: Buffer.concat(parts) }));
+    });
+    req.on('error', reject); req.end();
+  });
+  const path = '/api/viewer/segments?stream=ch1&limit=2000&before=' + Number.MAX_SAFE_INTEGER;
+  // When viewers ask with different Accept-Encoding headers
+  const [plain, br, gz, none] = await Promise.all([raw(path), raw(path, 'gzip, deflate, br, zstd'), raw(path, 'br;q=0, gzip'), raw(path, 'identity')]);
+  // Then each gets the same JSON, compressed only when the header allows it
+  assert.equal(plain.headers['content-encoding'], undefined); assert.equal(none.headers['content-encoding'], undefined);
+  assert.equal(br.headers['content-encoding'], 'br'); assert.equal(gz.headers['content-encoding'], 'gzip');
+  assert.deepEqual(brotliDecompressSync(br.body), plain.body); assert.deepEqual(gunzipSync(gz.body), plain.body); assert.deepEqual(none.body, plain.body);
+  assert.equal(JSON.parse(plain.body).items.length, 60); assert.ok(br.body.length * 3 < plain.body.length);
+  for (const answer of [plain, br, gz, none]) assert.equal(answer.headers.vary, 'Origin, Accept-Encoding');
+  // The snapshot with text is compressed the same way; a small answer goes out as it is
+  assert.equal((await raw('/api/viewer/snapshot?text_streams=ch1', 'br')).headers['content-encoding'], 'br');
+  assert.equal((await raw('/api/viewer/status', 'br')).headers['content-encoding'], undefined);
 });

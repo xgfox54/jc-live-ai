@@ -20,6 +20,19 @@ test('official live schedule maps date, Seoul time, status and committee channel
   assert.deepEqual(parseBroadcastSchedule(page([])), []);
   assert.throws(() => parseBroadcastSchedule('<html>차단</html>'), /형식/);
 });
+test('the page of 26 November 2026 is read: rows with attributes, a linked title on air, a meeting in recess', () => {
+  const cell = (label, on, body) => '<tr>\n<th scope="row">\n<i class="' + (on ? 'on' : 'off') + '">' + label + '</i>\n</th>\n<td>\n' + body
+    + '\n<a href="#" class="btn">안건확인</a><div class="s-box"><dl><dt>안건</dt></dl></div></td>\n</tr>';
+  const linked = title => '<a href="/broadcast/schedule.do?act=view&amp;seq=7082" title="새창">' + title + '</a>';
+  const html = page(['<table class="s-list"><thead><tr><th colspan="2" scope="col">2026-11-26</th></tr></thead><tbody>'
+    + cell('방송종료', false, '[10:00]\n2차 의회운영위원회') + cell('정회중', true, '[14:00]\n' + linked('5차 행정자치위원회'))
+    + cell('방송중', true, '[16:00]\n' + linked('5차 환경도시위원회')) + '</tbody></table>',
+  '<table class="s-list"><thead><tr><th colspan="2" scope="col">2026-11-27</th></tr></thead><tbody>'
+    + cell('방송예정', false, '[10:00]\n1차 예산결산특별위원회') + '</tbody></table>']);
+  assert.deepEqual(parseBroadcastSchedule(html).map(item => [item.date, item.time, item.status, item.stream_id, item.title]), [
+    ['2026-11-26', '10:00', 'ended', 'ch1', '2차 의회운영위원회'], ['2026-11-26', '14:00', 'live', 'ch2', '5차 행정자치위원회'],
+    ['2026-11-26', '16:00', 'live', 'ch5', '5차 환경도시위원회'], ['2026-11-27', '10:00', 'scheduled', 'ch9', '1차 예산결산특별위원회']]);
+});
 test('schedule reads this and next month in Seoul time and publishes only upcoming meetings', async () => {
   const requested = [];
   const schedule = new CouncilSchedule({ now: () => Date.parse('2026-12-20T16:00:00Z'),

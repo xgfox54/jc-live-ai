@@ -210,3 +210,25 @@ test('a check that finds the same broadcast phase does not save the broadcast ag
   phase = 'waiting'; f.advance(); await f.monitor.tick();
   assert.deepEqual(saved, [{ id: 'b1', phase: 'waiting', completed: true }]);
 });
+
+test('council HLS with a new session name on every read is live while its media advances', async t => {
+  // Given the council server: each read of the master playlist names the media playlist and its segments after a new session
+  let session = 100; let sequence = 1149;
+  t.mock.method(globalThis, 'fetch', async url => {
+    const address = String(url);
+    if (address.includes('schedule.do')) return new Response('<source src="https://vod.council.jeju.kr/live/XHC041/playlist.m3u8">', { headers: { 'Content-Type': 'text/html' } });
+    if (address.endsWith('/playlist.m3u8')) return new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1028831\nchunklist_w' + ++session + '.m3u8');
+    const id = address.match(/chunklist_w(\d+)\.m3u8$/)[1];
+    return new Response('#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:' + sequence + '\n' + [0, 1, 2].map(n => '#EXTINF:9.677,\nmedia_w' + id + '_' + (sequence + n) + '.ts').join('\n'));
+  });
+  const probe = createLiveProbe({}); const signal = new AbortController().signal;
+  const council = { ...stream, kind: 'council', page_url: 'https://www.council.jeju.kr/broadcast/schedule.do?act=view&seq=7085' };
+  // When the same media is read under another session name, the broadcast is not yet known to move
+  const first = await probe(council, signal);
+  assert.equal(first.phase, 'waiting'); assert.equal((await probe(council, signal)).phase, 'waiting');
+  // When the media sequence advances, the broadcast is live, under one key for every session name
+  sequence++; const live = await probe(council, signal);
+  assert.equal(live.phase, 'live'); assert.equal(live.key, first.key);
+  assert.equal(live.key, 'hls:https://vod.council.jeju.kr/live/XHC041/chunklist.m3u8');
+  assert.equal(live.source.media_url, 'https://vod.council.jeju.kr/live/XHC041/playlist.m3u8');
+});

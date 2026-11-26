@@ -9,12 +9,15 @@ export function formatElapsedTime(milliseconds) {
   return hours + '시간 ' + minutes + '분 ' + remainder + '초';
 }
 
+// One formatter serves every sentence. Creating it for each of 1,679 sentences took 85 of 93 ms (2026-11-21).
+let receivedFormat;
 export function formatReceivedTime(milliseconds) {
   if (!Number.isSafeInteger(milliseconds) || milliseconds <= 0 || milliseconds > 8640000000000000) return '시각 미확인';
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+  receivedFormat ??= new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
-  }).formatToParts(milliseconds).map(part => [part.type, part.value]));
+  });
+  const parts = Object.fromEntries(receivedFormat.formatToParts(milliseconds).map(part => [part.type, part.value]));
   return `${parts.year}.${parts.month}.${parts.day} ${parts.hour}시 ${parts.minute}분 ${parts.second}초`;
 }
 

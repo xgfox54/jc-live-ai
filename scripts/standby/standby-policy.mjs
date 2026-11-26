@@ -9,3 +9,7 @@ export class StandbyPolicy {
     return now - this.silentSince >= SILENCE_MS;
   }
 }
+// The desktop is checked every 60 seconds while it answers or its status is unknown. After an unanswered check, and while
+// the laptop transcribes (its lease lasts 25 seconds), the check runs every 15 seconds, so the 60-second silence rule still
+// rests on checks 15 seconds apart. Checking every 15 seconds all day made 5,760 Worker requests a day (2026-11-25).
+export const checkInterval = (active, desktopReady) => active || desktopReady === false ? 15000 : 60000;

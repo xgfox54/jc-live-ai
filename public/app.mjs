@@ -1,5 +1,5 @@
 import { TranscriptState, publicationConnectionMessage, engineFromStatus, showEngineStatus } from './client-state.mjs';
-import { subscribe } from './subscription.mjs';
+import { subscribe, RecentEvents } from './subscription.mjs';
 import { createLiveTransport } from './live-transport.mjs';
 import { toggleSelection } from './selection.mjs';
 import { ViewerStage } from './viewer-stage.mjs';
@@ -18,18 +18,39 @@ const withCommittees = values => CHANNELS.map(committee => ({ page_url: '', vide
 let streams = withCommittees([]); let selected = []; let subscription; let before = {};
 let delivery; let publication; let loaded = false; let schedule = null;
 let refreshEpoch = 0; let snapshotKey = ''; let snapshotTag = '';
+// While the event stream delivers data (a heartbeat comes every 5 to 10 seconds) the page already has every change, so the
+// snapshot is read again only every 5 minutes as a check, and a page shown again keeps its stream. Before 2026-11-26 each
+// screen read the snapshot every 2 minutes, hidden tabs included, and reconnected whenever its tab was shown again
+// (docs/CLOUDFLARE.md).
+let streamAt = 0; let snapshotAt = 0;
+const streamAlive = () => Date.now() - streamAt < 20_000;
+const SNAPSHOT_CHECK_MS = 300_000;
+// The snapshot carries the meeting schedule. Only a source without it (the published copy read in poll mode) is asked separately.
+let scheduleInSnapshot = false; let scheduleAsked = false;
+// Events of the open stream that a snapshot read meanwhile may not hold yet (subscription.mjs).
+const recent = new RecentEvents();
 let snapshotRequest;
 // A 304 reply means the desktop still reports the engine value of the last full snapshot.
 let snapshotEngine;
 const message = value => { $('#notice').textContent = value; };
 const showEngine = value => showEngineStatus($('#engine-status'), value);
+function watchChannels(next) {
+  selected = next;
+  message('');
+  reconcile();
+  renderChoices();
+  // The open event stream covers every channel, so a new choice reads only the snapshot with the text of the chosen channels.
+  // Before 2026-11-26 each choice closed the stream and opened another one.
+  if (delivery?.mode === 'poll' || !streamAlive()) { connect(); return; }
+  const signal = subscription.signal;
+  retryWithJitter(() => refresh({ signal }), { signal }).catch(() => { if (!signal.aborted) connect(); });
+}
 // Keyword alerts may open a channel that is not selected yet; the two-channel limit still applies.
 function openChannel(id, segmentId) {
   if (!selected.includes(id)) {
     const result = toggleSelection(selected, id, streams.map(stream => stream.stream_id));
     if (result.limited) { message('동시 시청은 2개까지 가능합니다. 선택한 방송 하나를 먼저 해제한 뒤 다시 눌러 주세요.'); return; }
-    selected = result.ids; message(''); reconcile(); renderChoices();
-    refresh().catch(error => message(error.message));
+    watchChannels(result.ids);
   }
   stages.get(id)?.reveal(segmentId);
 }
@@ -44,7 +65,7 @@ async function api(path, options = {}) {
   const response = await liveTransport.fetch(path, options);
   const engine = engineFromStatus(response.status); if (engine) showEngine(engine);
   if (!response.ok && response.status !== 304) throw Object.assign(new Error('방송 정보를 불러오지 못했습니다. 다시 연결해 주세요.'),
-    { retry: response.status >= 500 || response.status === 429 });
+    { retry: response.status >= 500 || response.status === 429, status: response.status });
   return response;
 }
 for (const id of ids) {
@@ -56,8 +77,7 @@ for (const id of ids) {
   choice.addEventListener('click', () => {
     const result = toggleSelection(selected, id, streams.map(stream => stream.stream_id));
     if (result.limited) { message('동시 시청은 2개까지 가능합니다. 선택한 방송 하나를 먼저 해제해 주세요.'); return; }
-    selected = result.ids; message(''); reconcile(); renderChoices();
-    refresh().catch(error => message(error.message));
+    watchChannels(result.ids);
   });
 }
 function renderChoices() {
@@ -105,6 +125,11 @@ async function loadSchedule() {
   try { schedule = await (await api('/api/schedule')).json(); } catch { return; }
   renderSchedule(); renderChoices();
 }
+function useSchedule(value) {
+  scheduleInSnapshot = Boolean(value);
+  if (value) { schedule = value; renderSchedule(); }
+  else if (!scheduleAsked) { scheduleAsked = true; loadSchedule(); }
+}
 function reconcile() {
   selected = selected.filter(id => streams.some(stream => stream.stream_id === id));
   for (const [id, stage] of stages) if (!selected.includes(id)) { stage.dispose(); stages.delete(id); }
@@ -112,7 +137,8 @@ function reconcile() {
     const stream = streams.find(item => item.stream_id === id);
     if (!stages.has(id)) {
       const stage = new ViewerStage({ stream, api, state, message, before: before[id],
-        close: () => { selected = selected.filter(value => value !== id); reconcile(); renderChoices(); choices.get(id).choice.focus(); refresh().catch(error => message(error.message)); },
+        hasSnapshot: () => snapshotKey.split(',').includes(id),
+        close: () => { watchChannels(selected.filter(value => value !== id)); choices.get(id).choice.focus(); },
         sound: () => { for (const [otherId, other] of stages) if (otherId !== id) other.setMuted(true); } });
       stages.set(id, stage); $('#watch-grid').append(stage.element);
     } else stages.get(id).update(stream);
@@ -130,21 +156,50 @@ async function refresh({ signal = subscription?.signal } = {}) {
     headers: key === snapshotKey && snapshotTag ? { 'If-None-Match': snapshotTag } : {} });
   requestSignal.throwIfAborted();
   if (epoch !== refreshEpoch) return;
-  if (response.status === 304) { showEngine(snapshotEngine); reconcile(); renderChoices(); return; }
+  snapshotAt = Date.now();
+  if (response.status === 304) { showEngine(snapshotEngine); if (scheduleInSnapshot) renderSchedule(); reconcile(); renderChoices(); return; }
   const snapshot = await response.json();
   if (epoch !== refreshEpoch || requestSignal.aborted) return;
   snapshotKey = key; snapshotTag = response.headers.get('etag') ?? ''; snapshotEngine = snapshot.engine;
   streams = withCommittees(snapshot.streams); before = snapshot.before; delivery = snapshot.delivery; publication = snapshot.publication; state.reset(snapshot); loaded = true;
-  showEngine(snapshot.engine);
+  showEngine(snapshot.engine); useSchedule(snapshot.schedule);
+  // Events the stream delivered after this snapshot was built are applied again. A snapshot older than the kept events
+  // (another processor answered) starts the connection again.
+  const newer = recent.after(snapshot.event_id);
+  if (newer === null) { queueMicrotask(connect); return; }
+  // The pending list of the snapshot is older than these sentences and cannot say which of them are still drafts; an event
+  // on the stream drops the list of its channel the same way (client-state.mjs).
+  for (const event of newer) if (['segment', 'live-segment'].includes(event.kind)) state.livePending.delete(event.payload.stream_id);
+  for (const event of newer) if (state.apply(event)) onEvent(event);
   reconcile(); renderChoices();
   } catch (error) { if (epoch === refreshEpoch) throw error; }
 }
+function onEvent(event) {
+  if (['segment', 'live-segment'].includes(event.kind) && event.payload.ai_corrected === true) alerts.inspect(event.payload);
+  if (event.kind === 'stream') {
+    const previous = streams.find(stream => stream.stream_id === event.payload.stream_id);
+    if (event.payload.deleted || previous?.broadcast_id !== event.payload.broadcast_id) {
+      for (const item of [...state.segments.values()]) if (item.stream_id === event.payload.stream_id) state.segments.delete(item.segment_id);
+      state.gaps.delete(event.payload.stream_id); state.status.delete(event.payload.stream_id);
+      before[event.payload.stream_id] = Number.MAX_SAFE_INTEGER;
+    }
+    streams = streams.filter(stream => stream.stream_id !== event.payload.stream_id);
+    if (!event.payload.deleted) streams.push(event.payload); streams = withCommittees(streams); reconcile();
+  } else if (event.kind === 'delivery-health') {
+    if (event.payload.engine) showEngine(event.payload.engine);
+    for (const stage of stages.values()) stage.render();
+  }
+  else if (['segment', 'live-segment', 'gap', 'partial', 'session', 'status'].includes(event.kind)) stages.get(event.payload.stream_id)?.render();
+  renderChoices();
+}
 async function connect() {
-  subscription?.abort(); subscription = new AbortController();
+  subscription?.abort(); subscription = new AbortController(); recent.clear();
   const signal = subscription.signal;
   $('#retry').hidden = true; $('#connection').textContent = '연결 중';
   try {
-    await retryWithJitter(() => refresh({ signal }), { signal }); message('');
+    await retryWithJitter(() => refresh({ signal }), { signal });
+    if (signal.aborted) return;
+    message('');
     if (delivery?.mode === 'poll') {
       const showConnection = ok => {
         $('#connection').textContent = publicationConnectionMessage(delivery, publication, ok);
@@ -154,36 +209,25 @@ async function connect() {
         hidden: () => document.visibilityState === 'hidden' });
       return;
     }
-    pollSnapshots({ interval: liveTransport.recoveryInterval, maxInterval: liveTransport.recoveryInterval, signal, connection: () => {}, refresh });
-    subscribe({ api, state, ids, signal, refresh: () => refresh({ signal }),
-      changed: event => {
-        if (['segment', 'live-segment'].includes(event.kind) && event.payload.ai_corrected === true) alerts.inspect(event.payload);
-        if (event.kind === 'stream') {
-          const previous = streams.find(stream => stream.stream_id === event.payload.stream_id);
-          if (event.payload.deleted || previous?.broadcast_id !== event.payload.broadcast_id) {
-            for (const item of [...state.segments.values()]) if (item.stream_id === event.payload.stream_id) state.segments.delete(item.segment_id);
-            state.gaps.delete(event.payload.stream_id); state.status.delete(event.payload.stream_id);
-            before[event.payload.stream_id] = Number.MAX_SAFE_INTEGER;
-          }
-          streams = streams.filter(stream => stream.stream_id !== event.payload.stream_id);
-          if (!event.payload.deleted) streams.push(event.payload); streams = withCommittees(streams); reconcile();
-        } else if (event.kind === 'delivery-health') {
-          if (event.payload.engine) showEngine(event.payload.engine);
-          for (const stage of stages.values()) stage.render();
-        }
-        else if (['segment', 'live-segment', 'gap', 'partial', 'session', 'status'].includes(event.kind)) stages.get(event.payload.stream_id)?.render();
-        renderChoices();
-      },
+    pollSnapshots({ interval: liveTransport.recoveryInterval, maxInterval: liveTransport.recoveryInterval, signal, connection: () => {}, refresh,
+      hidden: () => document.visibilityState === 'hidden', skip: () => streamAlive() && Date.now() - snapshotAt < SNAPSHOT_CHECK_MS });
+    // A 'reset' answer means the server cannot continue from the last event; the kept events no longer match its snapshot.
+    subscribe({ api, state, ids, signal, recent, refresh: () => { recent.clear(); return refresh({ signal }); },
+      received: () => { streamAt = Date.now(); }, changed: onEvent,
       connection: value => { $('#connection').textContent = value === '연결됨' ? '' : '다시 연결하는 중입니다'; }
     }).catch(() => { if (!signal.aborted) { message('연결이 끊겼습니다. 다시 연결해 주세요.'); $('#retry').hidden = false; } });
-  } catch (error) { if (!signal.aborted) { message(error.message); $('#connection').textContent = '연결하지 못했습니다'; $('#retry').hidden = false; } }
+  } catch (error) {
+    if (signal.aborted) return;
+    message(error.message); $('#connection').textContent = '연결하지 못했습니다'; $('#retry').hidden = false;
+    if (!scheduleAsked) { scheduleAsked = true; loadSchedule(); }
+  }
 }
 $('#retry').addEventListener('click', connect);
-setInterval(() => { if (document.visibilityState !== 'hidden') loadSchedule(); }, 600_000);
+setInterval(() => { if (document.visibilityState !== 'hidden' && !scheduleInSnapshot) loadSchedule(); }, 600_000);
 window.addEventListener('pagehide', () => { subscription?.abort(); for (const stage of stages.values()) stage.dispose(); stages.clear(); });
 window.addEventListener('pageshow', event => { if (event.persisted) connect(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') connect();
+  if (document.visibilityState === 'visible') { if (delivery?.mode === 'poll' || !streamAlive()) connect(); }
   else if (delivery?.mode === 'poll') subscription?.abort();
 });
-renderChoices(); connect(); loadSchedule();
+renderChoices(); connect();

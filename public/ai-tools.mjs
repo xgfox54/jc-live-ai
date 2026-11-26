@@ -26,11 +26,14 @@ const fillModels = (select, models, selected) => {
 };
 export class AITools {
   constructor({ api, message, refresh }) {
-    Object.assign(this, { api, message, changed: refresh }); this.before = null; this.page = null; this.epoch = 0;
+    Object.assign(this, { api, message, changed: refresh }); this.before = null; this.page = null; this.epoch = 0; this.checked = new Set();
+    $('#ai-waiting').addEventListener('change', () => { this.page = null; this.candidates().catch(error => message(error.message)); });
+    $('#ai-apply-checked').addEventListener('click', () => this.action('/apply-checked', { ids: [...this.checked] }, '확인 표시한 후보를 적용했습니다.')
+      .then(ok => { if (ok) { this.checked.clear(); this.updateChecked(); } }));
     document.addEventListener('jc-ai-settings-changed', () => { this.loaded = false; });
     $('#ai-model-refresh').addEventListener('click', () => this.models());
     $('#ai-provider').addEventListener('change', () => { $('#ai-proxy-fields').hidden = $('#ai-provider').value !== 'proxy'; });
-    $('#ai-broadcast').addEventListener('change', () => { this.before = null; this.select().catch(error => message(error.message)); });
+    $('#ai-broadcast').addEventListener('change', () => { this.before = null; this.checked.clear(); this.updateChecked(); this.select().catch(error => message(error.message)); });
     $('#ai-refresh').addEventListener('click', () => this.refresh().catch(error => message(error.message)));
     $('#ai-latest').addEventListener('click', () => { this.page = null; this.candidates().catch(error => message(error.message)); });
     $('#ai-older').addEventListener('click', () => { this.page = this.before; this.candidates().catch(error => message(error.message)); });
@@ -40,7 +43,8 @@ export class AITools {
     $('#ai-settings').addEventListener('submit', event => {
       event.preventDefault();
       const form = event.target;
-      this.action('/settings', { model: $('#ai-model').value, refine_model: $('#ai-refine-model').value, automatic: form.elements.automatic.checked,
+      this.action('/settings', { model: $('#ai-model').value, refine_model: $('#ai-refine-model').value,
+        fallback_models: [$('#ai-fallback-1').value, $('#ai-fallback-2').value].filter(Boolean), automatic: form.elements.automatic.checked,
         auto_apply_safe: form.elements.auto_apply_safe.checked,
         provider: form.elements.provider.value, base: form.elements.base.value, api_key: form.elements.api_key.value,
         clear_key: form.elements.clear_key.checked }, 'AI 설정을 저장했습니다.').then(ok => {
@@ -74,6 +78,9 @@ export class AITools {
       fillModels($('#ai-model'), value.models, selected);
       fillModels($('#ai-refine-model'), value.models, $('#ai-refine-model').value || this.currentRefineModel || '');
       $('#ai-refine-model').options[0].textContent = '사용 안 함';
+      for (const [index, select] of [$('#ai-fallback-1'), $('#ai-fallback-2')].entries()) {
+        fillModels(select, value.models, select.value || this.currentFallback?.[index] || ''); select.options[0].textContent = '사용 안 함';
+      }
       $('#ai-model-status').textContent = value.error ?? '모델 ' + value.models.length + '개를 확인했습니다. 저장한 연결의 목록입니다.';
     } catch (error) { this.message(error.message); } finally { $('#ai-model-refresh').disabled = false; }
   }
@@ -82,6 +89,10 @@ export class AITools {
     if (epoch !== this.epoch) return;
     this.currentModel = value.settings.model;
     this.currentRefineModel = value.settings.refine_model ?? '';
+    this.currentFallback = value.settings.fallback_models ?? [];
+    const use = Object.entries(value.model_use?.models ?? {});
+    $('#ai-fallback-status').textContent = use.length ? '엔진 시작 후 모델별 응답: ' + use.map(([model, item]) => model + ' ' + item.answered + '건'
+      + (item.failed ? '(실패 ' + item.failed + '건)' : '')).join(', ') : '';
     if (!this.loaded) {
       this.fieldLoaded = false;
       $('#ai-settings').elements.automatic.checked = value.settings.automatic;
@@ -129,13 +140,14 @@ export class AITools {
   async candidates() {
     if (!this.id()) return;
     const id = this.id(); const epoch = this.epoch;
-    const value = await this.json('/candidates?broadcast=' + id + (this.page ? '&before=' + this.page : ''));
+    const waiting = $('#ai-waiting').checked;
+    const value = await this.json('/candidates?broadcast=' + id + (this.page && !waiting ? '&before=' + this.page : '') + (waiting ? '&waiting=1' : ''));
     if (epoch !== this.epoch || id !== this.id()) return;
-    const signature = JSON.stringify([id, this.page, value]);
+    const signature = JSON.stringify([id, this.page, waiting, value]);
     if (signature === this.candidateSignature) return;
     this.candidateSignature = signature;
     this.before = value.before; const container = $('#ai-candidates'); container.replaceChildren();
-    if (!value.items.length) container.append(element('p', '이 페이지에 후보가 없습니다.'));
+    if (!value.items.length) container.append(element('p', waiting ? '확인을 기다리는 후보가 없습니다.' : '이 페이지에 후보가 없습니다.'));
     for (const item of value.items) {
       const card = element('article', '', 'discovery-record');
       card.append(element('h4', clock(item.start_ms) + ' ~ ' + clock(item.end_ms)));
@@ -155,16 +167,25 @@ export class AITools {
         const row = element('div', '', 'row'); const apply = element('button', '이 후보 적용'); const reject = element('button', '적용 제외', 'secondary');
         apply.disabled = item.stale || Boolean(item.issue);
         check?.addEventListener('change', () => { apply.disabled = item.stale || !check.checked; });
+        if (check && !item.stale) {
+          check.checked = this.checked.has(item.id); apply.disabled = !check.checked;
+          check.addEventListener('change', () => { if (check.checked) this.checked.add(item.id); else this.checked.delete(item.id); this.updateChecked(); });
+        }
         apply.addEventListener('click', () => this.action('/apply', { id: item.id, acknowledge: check?.checked ?? false }, '후보를 적용했습니다.'));
         reject.addEventListener('click', () => this.action('/reject', { id: item.id }, '후보를 적용에서 제외했습니다.'));
         row.append(apply, reject); card.append(row);
       }
       container.append(card);
     }
-    $('#ai-older').disabled = value.items.length < 50;
+    $('#ai-older').disabled = value.before === null || value.items.length < 50;
+  }
+  updateChecked() {
+    $('#ai-apply-checked').disabled = !this.checked.size;
+    $('#ai-apply-checked').textContent = '확인 표시한 후보 적용' + (this.checked.size ? ' (' + this.checked.size + '개)' : '');
   }
   clear() {
     this.epoch++; this.loaded = false; this.fieldLoaded = false; this.currentModel = ''; this.before = null; this.page = null; this.candidateSignature = null;
+    this.checked.clear(); this.updateChecked();
     $('#ai-settings').reset(); $('#ai-field').reset(); $('#ai-broadcast').replaceChildren(); $('#ai-candidates').replaceChildren();
   }
 }

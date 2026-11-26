@@ -1,6 +1,7 @@
 import { finalSourceGuard, REVIEW_METHOD, PREVIOUS_METHODS } from './final-speakers.mjs';
 import { decisionOverlay } from './speaker-decisions.mjs';
 import { publicSpeech, publicText } from './silence-filter.mjs';
+import { budgetYears } from './budget-year.mjs';
 import { createHash } from 'node:crypto';
 
 export class BroadcastRegistry {
@@ -21,9 +22,10 @@ export class BroadcastRegistry {
     this.store.emit('broadcast', value.id);
     return value;
   }
+  // A part record (continuation) shares its meeting's video and sources but is never merged into it.
   upsert(candidate) {
-    const matches = this.list().filter(item => (candidate.video_id && item.video_id === candidate.video_id)
-      || item.sources.some(url => candidate.sources.includes(url))).sort((a, b) => a.first_seen_ms - b.first_seen_ms);
+    const matches = this.list().filter(item => !item.continuation_of && ((candidate.video_id && item.video_id === candidate.video_id)
+      || item.sources.some(url => candidate.sources.includes(url)))).sort((a, b) => a.first_seen_ms - b.first_seen_ms);
     const existing = matches[0];
     const official = matches.find(item => item.kind === 'council');
     const id = existing?.id ?? createHash('sha256').update(candidate.video_id ? 'youtube:' + candidate.video_id : candidate.page_url).digest('hex');
@@ -55,6 +57,24 @@ export class BroadcastRegistry {
       .run(JSON.stringify({ enabled })); return this.settings();
   }
   suspend(id, value) { const record = this.get(id); if (record) this.save({ ...record, suspended: value }); }
+  // A meeting of one session number that resumes on a later day is kept as one record per day (2026-11-24 request): the first
+  // day is "<title> (1/2)" and the next "<title> (2/2)". display_title is what the minutes show; discovery updates title only.
+  continuation(record, date, now = Date.now()) {
+    const origin = record.continuation_of ? this.get(record.continuation_of) ?? record : record;
+    const parts = this.list().filter(item => item.continuation_of === origin.id).sort((a, b) => a.part_date.localeCompare(b.part_date));
+    const found = parts.find(item => item.part_date === date);
+    if (found) return this.save({ ...found, completed: false });
+    const base = origin.part_title ?? origin.display_title ?? origin.title;
+    const time = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
+    const fields = ['committee', 'meeting_round', 'meeting_type', 'agenda', 'kind', 'page_url', 'video_id', 'stream_id', 'resolved_kind', 'media_url', 'test_run'];
+    const part = { ...Object.fromEntries(fields.filter(key => origin[key] !== undefined).map(key => [key, origin[key]])), sources: origin.sources ?? [],
+      id: createHash('sha256').update('continuation:' + origin.id + ':' + date).digest('hex'), title: origin.title, continuation_of: origin.id,
+      part_date: date, scheduled_at: date + ' ' + time, first_seen_ms: now, updated_ms: now, phase: 'live', completed: false, suspended: false };
+    const ordered = [origin, ...parts, part];
+    this.store.transaction(() => ordered.forEach((item, index) => this.save({ ...item, part_title: base,
+      display_title: base + ' (' + (index + 1) + '/' + ordered.length + ')' })));
+    return this.get(part.id);
+  }
   attach(stream, session) {
     let record = stream.broadcast_id && this.get(stream.broadcast_id);
     if (!record) record = this.upsert({ title: stream.name, page_url: stream.page_url || 'local:' + stream.stream_id,
@@ -76,9 +96,10 @@ export class BroadcastRegistry {
   }
   // "+e.id" keeps SQLite on the partial index broadcast_gap_session. Ordering by the bare rowid made it scan every event
   // instead (about 130 ms per call with 97,000 events, 2026-11-14).
+  // created_ms is when the gap was recorded; the minutes use it to tell a stop after adjournment from a gap in the meeting.
   gaps(id) {
-    return this.db.prepare("SELECT e.payload FROM events e JOIN broadcast_sessions b ON json_extract(e.payload,'$.session_id')=b.session_id WHERE b.broadcast_id=? AND e.kind='gap' ORDER BY +e.id")
-      .all(id).map(row => JSON.parse(row.payload));
+    return this.db.prepare("SELECT e.created_ms,e.payload FROM events e JOIN broadcast_sessions b ON json_extract(e.payload,'$.session_id')=b.session_id WHERE b.broadcast_id=? AND e.kind='gap' ORDER BY +e.id")
+      .all(id).map(row => ({ ...JSON.parse(row.payload), created_ms: row.created_ms }));
   }
   saveMinutes(value) {
     this.db.prepare('INSERT INTO minutes VALUES(?,?) ON CONFLICT(broadcast_id) DO UPDATE SET document=excluded.document').run(value.id, JSON.stringify(value));
@@ -92,9 +113,10 @@ export class BroadcastRegistry {
       + "WHERE b.broadcast_id=? AND json_extract(s.document,'$.ai_corrected')=1 AND trim(coalesce(json_extract(s.document,'$.corrected_text'),''))<>''").get(id);
   }
   // Public rows lose phrases Whisper invented after the speech ("…상정합니다. MBC 뉴스 김성현입니다.") and write 제주 4.3 as 4.3.
+  // In a budget hearing, a budget year heard ten years early is written as the year under review (src/budget-year.mjs).
   publishedSegments(id) {
-    return this.segments(id).filter(row => row.ai_corrected === true && typeof row.corrected_text === 'string' && row.corrected_text.trim() && publicSpeech(row))
-      .map(row => ({ ...row, corrected_text: publicText(row.corrected_text) }));
+    return budgetYears(this.segments(id).filter(row => row.ai_corrected === true && typeof row.corrected_text === 'string' && row.corrected_text.trim() && publicSpeech(row))
+      .map(row => ({ ...row, corrected_text: publicText(row.corrected_text) })), this.get(id)?.agenda);
   }
   reviewState(key) {
     if (!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='review_state'").get()) return null;
@@ -102,17 +124,45 @@ export class BroadcastRegistry {
   }
   participants(id) { return this.reviewState('participants:' + id)?.names ?? {}; }
   finalSpeakers(id) {
-    const value = this.reviewState('final-speakers:' + id);
+    const value = this.reviewState('final-speakers:' + id); let rows = null; const published = () => rows ??= this.publishedSegments(id);
     let current = value && ['complete', 'partial'].includes(value.phase)
       && [REVIEW_METHOD, REVIEW_METHOD + '-revalidated', ...PREVIOUS_METHODS].includes(value.method)
-      && value.source_guard === finalSourceGuard(this, id) ? value : null;
+      ? value.source_guard === finalSourceGuard(this, id) ? value : this.keptSpeakers(id, value, published()) : null;
     const decisions = this.reviewState('speaker-decisions:' + id);
     if (current?.text_assignments && current.decision_version !== (decisions?.version ?? 0)) {
       const assigned = Object.values(current.text_assignments).filter(Boolean).length;
       current = { ...current, assignments: current.text_assignments, assigned, unresolved: current.assigned + current.unresolved - assigned };
     }
     if (current) current = { ...current, review_decision_version: current.decision_version };
-    return decisionOverlay(current, decisions, this.publishedSegments(id));
+    return decisionOverlay(current, decisions, published());
+  }
+  // A review whose sources changed keeps its names for the sentences it reviewed that are unchanged, until the meeting is
+  // reviewed again; sentences published or changed since stay unresolved. 2026-11-24: a vocabulary update re-corrected and
+  // published 2 to 9 held sentences in six meetings, and every name in those meetings disappeared until a new review.
+  // Nothing is kept once the meeting's speaker roster, channel, committee or date changed after the review. A result saved
+  // before sentence versions were recorded counts a sentence as changed when the correction log has an entry for it made
+  // after the review began.
+  keptSpeakers(id, value, rows) {
+    const record = this.get(id); const roster = this.reviewState('speaker-roster:' + id);
+    const rosterChanged = 'roster_version' in value ? (roster?.version ?? 0) !== value.roster_version
+      : Boolean(roster?.version) && (roster.updated_ms ?? Infinity) >= (value.started_ms ?? 0);
+    const meetingChanged = Array.isArray(value.meeting)
+      && JSON.stringify(value.meeting) !== JSON.stringify([record?.stream_id ?? null, record?.committee ?? null, record?.scheduled_at ?? null]);
+    if (rosterChanged || meetingChanged || !value.assignments) return null;
+    const corrected = value.versions ? null : this.correctedSince(id, value.started_ms ?? 0);
+    const same = row => Object.hasOwn(value.assignments, row.segment_id)
+      && (value.versions ? value.versions[row.segment_id] === row.version : !corrected.has(row.segment_id));
+    const keep = source => source ? Object.fromEntries(rows.map(row => [row.segment_id, same(row) ? source[row.segment_id] ?? null : null])) : undefined;
+    const assignments = keep(value.assignments); const assigned = Object.values(assignments).filter(Boolean).length;
+    if (!assigned) return null;
+    return { ...value, phase: 'partial', kept: true, assignments, text_assignments: keep(value.text_assignments), assigned,
+      unresolved: rows.length - assigned, acoustic_conflicts: (value.acoustic_conflicts ?? []).filter(item => assignments[item.segment_id]) };
+  }
+  // Sentences of a meeting with a correction made at or after a time. The correction log is kept at any age (src/retention.mjs).
+  // CROSS JOIN keeps SQLite on the meeting's sessions and sentences instead of reading the whole log.
+  correctedSince(id, since) {
+    return new Set(this.db.prepare("SELECT DISTINCT c.segment_id AS id FROM broadcast_sessions b CROSS JOIN segments s ON s.session_id=b.session_id "
+      + "CROSS JOIN corrections c ON c.segment_id=s.id WHERE b.broadcast_id=? AND json_extract(c.document,'$.created_ms')>=?").all(id, since).map(row => row.id));
   }
   // The fields that decide whether a stored speaker review is still current, read without parsing the whole result.
   finalSpeakersHead(id) {

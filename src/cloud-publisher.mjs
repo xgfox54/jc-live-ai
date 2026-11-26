@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { viewerSnapshot, viewerSegment } from './viewer.mjs';
+import { budgetYears } from './budget-year.mjs';
 import { viewerMinuteList, viewerMinutes } from './viewer-minutes.mjs';
 import { publicationContentHash } from '../web/lib/publication-protocol.mjs';
 import { PublicationControl, validatePublicationSettings } from './publication-control.mjs';
@@ -188,7 +189,9 @@ export class CloudPublisher {
         // A meeting whose archive cannot be built or fails the public data check waits for the next pass without holding
         // back the meetings listed after it (2026-11-14: one refused replay link ended every pass before the later archives).
         try {
-          const document = viewerMinutes(this.registry, summary.id); const segments = this.registry.segments(summary.id).map(viewerSegment).filter(Boolean);
+          // The archived sentences get the same budget-year spelling as the minutes (src/budget-year.mjs).
+          const document = viewerMinutes(this.registry, summary.id); const segments = budgetYears(this.registry.segments(summary.id).map(viewerSegment).filter(Boolean),
+            this.registry.get(summary.id)?.agenda, row => row.text, (row, text) => ({ ...row, text }));
           // The list is read before the pass and can still show a meeting that ended while earlier archives were sent;
           // the document is rebuilt now, so the index entry takes its status from the document (2026-11-13).
           const sent = { ...summary, status: document.status, updated_ms: document.updated_ms };

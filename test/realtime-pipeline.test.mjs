@@ -188,6 +188,34 @@ function refineFixture(t, replies, { delay = 30, nextWaitMs = 40 } = {}) {
   t.after(async () => { await live.close(); await ai.close(); store.close(); });
   return { store, live, add, read, requests };
 }
+test('a slow live correction asks the next model of the saved order and records the model that answered', async t => {
+  // Given a slow correction model and a quick fallback model
+  const store = new Store(':memory:'); const registry = new BroadcastRegistry(store); const asked = [];
+  const aiFetch = async (url, options) => {
+    const body = JSON.parse(options.body); asked.push(body.model); const segments = JSON.parse(body.messages[1].content).segments;
+    if (body.model === 'slow') await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, 1500); options.signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('cancelled')); }, { once: true });
+    });
+    const content = JSON.stringify({ corrections: segments.map(part => ({ id: part.id, text: part.text.replace('써비스', '서비스') })) });
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content } }] });
+  };
+  const ai = new CorrectionService({ store, registry, scheduler: { states: () => [], channels: new Map() }, aiFetch });
+  ai.saveSettings({ model: 'slow', fallback_models: ['quick'], automatic: true, provider: 'proxy', base: 'http://127.0.0.1:10100/v1' });
+  const live = new LiveCorrection({ store, registry, ai, hedgeMs: 50, timeoutMs: 1000 });
+  const page_url = 'https://www.youtube.com/watch?v=abcdefghijk';
+  const record = registry.upsert({ page_url, sources: [page_url], title: '예비 모델 시험', kind: 'youtube' });
+  registry.attach({ stream_id: 'ch4', broadcast_id: record.id }, { session_id: 'order-session' });
+  t.after(async () => { await live.close(); await ai.close(); store.close(); });
+  const read = id => JSON.parse(store.db.prepare('SELECT document FROM segments WHERE id=?').get(id).document);
+  // When
+  const row = store.segment({ stream_id: 'ch4', session_id: 'order-session', start_ms: 0, end_ms: 6000, raw_text: '돌봄 써비스 예산입니다.',
+    ready_ms: Date.now(), audio_received_ms: Date.now() });
+  await until(() => read(row.segment_id).corrected_text !== null);
+  // Then the second request went to the quick model, whose answer was published and recorded
+  assert.equal(read(row.segment_id).corrected_text, '돌봄 서비스 예산입니다.');
+  assert.deepEqual(asked, ['slow', 'quick']); assert.equal(live.metrics.hedged, 1);
+  assert.equal(JSON.parse(store.db.prepare('SELECT document FROM ai_candidates').get().document).model, 'quick');
+});
 test('the refinement model replaces the fast correction after it is published', async t => {
   // Given a fast model and a slower, better refinement model
   const f = refineFixture(t, { fast: text => text.replace('써비스', '서비스'), refiner: () => '돌봄 서비스 예산입니다.' });

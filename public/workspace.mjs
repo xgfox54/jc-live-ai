@@ -198,14 +198,17 @@ export class Workspace {
     const final = value.final_speakers;
     const readiness = { transcribing: '전사 완료 대기', end_unverified: '수집 종료 확인 중 (마지막 입력 후 10분 대기)', incomplete: '누락·오류 기록 확인 필요',
       empty: '받아쓰기 없음', correcting: '문장 후보정 완료 대기', ready: '전체 발언자 검토 가능' };
-    const finalPhases = { running: '발언자 검토 중', complete: '발언자 검토 완료', partial: '검토 완료·일부 발언자 미확인', failed: '검토 실패', interrupted: '검토 중단', paused: '검토 중지' };
+    const finalPhases = { running: '발언자 검토 중', complete: '발언자 검토 완료', partial: '검토 완료·일부 발언자 미확인', failed: '검토 실패', interrupted: '검토 중단', paused: '검토 중지',
+      waiting: '방송 수집 중이라 대기' };
     $('#final-speakers-status').textContent = (readiness[final?.readiness] ?? '기록을 선택해 주세요.')
       + (final?.job?.stage === 'acoustics' && final.job.phase === 'running' ? ' · 종료 후 원음 재분석 중' : '')
       + (final?.job?.acoustics?.phase === 'unconfigured' ? ' · 원음 분석 모델 미구성' : '')
       + (final?.job?.acoustics?.phase === 'unavailable' ? ' · 분석할 저장 원음 없음' : '')
       + (final?.job?.acoustics?.missing ? ' · 원음 미확보 ' + final.job.acoustics.missing + '세션' : '')
       + (final?.job ? ' · ' + finalPhases[final.job.phase] + ' · ' + final.job.completed + '/' + final.job.total + '묶음' : '')
-      + (final?.result ? ' · 이름 확인 ' + final.result.assigned + '개 구간 · 미확인 ' + final.result.unresolved + '개 구간' : '');
+      + (['failed', 'waiting'].includes(final?.job?.phase) && final.job.error ? ' · ' + final.job.error : '')
+      + (final?.result ? ' · 이름 확인 ' + final.result.assigned + '개 구간 · 미확인 ' + final.result.unresolved + '개 구간' : '')
+      + (final?.result?.kept ? ' · 지난 검토의 이름을 바뀌지 않은 문장에 유지하고 재검토를 기다립니다' : '');
     $('#final-speakers').disabled = final?.readiness !== 'ready' || final?.job?.phase === 'running';
     $('#pause-final-speakers').disabled = final?.job?.phase !== 'running';
     const job = value.job;

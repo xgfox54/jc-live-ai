@@ -37,7 +37,8 @@ export function parseCouncilDirectory(html) {
     const text = plain(block); const title = plain(link[2]).slice(0, 300);
     if (!title || /방송종료/.test(text)) continue;
     const phase = /방송중|생방송중|방송 중/.test(text) ? 'live' : 'waiting';
-    items.set(url, { page_url: url, title, phase, sources: [url], discovered_from: 'council' });
+    // A meeting in recess stays on air as '정회중'; the scheduler recognizes only clear sound while it lasts.
+    items.set(url, { page_url: url, title, phase, recess: /정회/.test(text), sources: [url], discovered_from: 'council' });
   }
   if (!/<(?:html|body)\b/i.test(clean) || !/생방송/.test(plain(clean))) throw new Error('의회 방송 목록 형식을 확인해 주세요.');
   return [...items.values()];

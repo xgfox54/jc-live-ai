@@ -2,7 +2,8 @@ import { councilHtml, plain, withoutScripts } from './official-directory.mjs';
 import { matchCommittee } from './committees.mjs';
 
 export const SCHEDULE_URL = 'https://www.council.jeju.kr/broadcast/schedule.do';
-const STATUS = [[/방송종료/, 'ended'], [/방송중|생방송/, 'live'], [/방송예정/, 'scheduled']];
+// A meeting in recess (정회중) is on air.
+const STATUS = [[/방송종료/, 'ended'], [/방송중|생방송|정회/, 'live'], [/방송예정/, 'scheduled']];
 export const seoulDate = (ms = Date.now()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(ms);
 
 export function parseBroadcastSchedule(html) {
@@ -12,9 +13,12 @@ export function parseBroadcastSchedule(html) {
   for (const table of clean.match(/<table\b[^>]*class=["']s-list["'][^>]*>[\s\S]*?<\/table>/gi) ?? []) {
     const date = plain(table.match(/<thead>[\s\S]*?<th\b[^>]*>([\s\S]*?)<\/th>/i)?.[1] ?? '');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-    for (const row of table.match(/<tr>\s*<th>[\s\S]*?<\/tr>/gi) ?? []) {
+    // Rows and cells may carry attributes: on 2026-11-26 the page began to send <th scope="row">, the rows no longer
+    // matched and the schedule of the site was empty from 16:19.
+    for (const row of table.match(/<tr\b[^>]*>\s*<th\b[^>]*>[\s\S]*?<\/tr>/gi) ?? []) {
       const label = plain(row.match(/<i\b[^>]*>([\s\S]*?)<\/i>/i)?.[1] ?? '');
-      const cell = row.match(/<td>([\s\S]*?)<a\b/i)?.[1] ?? '';
+      // The title of a meeting on air is a link to its player, so the cell is read up to the agenda button.
+      const cell = row.match(/<td\b[^>]*>([\s\S]*?)<a\b[^>]*class=["']btn["']/i)?.[1] ?? row.match(/<td\b[^>]*>([\s\S]*?)<a\b/i)?.[1] ?? '';
       const heading = plain(cell).replace(/\s+/g, ' ').match(/^\[(\d{2}):(\d{2})\]\s*(.+)$/);
       if (!heading || Number(heading[1]) > 23 || Number(heading[2]) > 59) continue;
       const time = heading[1] + ':' + heading[2]; const title = heading[3].trim().slice(0, 300);
@@ -23,6 +27,10 @@ export function parseBroadcastSchedule(html) {
         stream_id: matchCommittee({ title })?.stream_id ?? null });
     }
   }
+  // A page whose day tables hold rows but yield no meeting has changed its layout (2026-11-26 16:19); it is logged only.
+  if (!items.length && /<tr\b[^>]*>\s*<th\b[^>]*scope=["']row/i.test(clean))
+    process.stderr.write(JSON.stringify({ level: 'warn', event: 'schedule.unread', time: new Date().toISOString(),
+      error: '의회 생방송 일정 표에서 회의를 읽지 못했습니다. 화면 구조를 확인해 주세요.' }) + '\n');
   return items.sort((a, b) => a.starts_at.localeCompare(b.starts_at) || a.title.localeCompare(b.title, 'ko'));
 }
 

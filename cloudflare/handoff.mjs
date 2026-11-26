@@ -33,18 +33,32 @@ export async function handoffRequest(request, env) {
       typeof row.segment.segment_id !== 'string' || row.segment.segment_id.length > 80 ||
       !Number.isInteger(row.segment.version) || !/^[a-f0-9]{64}$/.test(row.broadcast_id ?? '')))
       return new Response(null, { status: 400 });
-    if (data.rows.length) await db.batch(data.rows.map(row => db.prepare(
+    // The desktop sends its position with the last sentences of a round (2026-11-26): one request, one batch for both.
+    // The answer names the stored position, so a sender knows that this Worker took it. A position that is not valid is
+    // left out and the sentences are still stored; the sender then sends the position alone and gets its 400 there.
+    const checkpoint = data.checkpoint === undefined ? null : checkpointOf(data.checkpoint, video);
+    const statements = data.rows.map(row => db.prepare(
       'INSERT INTO handoff_rows VALUES(?,?,?,?) ON CONFLICT(video,id) DO UPDATE SET version=excluded.version,document=excluded.document WHERE excluded.version>=handoff_rows.version')
-      .bind(video, row.segment.segment_id, row.segment.version, JSON.stringify(row))));
-    return reply({ ok: true });
+      .bind(video, row.segment.segment_id, row.segment.version, JSON.stringify(row)));
+    if (checkpoint) statements.push(progressStatement(db, video, checkpoint));
+    if (statements.length) await db.batch(statements);
+    return reply(checkpoint ? { ok: true, checkpoint } : { ok: true });
   }
-  if (data.type !== 'checkpoint' || data.video_id !== video || !Number.isFinite(data.video_ms) ||
-    data.video_ms < 0 || data.video_ms > 86_400_000 || !/^[a-f0-9]{64}$/.test(data.broadcast_id ?? ''))
-    return new Response(null, { status: 400 });
-  const checkpoint = { video_id: video, video_ms: data.video_ms, broadcast_id: data.broadcast_id,
-    processor: data.processor, updated_ms: Date.now(), clock: 'youtube-source-pts-v1' };
-  // A stale writer cannot move the shared position backwards.
-  await db.prepare('INSERT INTO handoff_progress VALUES(?,?,?) ON CONFLICT(video) DO UPDATE SET video_ms=excluded.video_ms,document=excluded.document WHERE excluded.video_ms>=handoff_progress.video_ms')
-    .bind(video, checkpoint.video_ms, JSON.stringify(checkpoint)).run();
+  const checkpoint = data.type === 'checkpoint' ? checkpointOf(data, video) : null;
+  if (!checkpoint) return new Response(null, { status: 400 });
+  await progressStatement(db, video, checkpoint).run();
   return reply({ ok: true, checkpoint });
+}
+
+// The stored form of a position for the video of the request, or null when the input is not valid.
+function checkpointOf(data, video) {
+  if (!data || typeof data !== 'object' || data.video_id !== video || !Number.isFinite(data.video_ms) ||
+    data.video_ms < 0 || data.video_ms > 86_400_000 || !/^[a-f0-9]{64}$/.test(data.broadcast_id ?? '')) return null;
+  return { video_id: video, video_ms: data.video_ms, broadcast_id: data.broadcast_id,
+    processor: data.processor, updated_ms: Date.now(), clock: 'youtube-source-pts-v1' };
+}
+// A stale writer cannot move the shared position backwards.
+function progressStatement(db, video, checkpoint) {
+  return db.prepare('INSERT INTO handoff_progress VALUES(?,?,?) ON CONFLICT(video) DO UPDATE SET video_ms=excluded.video_ms,document=excluded.document WHERE excluded.video_ms>=handoff_progress.video_ms')
+    .bind(video, checkpoint.video_ms, JSON.stringify(checkpoint));
 }

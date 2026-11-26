@@ -34,6 +34,11 @@ async function readLivePlaylist(url, signal) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+// An end check that finds the broadcast over: the official page or playlist reports it ended, the YouTube video is no longer
+// live, or the council's live playlist is gone. The council server removes it when a meeting ends (2026-11-26: XHC051 and
+// XHC061 answered 404 after '방송종료'), so without this an ended council stream was a collection failure retried forever.
+const broadcastEnded = result => result?.phase === 'ended' || (/^(?:youtube|hls):/.test(result?.key ?? '') && result.phase === 'offline');
+
 export class FileInputs {
   constructor(scheduler, config) { this.scheduler = scheduler; this.config = config; this.children = new Map(); this.resolving = new Map(); this.endProbe = createLiveProbe(config); }
   isActive(id) { return this.children.has(id) || this.resolving.has(id); }
@@ -203,7 +208,7 @@ export class FileInputs {
           if (endReason === 'eof' && ['youtube', 'council'].includes(stream.kind)) {
             child.endProbeController = new AbortController();
             const ended = await this.endProbe(stream, child.endProbeController.signal).catch(() => null);
-            if (ended?.phase !== 'ended' && !(ended?.key?.startsWith('youtube:') && ended.phase === 'offline')) endReason = 'end_unverified';
+            if (!broadcastEnded(ended)) endReason = 'end_unverified';
             // Only a check that still finds the broadcast live shows the input was cut off mid-broadcast.
             this.scheduler.channel(stream.stream_id).input_end_live = ended?.phase === 'live';
           }
@@ -213,7 +218,14 @@ export class FileInputs {
         endReason = 'error';
         if (recordingError || ['ENOSPC', 'EACCES', 'EPERM', 'EROFS', 'EIO', 'EEXIST'].includes(error.code))
           this.scheduler.channel(stream.stream_id).recording_failed = true;
-        if (!child.killed || recordingError) {
+        // A YouTube or council input often fails as the broadcast itself ends (2026-11-24: both meetings that ended, under a minute
+        // after the last audio). When the broadcast is reported ended, the input reached its end; an input that fails while the
+        // broadcast continues, or whose end cannot be checked, is a collection failure as before.
+        const checkable = !child.killed && !child.stopRequested && !this.scheduler.channel(stream.stream_id).recording_failed && ['youtube', 'council'].includes(stream.kind);
+        if (checkable) child.endProbeController = new AbortController();
+        const ended = checkable && broadcastEnded(await this.endProbe(stream, child.endProbeController.signal).catch(() => null));
+        if (ended && !child.stopRequested) endReason = 'eof';
+        else if (!child.killed || recordingError) {
           this.scheduler.channel(stream.stream_id).input_failed = true;
           this.scheduler.store.event('gap', { stream_id: stream.stream_id,
             session_id: this.scheduler.channel(stream.stream_id).session_id, reason: 'collector_failed', extent: 'unknown' });

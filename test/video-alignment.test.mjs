@@ -7,6 +7,7 @@ import { acceptedOffsets, videoOffsets, videoShift, ALIGNMENT_METHOD, alignmentS
 import { councilReplay, downloadReplayAudio } from '../src/council.mjs';
 import { buildMinutes } from '../src/minutes.mjs';
 import { publicMinutes } from '../web/lib/model.mjs';
+import { speakingCapture } from '../src/speaker-acoustics.mjs';
 
 const REPLAY = 'https://vod.council.jeju.kr/vod/_definst_//2026/455/20261023_2_bon/playlist.m3u8';
 
@@ -144,4 +145,28 @@ test('a record merged from another PC keeps its collection clock', async t => {
   assert.throws(() => alignment.start(id), error => error.status === 409);
   alignment.auto();
   assert.equal(alignment.pending, null); assert.equal(states.size, 0);
+});
+
+test('a channel silent for ten minutes, like a recess with the broadcast on, does not hold back analysis after a meeting', () => {
+  const scheduler = states => ({ states: () => states });
+  assert.equal(speakingCapture(scheduler([])), false); assert.equal(speakingCapture(null), false);
+  assert.equal(speakingCapture(scheduler([{ state: 'stopped', audio_received_until: 0, last_speech_segment_end: null }])), false);
+  // 2026-11-24 교육위원회: recess declared at 12:05, broadcast kept on with no speech.
+  assert.equal(speakingCapture(scheduler([{ state: 'running', audio_received_until: 900_000, last_speech_segment_end: 240_000 }])), false);
+  assert.equal(speakingCapture(scheduler([{ state: 'running', audio_received_until: 900_000, last_speech_segment_end: 600_000 }])), true);
+  assert.equal(speakingCapture(scheduler([{ state: 'running', audio_received_until: 300_000, last_speech_segment_end: null }])), true);
+  assert.equal(speakingCapture(scheduler([{ state: 'running' }])), true);
+  for (const state of ['draining', 'degraded', 'reconnecting'])
+    assert.equal(speakingCapture(scheduler([{ state, audio_received_until: 9_000_000, last_speech_segment_end: 0 }])), true);
+  const id = 'd'.repeat(64); const record = { id, video_id: 'pwvxi_rX3ao', sources: [] }; let started = 0;
+  const registry = { list: () => [record], sessions: () => [{ session_id: 'one', state: 'stopped', input_end_reason: 'eof' }], get: () => record,
+    segments: () => [], publishedSegments: () => [] };
+  const alignment = new VideoAlignment({ registry, review: { get: () => null, save() {}, record: () => record, store: {} }, store: { emit() {} }, config: {},
+    scheduler: scheduler([{ state: 'running', audio_received_until: 900_000, last_speech_segment_end: 850_000 }]) });
+  alignment.sessionFiles = () => ({ one: 'audio.pcm' }); alignment.start = () => { started++; };
+  try {
+    alignment.auto(); assert.equal(started, 0);
+    alignment.scheduler = scheduler([{ state: 'running', audio_received_until: 900_000, last_speech_segment_end: 100_000 }]);
+    alignment.auto(); assert.equal(started, 1);
+  } finally { clearInterval(alignment.timer); }
 });

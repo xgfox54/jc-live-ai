@@ -46,12 +46,17 @@ function probeYouTube(config, stream, signal) {
     });
   });
 }
+// The council's streaming server names the media playlist and its segments after the session of each request
+// (chunklist_w1809214432.m3u8, media_w1809214432_1149.ts): a new name comes with every read of the master playlist.
+// Samples are compared without that part. With it no two samples had the same key, every probe answered 'waiting' and
+// no council HLS broadcast was collected (2026-11-26: six committee meetings in the afternoon, docs/AUTOMATION.md).
+const withoutSession = value => value.replace(/_w[0-9]+(?=[_.])/g, '');
 export function hlsSnapshot(body) {
   if (!body.trimStart().startsWith('#EXTM3U')) throw new Error('방송 재생 목록 형식을 확인해 주세요.');
   if (body.includes('#EXT-X-ENDLIST')) return { phase: 'ended' };
   if (!body.includes('#EXTINF:')) return { phase: 'waiting' };
   const timeline = body.split(/\r?\n/).filter(line => line && (!line.startsWith('#') || line.startsWith('#EXT-X-MEDIA-SEQUENCE:'))).join('\n');
-  return { phase: 'sample', fingerprint: createHash('sha256').update(timeline).digest('hex') };
+  return { phase: 'sample', fingerprint: createHash('sha256').update(withoutSession(timeline)).digest('hex') };
 }
 function playlistUrl(value) {
   const url = new URL(value);
@@ -89,7 +94,7 @@ export function createLiveProbe(config) {
       if (!variant) throw new Error('방송 재생 목록의 영상 주소를 확인해 주세요.');
       url = playlistUrl(new URL(variant, url).href); body = await readPlaylist(url, signal);
     }
-    const key = 'hls:' + url;
+    const key = 'hls:' + withoutSession(url);
     if (body === null) { samples.delete(key); return { phase: 'offline', key, source }; }
     const sample = hlsSnapshot(body);
     if (sample.phase !== 'sample') { samples.delete(key); return { phase: sample.phase, key, source }; }

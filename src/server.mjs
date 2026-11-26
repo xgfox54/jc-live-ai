@@ -54,6 +54,12 @@ export function createService(context) {
   const { store, scheduler, inputs, config } = context;
   const security = new Security(config); const feed = new EventFeed(store, config);
   const registry = new BroadcastRegistry(store);
+  // The official broadcast list marks a meeting in recess; discovery reads it every 30 seconds. A mark older than five
+  // minutes (the list could not be read) is not trusted.
+  scheduler.inRecess = streamId => {
+    const id = store.streams().find(stream => stream.stream_id === streamId)?.broadcast_id; const record = id && registry.get(id);
+    return record?.recess === true && Date.now() - (record.updated_ms ?? 0) < 300_000;
+  };
   const schedule = context.schedule ?? new CouncilSchedule();
   const minutes = new MinutesService({ registry, store, config });
   const viewer = createViewer({ ...context, registry, schedule, get cloudSync() { return cloudSync; } });
@@ -118,7 +124,8 @@ export function createService(context) {
           if (url.pathname === '/api/admin/ai/models') { json(res, await correctionAI.models()); return; }
           if (url.pathname === '/api/admin/ai/field') { json(res, correctionAI.field(broadcast)); return; }
           if (url.pathname === '/api/admin/ai/candidates') {
-            json(res, correctionAI.list(broadcast, integer(url.searchParams.get('before') ?? Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER))); return;
+            json(res, correctionAI.list(broadcast, integer(url.searchParams.get('before') ?? Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER),
+              url.searchParams.get('waiting') === '1')); return;
           }
         }
         if (req.method === 'POST') {
@@ -131,6 +138,7 @@ export function createService(context) {
             case '/api/admin/ai/apply': json(res, correctionAI.apply(value.id, value.acknowledge)); return;
             case '/api/admin/ai/reject': correctionAI.reject(value.id); json(res, { rejected: true }); return;
             case '/api/admin/ai/apply-safe': json(res, await correctionAI.applySafe(value.broadcast_id)); return;
+            case '/api/admin/ai/apply-checked': json(res, correctionAI.applyChecked(value.ids)); return;
           }
         }
         throw new HttpError(404, 'Route not found');
@@ -204,7 +212,7 @@ export function createService(context) {
         if (previous?.broadcast_id) registry.suspend(previous.broadcast_id, true);
         monitor.invalidate(id); store.saveStream(stream); store.event('stream', viewerStream(stream)); json(res, stream, 201); return;
       }
-      const match = url.pathname.match(/^\/api\/admin\/streams\/(ch\d{1,2})\/(start|stop|epoch|pcm|auto)$/);
+      const match = url.pathname.match(/^\/api\/admin\/streams\/(ch\d{1,2})\/(start|stop|epoch|pcm|auto|close)$/);
       if (match && CHANNEL_IDS.includes(match[1])) {
         const [, id, action] = match;
         const stream = store.streams().find(s => s.stream_id === id);
@@ -218,6 +226,10 @@ export function createService(context) {
           case 'auto': {
             const data = await jsonBody(req);
             json(res, monitor.setEnabled(stream, data.enabled)); return;
+          }
+          case 'close': {
+            const data = await jsonBody(req);
+            json(res, await monitor.closeCollection(stream, data.note ?? '')); return;
           }
           case 'stop':
             if (supportsAutoStart(stream)) monitor.setEnabled(stream, false);

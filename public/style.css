@@ -78,7 +78,7 @@ button:hover{filter:brightness(.94)}button:disabled{opacity:.65;cursor:not-allow
 @keyframes processing-fade{0%,100%{opacity:.45}50%{opacity:1}}
 @media(prefers-reduced-motion:reduce){.processing-dots>span{animation-name:processing-fade;animation-duration:1.4s}}
 @media(max-width:640px){.transcription-progress,.gap-note,.delivery-health,.transcript-clock-note{margin-inline:calc(var(--space) * 2)}}
-.transcript .transcription-progress{margin:0;padding:0 0 4px}
+.transcript .transcription-progress{margin:0;padding:0 0 4px}.transcript .history-status{margin:0 0 12px}
 .correction-done::before{content:"";display:inline-block;width:.5rem;height:.5rem;margin-inline-end:.25rem;border-radius:50%;background:var(--green);vertical-align:.0625rem}
 .empty{font-size:var(--small)}footer{padding-top:32px;font-size:.8125rem;color:var(--muted);line-height:1.8}
 .schedule{margin-top:calc(var(--space) * 3)}.schedule-heading{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap}

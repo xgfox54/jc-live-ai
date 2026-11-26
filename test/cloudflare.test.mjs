@@ -5,7 +5,7 @@ import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { gzipSync, gunzipSync, brotliCompressSync } from 'node:zlib';
 import { D1Store } from '../cloudflare/d1-store.mjs';
 import { handleRequest } from '../cloudflare/worker.mjs';
 import { publicationContentHash } from '../web/lib/publication-protocol.mjs';
@@ -106,8 +106,8 @@ test('Cloudflare build excludes admin/local data and retains HTTPS CSP', async t
 
 test('VPC proxy streams desktop SSE and preserves only approved read-only headers and routes', async () => {
   const origin = 'https://jc-live.unit.workers.dev'; const calls = [];
-  // The status probe that chooses between the desktop and the standby laptop is answered first.
-  const probe = request => request.url === 'http://127.0.0.1:4321/api/viewer/snapshot?text_streams=';
+  // The status check that chooses between the desktop and the standby laptop.
+  const probe = request => request.url === 'http://127.0.0.1:4321/api/viewer/status?probe=1';
   const env = { JC_ALLOWED_ORIGINS: JSON.stringify([origin]), DESKTOP_LIVE: { fetch: async request => {
     if (probe(request)) return Response.json({ streams: [], states: [], engine: 'running' });
     calls.push(request);
@@ -122,7 +122,7 @@ test('VPC proxy streams desktop SSE and preserves only approved read-only header
   assert.equal(calls[0].redirect, 'manual');
   assert.equal(response.headers.get('x-jc-active-processor'), 'desktop');
   assert.equal((await proxyLive(new Request(origin + '/api/viewer/events'), { ...env,
-    DESKTOP_LIVE: { fetch: async request => probe(request) ? Response.json({ streams: [], states: [] })
+    DESKTOP_LIVE: { fetch: async request => probe(request) ? Response.json({ engine: 'running' })
       : new Response(null, { status: 302, headers: { Location: 'https://foreign.test' } }) } })).status, 502);
   assert.equal(await proxyLive(new Request(origin + '/api/admin/settings'), env), null);
   assert.equal((await proxyLive(new Request(origin + '/api/viewer/snapshot', { headers: { Origin: 'https://foreign.test' } }), env)).status, 403);
@@ -206,4 +206,21 @@ test('simultaneous reads of a meeting without its page copy build the copy once'
     handleRequest(new Request('https://jc-live.unit.workers.dev/api/viewer/' + path, { headers: { 'Accept-Encoding': 'gzip' } }), counted)));
   assert.deepEqual([...new Set(responses.map(response => response.status))], [200]); assert.equal(builds, 1);
   assert.equal(new Set(await Promise.all(responses.map(async response => Buffer.from(await response.arrayBuffer()).toString('base64')))).size, 1);
+});
+
+test('VPC proxy passes a compressed desktop answer to the viewer unchanged', async () => {
+  // Given a desktop that compresses its answer for the encodings the viewer accepts
+  const origin = 'https://jc-live.unit.workers.dev'; const asked = [];
+  const compressed = brotliCompressSync(Buffer.from(JSON.stringify({ items: [{ text: '압축 전달 확인' }], before: 0 })));
+  const env = { JC_ALLOWED_ORIGINS: JSON.stringify([origin]), DESKTOP_LIVE: { fetch: async request => {
+    if (request.url.endsWith('/api/viewer/status?probe=1')) return Response.json({ engine: 'running' });
+    asked.push(request.headers.get('accept-encoding'));
+    return new Response(compressed, { headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'br' } });
+  } } };
+  // When a viewer that accepts brotli asks for the record
+  const response = await proxyLive(new Request(origin + '/api/viewer/segments?stream=ch1', { headers: { Origin: origin, 'Accept-Encoding': 'gzip, br' } }), env);
+  // Then the desktop is asked for the same encodings and the compressed bytes and their header reach the viewer as they are
+  assert.deepEqual(asked, ['gzip, br']);
+  assert.equal(response.headers.get('content-encoding'), 'br'); assert.equal(response.headers.get('vary'), 'Origin, Accept-Encoding');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), compressed);
 });
